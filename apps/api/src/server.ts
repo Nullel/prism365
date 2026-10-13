@@ -13,6 +13,12 @@ if (process.env.DATA_MODE && process.env.DATA_MODE !== "demo") {
   );
 }
 
+if (process.env.AI_ANALYSIS_ENABLED && process.env.AI_ANALYSIS_ENABLED !== "false") {
+  throw new Error(
+    "AI analysis is scaffolded but not connected to a real provider or evidence reader.",
+  );
+}
+
 const app = createApp();
 
 try {

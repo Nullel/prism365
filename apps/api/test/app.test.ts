@@ -29,6 +29,12 @@ describe("demo API", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body).toMatchObject({ writesEnabled: false, tenantConnectionEnabled: false });
+    expect(body.ai).toEqual({
+      analysisEnabled: false,
+      providerConfigured: false,
+      writeToolsEnabled: false,
+      supportedDeployments: ["local", "tenantHosted", "external"],
+    });
     expect(body.cloudProfiles).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

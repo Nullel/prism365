@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateFinding } from "../src/index.ts";
+import { containsUnsupportedWorkforceClaim, evaluateFinding } from "../src/index.ts";
 
 const evidence = {
   hasSource: true,
@@ -55,5 +55,12 @@ describe("finding policy", () => {
         hasSource: false,
       }),
     ).toMatchObject({ allowed: false });
+  });
+
+  it("exposes the same workforce-claim check for generated narratives", () => {
+    expect(containsUnsupportedWorkforceClaim("Rank employee productivity from sign-ins.")).toBe(
+      true,
+    );
+    expect(containsUnsupportedWorkforceClaim("Summarize sign-in risk detections.")).toBe(false);
   });
 });

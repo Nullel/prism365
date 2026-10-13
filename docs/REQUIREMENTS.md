@@ -19,6 +19,9 @@ scaffold already connects to a tenant.
 - Encrypted backup, restore, retention, deletion, update, and incident-response procedures.
 - A public webhook/lifecycle-notification endpoint only if those optional capabilities are
   enabled; validate origin, client state, replay, expiration, and reauthorization.
+- For AI analysis, an operator-configured local, tenant-hosted, or external provider; server-side
+  credential storage; egress allowlisting; explicit tenant data grants; and reviewed provider
+  retention, training, residency, and incident-response terms.
 
 ## For contributors and maintainers
 
@@ -31,6 +34,8 @@ scaffold already connects to a tenant.
   an SBOM, and a documented upgrade/rollback path before a stable release.
 - Microsoft documentation re-verification at release time; cloud support and permissions can
   change independently of TenantLens.
+- AI provider conformance, citation, privacy, prompt-injection, cost, and model-version regression
+  tests before any adapter is marked supported.
 
 ## MVP infrastructure
 

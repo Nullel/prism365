@@ -32,6 +32,12 @@ export function createApp() {
       tenantConnectionEnabled: false,
       permissionPacks,
       cloudProfiles: Object.values(microsoftCloudProfiles),
+      ai: {
+        analysisEnabled: false,
+        providerConfigured: false,
+        writeToolsEnabled: false,
+        supportedDeployments: ["local", "tenantHosted", "external"],
+      },
     }),
   );
 

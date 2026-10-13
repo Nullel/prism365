@@ -26,12 +26,16 @@ feature-count parity with a commercial product.
 7. Do not copy proprietary code, report definitions, text, screenshots, or assets from
    AdminDroid or any other product. Implement from public platform documentation and
    original design.
+8. AI providers never receive Microsoft tokens, database credentials, unrestricted queries,
+   silent access to future datasets, or tenant write tools. Treat prompts, evidence, and model
+   output as untrusted.
 
 ## Before starting work
 
 1. Read `README.md`, `docs/PRODUCT_PRINCIPLES.md`, `docs/PERMISSIONS.md`, and the relevant
    architecture decision records. Connector work also requires `docs/DATA_SOURCES.md`,
    `docs/COMPATIBILITY.md`, and `docs/CONNECTOR_STANDARD.md`.
+   AI work additionally requires `docs/AI_INTEGRATION.md` and ADR-0004.
 2. Find or create a scoped issue. For local multi-agent work, claim one row in `TASKS.md`.
 3. Record the files or subsystem you own. Avoid overlapping edits; coordinate explicitly
    when overlap is unavoidable.
@@ -68,6 +72,9 @@ is a lightweight coordination aid and must not contain secrets or customer infor
   encrypted, time-bounded, and deletable.
 - User-visible findings must distinguish observed fact, inference, severity, time window,
   source, missing evidence, and recommended action.
+- Route model access through `packages/ai`. Require an exact tenant/provider/dataset grant,
+  bounded evidence, supplied-ID citations, and output policy checks. Never call a model SDK
+  directly from UI, domain, or connector code.
 - UI changes must work by keyboard, preserve visible focus, respect reduced motion, and meet
   WCAG 2.2 AA contrast and semantics.
 

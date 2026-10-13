@@ -1,0 +1,61 @@
+name: AI provider proposal
+description: Propose a local, tenant-hosted, or external inference adapter.
+title: "ai-provider: "
+labels: [ai, integration, security-review, privacy-review, triage]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider, API, and deployment type
+      placeholder: Local Ollama API — local deployment
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: Primary provider documentation
+      description: Link authentication, API version, data use, training, retention, deletion, region, limits, and pricing documentation.
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data and privacy plan
+      description: Datasets, identifiers, raw records, external processing, residency, logs, storage, training, subprocessors, and deletion.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security boundary
+      description: Endpoint allowlist, TLS, secret rotation, SSRF controls, prompt injection, output validation, kill switch, and incident response.
+    validations:
+      required: true
+  - type: textarea
+    id: operations
+    attributes:
+      label: Reliability and cost controls
+      description: Model/version policy, schema support, timeouts, retries, cancellation, rate/spend limits, and observability without prompt logging.
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Synthetic conformance and evaluation plan
+    validations:
+      required: true
+  - type: checkboxes
+    id: gates
+    attributes:
+      label: Review gates
+      options:
+        - label: The provider receives no Microsoft token, database credential, unrestricted query, or action tool.
+          required: true
+        - label: Access uses exact expiring dataset grants and adding a dataset does not expand existing grants.
+          required: true
+        - label: Provider data-use and retention claims were verified from current primary documentation.
+          required: true
+        - label: Tests use only synthetic data and include cross-tenant and prompt-injection cases.
+          required: true
+        - label: Generated output cannot be used for employee productivity or performance scoring.
+          required: true

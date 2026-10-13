@@ -26,7 +26,14 @@ const unsupportedWorkforceClaims = [
   /(?:top|low)\s+performer/i,
   /lazy\s+(?:employee|worker|user)/i,
   /idle\s+(?:employee|worker)/i,
+  /rank\s+(?:employees|workers|users)\b/i,
+  /(?:worker|employee)\s+score/i,
+  /(?:attendance|engagement)\s+score/i,
 ];
+
+export function containsUnsupportedWorkforceClaim(text: string): boolean {
+  return unsupportedWorkforceClaims.some((pattern) => pattern.test(text));
+}
 
 export function evaluateFinding(input: FindingPolicyInput): FindingPolicyDecision {
   if (input.purpose === "workforce-performance") {
@@ -38,7 +45,7 @@ export function evaluateFinding(input: FindingPolicyInput): FindingPolicyDecisio
   }
 
   const language = `${input.title} ${input.summary}`;
-  if (unsupportedWorkforceClaims.some((pattern) => pattern.test(language))) {
+  if (containsUnsupportedWorkforceClaim(language)) {
     return {
       allowed: false,
       reason: "Finding language makes an unsupported productivity or employee-performance claim.",

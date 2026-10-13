@@ -1,0 +1,17 @@
+{
+  "name": "@tenantlens/ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tenantlens/contracts": "0.0.0",
+    "@tenantlens/policy": "0.0.0"
+  }
+}

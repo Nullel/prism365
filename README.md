@@ -35,6 +35,9 @@ evidence with known gaps—not a worker-scoring system.
 - A machine-readable source and permission catalog that records cloud, role, license, and
   tenant-service prerequisites for each feature.
 - A policy package that blocks unsupported productivity claims and classifies findings.
+- A provider-neutral AI analysis broker with explicit dataset grants, tenant-bound evidence,
+  identifier/raw-record gates, citation validation, no write tools, and a disabled-by-default
+  loopback Ollama adapter. No provider is configured in the demo.
 - Automated formatting, tests, type checks, builds, dependency updates, and CodeQL.
 
 ## Quick start
@@ -69,7 +72,8 @@ The MVP is intentionally narrow and read-only:
 2. Entra users and sign-in/audit summaries.
 3. Microsoft 365 usage report summaries.
 4. Evidence-backed findings and export.
-5. No management writes until preview, authorization, audit, and approval controls exist.
+5. Optional, read-only AI explanations through an administrator-selected provider.
+6. No management writes until preview, authorization, audit, and approval controls exist.
 
 Purview Audit search is a separate optional connector because it has separate licensing,
 role, query, retention, and permission constraints. It is not silently bundled into the
@@ -83,8 +87,8 @@ permission bundle.
 
 See [Data sources](docs/DATA_SOURCES.md), [Compatibility](docs/COMPATIBILITY.md),
 [Deployment requirements](docs/REQUIREMENTS.md), [Roadmap](docs/ROADMAP.md),
-[Permissions](docs/PERMISSIONS.md), and [Privacy principles](docs/PRIVACY.md) before
-proposing a connector or report.
+[Permissions](docs/PERMISSIONS.md), [AI integration](docs/AI_INTEGRATION.md), and
+[Privacy principles](docs/PRIVACY.md) before proposing a connector or report.
 
 ## Architecture at a glance
 
@@ -103,11 +107,16 @@ flowchart LR
   Workload --> M365
   Jobs --> Store[(Tenant-isolated storage)]
   API --> Store
+  API --> AI[Governed AI analysis broker]
+  AI --> Store
+  AI --> Model[Selected local or hosted model]
+  AI --> Ledger
   API --> Ledger[(Immutable action ledger)]
 ```
 
-The current scaffold implements the browser, API contract, policy core, and safe Graph
-boundary. Durable jobs and tenant-isolated persistence arrive after the connection flow.
+The current scaffold implements the browser, API contract, policy core, safe Graph boundary,
+and provider-neutral AI analysis boundary. Durable jobs, tenant-isolated persistence, a real
+evidence reader, and provider adapters arrive after the connection flow.
 See [Architecture](docs/ARCHITECTURE.md) for the target design.
 
 ## Permission philosophy

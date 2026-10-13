@@ -38,6 +38,15 @@ uncertainty, and never invent evidence. AI may summarize or propose a query; it 
 silently expand permissions, retention, or administrative authority. Autonomous tenant
 writes are out of scope.
 
+AI access is disabled until a tenant selects an exact provider and grants named datasets. Local
+or tenant-hosted inference is available as a deployment choice; external processing needs a
+separate affirmative grant. Direct identifiers and raw records are separate opt-ins and remain
+off by default. Adding a future dataset does not expand an existing AI grant.
+
+Model credentials, full prompts, evidence bundles, and answers are excluded from routine logs.
+The AI access ledger records non-content metadata needed for accountability. TenantLens does not
+use tenant prompts, responses, or evidence to train a shared model.
+
 ## Retention defaults
 
 Final durations will be configured during the storage milestone. The design baseline is:

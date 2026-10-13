@@ -8,6 +8,7 @@ deployment, or write actions.
 - Microsoft identity tokens, client credentials, and signing/encryption keys.
 - Tenant configuration, consent state, roles, and connector cursors.
 - Directory, audit, usage, finding, and export data.
+- AI provider credentials, tenant AI grants, evidence bundles, prompts, and generated answers.
 - Administrative action intent and the future immutable action ledger.
 - Software supply chain, release artifacts, and update channel.
 
@@ -15,6 +16,7 @@ deployment, or write actions.
 
 - Browser to TenantLens API.
 - API/worker to Microsoft identity, Graph, and Purview.
+- AI gateway to local, tenant-hosted, or external model providers.
 - API/worker to database, queue, cache, and object storage.
 - One customer tenant to another.
 - Untrusted provider or issue content to logs, UI, AI, and operators.
@@ -35,6 +37,11 @@ deployment, or write actions.
 | Supply-chain compromise | Malicious dependency/action | lockfile, minimal dependencies, Dependabot, CodeQL, pinned reviewed actions/releases |
 | Misleading findings | Missing events produce false certainty | freshness/coverage state, source/time window, deterministic rule, uncertainty label |
 | Insider misuse | Valid admin uses person-level data improperly | least privilege, purpose limits, access audit, privacy UI, no worker scoring |
+| AI cross-tenant context | Shared cache or retriever mixes organizations | tenant-bound grant and query, RLS, evidence tenant validation, no shared conversation state, adversarial tests |
+| AI data exfiltration | External provider receives unapproved records | provider-specific grant, named datasets, external-processing opt-in, identifier/raw-record gates, egress allowlist |
+| Direct/indirect prompt injection | Question or audit field asks model to reveal data or act | structured evidence boundary, no tools, bounded retrieval, output validation, injection tests, treat output as untrusted |
+| Hallucinated evidence | Model invents a record or conclusion | supplied-ID citation validation, visible limitations, deterministic policy, no automatic downstream action |
+| Provider retention drift | Vendor begins storing prompts differently | provider manifest, no-store where supported, periodic policy review, kill switch, tenant disclosure |
 
 ## Security assumptions
 
@@ -45,6 +52,8 @@ deployment, or write actions.
   deployment guide remain project responsibilities.
 - A hosted service creates materially greater legal and operational duties and needs a new
   review before launch.
+- Model behavior cannot be made trustworthy by a system prompt alone. Authorization, isolation,
+  output validation, and action controls live outside the model.
 
 ## Open questions before Milestone 1
 

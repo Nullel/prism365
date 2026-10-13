@@ -33,9 +33,9 @@ permissions, copied proprietary material, or unsafe administration shortcuts.
 
 ## Design proposals
 
-Open a design issue before adding a new service connector, database, deployment target,
-permission, beta Graph endpoint, or write action. Record accepted architectural decisions
-in `docs/decisions/` using the included template.
+Open a design issue before adding a new service connector, AI provider/model surface, database,
+deployment target, permission, beta Graph endpoint, or write action. Record accepted
+architectural decisions in `docs/decisions/` using the included template.
 
 ## Developer certificate of origin
 

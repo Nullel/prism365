@@ -31,6 +31,13 @@ features independently and report missing capability precisely.
 Show freshness, sync state, throttling, coverage, provider request IDs, and data gaps in
 language an administrator can act on. Do not hide uncertainty behind a green status.
 
+## Governed intelligence
+
+AI is an optional analysis interface, not a privileged identity. Administrators choose the
+provider and exact datasets it may receive. Model input is tenant-bound, minimized, bounded,
+and auditable; generated conclusions cite supplied evidence and remain untrusted. A model never
+silently gains future data or administrative authority.
+
 ## Open implementation, original product
 
 Learn from administrator problems and public platform documentation, not proprietary

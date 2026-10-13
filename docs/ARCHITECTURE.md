@@ -35,6 +35,7 @@ reconciliation path. No write capability is part of the MVP.
 | `packages/contracts` | Runtime-validated shared contracts | Implemented |
 | `packages/graph` | Graph request, retry, paging, cloud boundary | Initial boundary implemented |
 | `packages/policy` | Product and authorization guardrails | Initial finding policy implemented |
+| `packages/ai` | Provider-neutral, tenant-bound AI analysis gateway | Initial boundary and policy tests implemented |
 | Worker service | Scheduled ingestion and reconciliation | Milestone 2 |
 | PostgreSQL | Tenant-scoped normalized data and configuration | Milestone 2 |
 | Queue | Bounded jobs, retries, dead-letter handling | Milestone 2 |
@@ -58,6 +59,22 @@ separate security boundaries even when they expose overlapping records.
 8. The finding engine stores observed facts and explainable derived findings separately.
 9. The API applies organization and role filters before returning data.
 
+## AI analysis flow
+
+1. An authorized administrator selects a provider, named datasets, lookback, record cap, and
+   whether external processing, direct identifiers, or raw records are allowed.
+2. The API verifies local role and an unexpired tenant/provider access grant.
+3. A tenant-scoped evidence reader retrieves only the requested normalized records.
+4. The broker rejects cross-tenant, out-of-window, raw, duplicate, or unauthorized evidence.
+5. Direct identifiers are structurally separated and omitted unless explicitly enabled.
+6. The provider receives a bounded structured evidence bundle and no Graph/database credentials
+   or action tools.
+7. The broker validates schema, supplied citations, and deterministic output policy before the
+   answer can be displayed.
+8. A non-content audit event records actor, provider, datasets, access mode, count, and time.
+
+See [AI integration](AI_INTEGRATION.md) for the provider and privacy contract.
+
 ## Tenant isolation
 
 The MVP target is shared infrastructure with mandatory `tenant_id` partition keys and
@@ -77,6 +94,8 @@ jobs, and stale-cache access.
 - Access tokens are supplied through an interface and must never be logged or persisted in
   browser storage.
 - A request declares the feature/permission pack it belongs to; permission drift is visible.
+- AI providers access normalized evidence only through `packages/ai`; domain/UI code does not
+  send database rows or Graph responses directly to a model SDK.
 - Retries honor `Retry-After`, are bounded, and never turn an unsafe write into an
   uncontrolled replay.
 - Delta queries and change notifications are used where they are supported and justified.

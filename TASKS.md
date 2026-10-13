@@ -17,6 +17,7 @@ secrets, personal data, or customer data. Once published, link each row to a Git
 | TL-010 | ready | — | Cloud-aware identity configuration | TL-001, test tenants | — |
 | TL-011 | ready | — | Service health and license inventory adapters | TL-001 | — |
 | TL-012 | ready | — | Management Activity connector design | TL-005, unified-audit test tenant | — |
+| TL-013 | done | Codex | Pluggable AI analysis boundary and policy tests | Privacy/threat-model review | Changed: contracts, `packages/ai`, policy, docs<br>Verified: 31 tests, checks, build<br>Impact: optional named-dataset disclosure; no Microsoft scope/write change<br>Risk: no production evidence reader/setup UI<br>Next: tenant-scoped reader and provider setup screen |
 
 ## Claim format
 

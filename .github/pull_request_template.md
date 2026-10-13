@@ -19,6 +19,7 @@ Closes #
 - [ ] No Microsoft permission change
 - [ ] No new personal, tenant, content, or audit data collected or retained
 - [ ] No tenant write action introduced
+- [ ] No new AI provider or tenant-data disclosure path introduced
 
 If any box above is unchecked, explain the exact permission, fields, purpose, retention,
 authorization, and safer alternatives considered:
@@ -32,6 +33,8 @@ authorization, and safer alternatives considered:
       implementation, and provider availability
 - [ ] Accessibility was tested for UI changes
 - [ ] Current primary documentation is linked for provider behavior
+- [ ] AI changes use exact dataset grants, tenant-bound evidence, supplied-ID citations, no
+      credential/tool exposure, and synthetic prompt-injection tests
 
 ## AI assistance
 

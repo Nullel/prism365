@@ -11,6 +11,7 @@ Goal: a contributor can run, understand, test, and safely extend the project.
 - [x] Responsive, accessible demo dashboard and read-only API.
 - [x] Shared contracts, Graph boundary, permission catalog, and policy tests.
 - [x] Source inventory, Microsoft-cloud profiles, and compatibility contract.
+- [x] Provider-neutral AI broker, access-grant contract, and synthetic isolation/policy tests.
 - [x] CI, dependency updates, CodeQL, issue forms, and security policy.
 - [ ] Publish the repository after owner authentication and settings review.
 - [ ] Enable branch protection, private vulnerability reporting, secret scanning, and
@@ -71,7 +72,23 @@ Goal: the project is useful for routine tenant review without management writes.
 Exit: documented self-host install and upgrade; backup/restore; release artifacts and SBOM;
 pilot feedback from administrators.
 
-## Milestone 4 — optional Purview Audit connector
+## Milestone 4 — optional read-only AI analyst
+
+Goal: let an administrator connect a chosen model to authorized TenantLens data without giving
+the model tenant credentials, silent future access, or administrative tools.
+
+- Local, tenant-hosted, and external provider adapter manifests.
+- Provider setup screen with data use, training, retention, region, cost, and secret status.
+- Exact expiring dataset grants; identifiers, raw records, and external processing off by default.
+- Tenant-scoped bounded retrieval with source/time/coverage evidence and supplied-ID citations.
+- Prompt-injection, cross-tenant, hallucinated-citation, privacy, cost, and model-upgrade evals.
+- AI labels, limitations, answer feedback, delete controls, and emergency provider kill switch.
+- No productivity inference and no action/write tools.
+
+Exit: one local or tenant-hosted adapter passes conformance and an authorized test-tenant pilot;
+disabling it stops new disclosure and removes configured credentials cleanly.
+
+## Milestone 5 — optional Purview Audit connector
 
 Goal: query Purview audit records without implying universal availability or completeness.
 
@@ -83,7 +100,7 @@ Goal: query Purview audit records without implying universal availability or com
 
 Exit: connector works in an authorized test tenant and is disabled by default.
 
-## Milestone 5 — guarded administration actions
+## Milestone 6 — guarded administration actions
 
 Goal: introduce a very small number of reversible or recoverable actions safely.
 
@@ -117,3 +134,4 @@ Exit: independent security review and no broad “manage everything” permissio
 | Run dashboard accessibility review | frontend/a11y | keyboard, focus, screen reader landmarks, contrast, motion |
 | Define finding/evidence schema | domain/security | facts separated from inference; rule version and limitations |
 | Create self-host deployment threat model | platform/security | secrets, updates, backup, restore, ingress, health checks |
+| Implement first local AI provider adapter | AI/security | provider manifest, no action tools, bounded evidence, citations, injection tests |
