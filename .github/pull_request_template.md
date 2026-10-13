@@ -28,6 +28,8 @@ authorization, and safer alternatives considered:
 - [ ] Uses only synthetic/redacted fixtures, logs, and screenshots
 - [ ] Does not infer employee productivity or performance from activity data
 - [ ] Errors, data gaps, freshness, and uncertainty are visible where relevant
+- [ ] Connector changes distinguish missing consent, role, license, service, cloud support,
+      implementation, and provider availability
 - [ ] Accessibility was tested for UI changes
 - [ ] Current primary documentation is linked for provider behavior
 

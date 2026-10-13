@@ -1,13 +1,11 @@
-import type { GraphPermission, PermissionPackId } from "./permissions.ts";
-
-const GLOBAL_GRAPH_ORIGIN = "https://graph.microsoft.com";
-const GLOBAL_GRAPH_ROOT = `${GLOBAL_GRAPH_ORIGIN}/v1.0`;
+import { getMicrosoftCloudProfile, type MicrosoftCloud } from "./clouds.ts";
+import { type GraphFeatureId, type GraphPermission, getPermissionPack } from "./permissions.ts";
 
 type FetchImplementation = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type Sleep = (milliseconds: number) => Promise<void>;
 
 export interface GraphRequestContext {
-  feature: PermissionPackId;
+  feature: GraphFeatureId;
   permission: GraphPermission;
 }
 
@@ -17,7 +15,7 @@ export interface GraphClientOptions {
   sleep?: Sleep;
   maxRetries?: number;
   allowMutations?: boolean;
-  baseUrl?: string;
+  cloud?: MicrosoftCloud;
 }
 
 interface GraphCollection<T> {
@@ -44,6 +42,7 @@ export class GraphHttpClient {
   readonly #maxRetries: number;
   readonly #allowMutations: boolean;
   readonly #baseUrl: URL;
+  readonly #cloud: MicrosoftCloud;
 
   constructor(options: GraphClientOptions) {
     this.#getAccessToken = options.getAccessToken;
@@ -53,14 +52,14 @@ export class GraphHttpClient {
       ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.#maxRetries = options.maxRetries ?? 3;
     this.#allowMutations = options.allowMutations ?? false;
-    this.#baseUrl = new URL(options.baseUrl ?? GLOBAL_GRAPH_ROOT);
+    this.#cloud = options.cloud ?? "worldwide";
+    this.#baseUrl = new URL(getMicrosoftCloudProfile(this.#cloud).graphBaseUrl);
 
     if (
       this.#baseUrl.protocol !== "https:" ||
-      this.#baseUrl.origin !== GLOBAL_GRAPH_ORIGIN ||
       this.#baseUrl.pathname.replace(/\/$/, "") !== "/v1.0"
     ) {
-      throw new Error("Only the Microsoft Graph global v1.0 endpoint is enabled in this scaffold.");
+      throw new Error("The selected Microsoft cloud does not provide an allowed Graph v1.0 URL.");
     }
   }
 
@@ -71,6 +70,16 @@ export class GraphHttpClient {
   ): Promise<T> {
     if (!context.feature || !context.permission) {
       throw new Error("Every Graph request must declare its feature and permission.");
+    }
+
+    const pack = getPermissionPack(context.feature);
+    if (pack.source !== "microsoftGraph" || pack.permission !== context.permission) {
+      throw new Error("The Graph request permission does not match its declared feature pack.");
+    }
+    if (!(pack.clouds as readonly MicrosoftCloud[]).includes(this.#cloud)) {
+      throw new Error(
+        `Feature ${context.feature} is not supported in the selected Microsoft cloud (${this.#cloud}).`,
+      );
     }
 
     const method = (init.method ?? "GET").toUpperCase();

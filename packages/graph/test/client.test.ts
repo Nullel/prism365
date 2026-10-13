@@ -72,6 +72,62 @@ describe("GraphHttpClient", () => {
     );
   });
 
+  it("uses the allowlisted GCC High Graph endpoint", async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(Response.json({ value: [] }));
+    const client = new GraphHttpClient({
+      cloud: "usGovernmentL4",
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation,
+    });
+
+    await client.request("auditLogs/signIns", context);
+
+    expect(String(fetchImplementation.mock.calls[0]?.[0])).toBe(
+      "https://graph.microsoft.us/v1.0/auditLogs/signIns",
+    );
+  });
+
+  it("rejects a nextLink from a different Microsoft cloud", async () => {
+    const client = new GraphHttpClient({
+      cloud: "usGovernmentL4",
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: vi.fn(),
+    });
+
+    await expect(client.request("https://graph.microsoft.com/v1.0/users", context)).rejects.toThrow(
+      "host boundary",
+    );
+  });
+
+  it("rejects a permission that does not belong to the feature", async () => {
+    const client = new GraphHttpClient({
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: vi.fn(),
+    });
+
+    await expect(
+      client.request("users", {
+        feature: "directory.users.read",
+        permission: "Reports.Read.All",
+      }),
+    ).rejects.toThrow("does not match");
+  });
+
+  it("rejects a feature that Microsoft does not expose in the selected cloud", async () => {
+    const client = new GraphHttpClient({
+      cloud: "usGovernmentL5",
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: vi.fn(),
+    });
+
+    await expect(
+      client.request("reports/getOffice365ActiveUserDetail(period='D7')", {
+        feature: "reports.usage.read",
+        permission: "Reports.Read.All",
+      }),
+    ).rejects.toThrow("not supported");
+  });
+
   it("returns a redacted provider error with request ID", async () => {
     const client = new GraphHttpClient({
       getAccessToken: async () => "synthetic-token",

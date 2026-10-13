@@ -57,19 +57,49 @@ export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
 export const permissionPackSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
+  source: z.enum(["microsoftGraph", "officeManagementActivity", "exchangeOnlinePowerShell"]),
   permission: z.string().min(1),
   mode: z.enum(["delegated", "application", "either"]),
   phase: z.enum(["mvp", "experimental", "future"]),
   defaultEnabled: z.boolean(),
   purpose: z.string().min(1),
   deniedBehavior: z.string().min(1),
+  clouds: z.array(z.enum(["worldwide", "gcc", "usGovernmentL4", "usGovernmentL5", "china"])),
+  prerequisites: z.array(z.string().min(1)),
+  roleNotes: z.string().min(1),
+  licenseNotes: z.string().min(1),
+  documentationUrl: z.string().url(),
+  documentationLastVerified: z.string().date(),
 });
 export type PermissionPack = z.infer<typeof permissionPackSchema>;
+
+export const capabilityStateSchema = z.enum([
+  "available",
+  "missingConsent",
+  "missingRole",
+  "missingLicense",
+  "unsupportedCloud",
+  "notEnabled",
+  "notImplemented",
+  "providerUnavailable",
+  "unknown",
+]);
+export type CapabilityState = z.infer<typeof capabilityStateSchema>;
+
+export const microsoftCloudProfileSchema = z.object({
+  id: z.enum(["worldwide", "gcc", "usGovernmentL4", "usGovernmentL5", "china"]),
+  label: z.string().min(1),
+  authorityHost: z.string().url(),
+  graphBaseUrl: z.string().url(),
+  managementActivityBaseUrl: z.string().url().nullable(),
+});
+export type MicrosoftCloudProfile = z.infer<typeof microsoftCloudProfileSchema>;
 
 export const capabilitySummarySchema = z.object({
   dataMode: z.literal("demo"),
   writesEnabled: z.literal(false),
   tenantConnectionEnabled: z.literal(false),
   permissionPacks: z.array(permissionPackSchema),
+  cloudProfiles: z.array(microsoftCloudProfileSchema),
 });
 export type CapabilitySummary = z.infer<typeof capabilitySummarySchema>;

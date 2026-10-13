@@ -25,6 +25,13 @@ body:
     validations:
       required: true
   - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility matrix
+      description: Supported account types and clouds, plus required roles, licenses, tenant settings, and expected unavailable states.
+    validations:
+      required: true
+  - type: textarea
     id: data
     attributes:
       label: Data lifecycle
@@ -50,6 +57,8 @@ body:
       label: Review gates
       options:
         - label: I will update docs/PERMISSIONS.md and the threat model.
+          required: true
+        - label: I have followed docs/CONNECTOR_STANDARD.md and documented unsupported clouds.
           required: true
         - label: No production tenant data will enter fixtures or logs.
           required: true

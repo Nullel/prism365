@@ -13,6 +13,10 @@ secrets, personal data, or customer data. Once published, link each row to a Git
 | TL-006 | ready | — | Dashboard accessibility audit | Running web app | — |
 | TL-007 | ready | — | Finding evidence model | Product principles | — |
 | TL-008 | ready | — | Self-host deployment profile | TL-005 | — |
+| TL-009 | ready | — | Capability/readiness evaluator and UI | TL-001, compatibility contract | — |
+| TL-010 | ready | — | Cloud-aware identity configuration | TL-001, test tenants | — |
+| TL-011 | ready | — | Service health and license inventory adapters | TL-001 | — |
+| TL-012 | ready | — | Management Activity connector design | TL-005, unified-audit test tenant | — |
 
 ## Claim format
 

@@ -18,15 +18,26 @@ Microsoft recommends requesting the fewest permissions required and documents th
 application permissions carry greater privacy risk because they work without a signed-in
 user. See [Microsoft Graph permission best practices](https://learn.microsoft.com/en-us/graph/best-practices-graph-permission).
 
-## Initial read-only packs
+## Read-only feature packs
 
-| Pack | Feature | Permission | Mode | Default | Data handling |
-|---|---|---|---|---|---|
-| `profile` | Signed-in profile | `User.Read` | Delegated | on at sign-in | session identity only |
-| `directory.users.read` | User inventory | `User.Read.All` | Application for scheduled sync; delegated prototype allowed | off | normalized directory metadata; selected fields only |
-| `audit.signins.read` | Sign-in and directory audit summaries | `AuditLog.Read.All` | Application for scheduled sync; delegated investigation allowed | off | normalized events/summaries with bounded retention |
-| `reports.usage.read` | Microsoft 365 usage reports | `Reports.Read.All` | Application or delegated | off | aggregate trends; privacy setting respected |
-| `purview.entra.read` | Optional Entra workload audit search | `AuditLogsQuery-Entra.Read.All` | Application or delegated | off/experimental | query results only under explicit retention policy |
+The executable catalog in `packages/graph/src/permissions.ts` is the detailed source of truth.
+This table groups the intended scope for review.
+
+| Packs | Source | Permission(s) | Phase | Important prerequisite |
+|---|---|---|---|---|
+| `profile`, `directory.users.read` | Graph | `User.Read`, `User.Read.All` | MVP | Work/school tenant; delegated access is bounded by the user's privileges |
+| `tenant.licenses.read` | Graph | `LicenseAssignment.Read.All` | MVP | Delegated caller needs an allowed directory role |
+| `service.health.read` | Graph | `ServiceHealth.Read.All` | MVP | Service health available for tenant services |
+| `audit.signins.read` | Graph | `AuditLog.Read.All` | MVP | Delegated caller needs an allowed role; license affects fields/retention |
+| `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Usage-report availability and privacy setting; global/GCC target only |
+| `identity.conditional-access.read` | Graph | `Policy.Read.All` | Experimental | Supported role and applicable Conditional Access licensing |
+| `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Entra ID P2; not targeted for China |
+| `security.score.read` | Graph | `SecurityEvents.Read.All` | Experimental | Applicable subscriptions; not targeted for China |
+| `security.incidents.read` | Graph | `SecurityIncident.Read.All` | Experimental | Defender entitlement and security role; not targeted for China |
+| `devices.intune.read` | Graph | `DeviceManagementManagedDevices.Read.All` | Experimental | Active Intune license and role |
+| `purview.entra.read` | Graph/Purview | `AuditLogsQuery-Entra.Read.All` | Experimental | Purview Audit availability, roles, query limits, and retention |
+| `audit.activity-feed.read` | Management Activity | `ActivityFeed.Read` | Future | Unified audit enabled and content subscription started |
+| `exchange.configuration.read` | Exchange Online PowerShell | `Exchange.ManageAsApp` | Future | Certificate/federation plus narrow Exchange RBAC |
 
 `AuditLog.Read.All` is the documented least-privileged permission for listing sign-ins, and
 `Reports.Read.All` is required for Office 365 usage reports. Delegated sign-in access also
@@ -37,6 +48,10 @@ requesting them silently.
 Purview Audit Search is distinct from Entra directory audits. The query API has
 workload-specific permissions and a broad `AuditLogsQuery.Read.All`; TenantLens starts with
 the narrower Entra workload permission and does not request the broad permission by default.
+
+Having the API permission is not, by itself, proof that a feature can run. TenantLens also
+checks the signed-in user or service principal role, product license, tenant configuration,
+endpoint/cloud availability, and provider health. See [Compatibility](COMPATIBILITY.md).
 
 ## Not approved for the MVP
 
@@ -56,6 +71,8 @@ the narrower Entra workload permission and does not request the broad permission
 - Subscriptions have resource-dependent lifetimes and require renewal. Lifecycle events can
   report reauthorization, removal, or missed notifications, so schedule reconciliation.
 - National-cloud support is a tested feature, not an assumed string replacement.
+- The selected cloud fixes the authority, Graph host, and workload endpoints; tenant-provided
+  URLs never override that allowlist.
 
 ## Useful primary references
 
@@ -65,3 +82,12 @@ the narrower Entra workload permission and does not request the broad permission
 - [Graph throttling guidance](https://learn.microsoft.com/en-us/graph/throttling)
 - [Change notifications](https://learn.microsoft.com/en-us/graph/change-notifications-overview)
 - [Lifecycle notifications](https://learn.microsoft.com/en-us/graph/change-notifications-lifecycle-events)
+- [List subscribed SKUs](https://learn.microsoft.com/en-us/graph/api/subscribedsku-list?view=graph-rest-1.0)
+- [Service health overview](https://learn.microsoft.com/en-us/graph/api/serviceannouncement-list-healthoverviews?view=graph-rest-1.0)
+- [Usage-report authorization](https://learn.microsoft.com/en-us/graph/reportroot-authorization)
+- [Read report privacy settings](https://learn.microsoft.com/en-us/graph/api/adminreportsettings-get?view=graph-rest-1.0)
+- [List Conditional Access policies](https://learn.microsoft.com/en-us/graph/api/conditionalaccessroot-list-policies?view=graph-rest-1.0)
+- [Get a risky user](https://learn.microsoft.com/en-us/graph/api/riskyuser-get?view=graph-rest-1.0)
+- [List Secure Scores](https://learn.microsoft.com/en-us/graph/api/security-list-securescores?view=graph-rest-1.0)
+- [List Defender incidents](https://learn.microsoft.com/en-us/graph/api/security-list-incidents?view=graph-rest-1.0)
+- [List Intune managed devices](https://learn.microsoft.com/en-us/graph/api/intune-devices-manageddevice-list?view=graph-rest-1.0)

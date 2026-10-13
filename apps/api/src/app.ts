@@ -1,5 +1,5 @@
 import { capabilitySummarySchema } from "@tenantlens/contracts";
-import { permissionPacks } from "@tenantlens/graph";
+import { microsoftCloudProfiles, permissionPacks } from "@tenantlens/graph";
 import Fastify from "fastify";
 import { demoDashboard } from "./demo-data.ts";
 
@@ -31,6 +31,7 @@ export function createApp() {
       writesEnabled: false,
       tenantConnectionEnabled: false,
       permissionPacks,
+      cloudProfiles: Object.values(microsoftCloudProfiles),
     }),
   );
 

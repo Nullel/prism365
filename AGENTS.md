@@ -30,7 +30,8 @@ feature-count parity with a commercial product.
 ## Before starting work
 
 1. Read `README.md`, `docs/PRODUCT_PRINCIPLES.md`, `docs/PERMISSIONS.md`, and the relevant
-   architecture decision records.
+   architecture decision records. Connector work also requires `docs/DATA_SOURCES.md`,
+   `docs/COMPATIBILITY.md`, and `docs/CONNECTOR_STANDARD.md`.
 2. Find or create a scoped issue. For local multi-agent work, claim one row in `TASKS.md`.
 3. Record the files or subsystem you own. Avoid overlapping edits; coordinate explicitly
    when overlap is unavoidable.
@@ -54,8 +55,12 @@ is a lightweight coordination aid and must not contain secrets or customer infor
 
 - Use TypeScript with strict checking. Validate data at trust boundaries with Zod.
 - Keep Microsoft integrations behind `packages/graph` or a named connector package.
+- Keep authorities and provider hosts in code-owned Microsoft cloud profiles. Never accept
+  arbitrary Graph, identity, continuation, or workload hosts from tenant input.
 - Domain and UI code must not make ad-hoc calls to `graph.microsoft.com`.
 - Every Graph request declares its feature and expected permission pack.
+- Every connector declares its supported clouds, account types, roles, licenses, tenant
+  settings, data fields, failure states, and documentation verification date.
 - Honor `Retry-After`; use bounded backoff and pagination/delta links where supported.
 - Use `/v1.0` unless an accepted design explicitly justifies a beta endpoint.
 - Scope all future persistence by tenant ID and enforce isolation in queries and tests.

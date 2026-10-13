@@ -27,6 +27,29 @@ describe("demo API", () => {
     const response = await app.inject({ method: "GET", url: "/v1/platform/capabilities" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ writesEnabled: false, tenantConnectionEnabled: false });
+    const body = response.json();
+    expect(body).toMatchObject({ writesEnabled: false, tenantConnectionEnabled: false });
+    expect(body.cloudProfiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "worldwide",
+          graphBaseUrl: "https://graph.microsoft.com/v1.0",
+        }),
+        expect.objectContaining({
+          id: "usGovernmentL4",
+          graphBaseUrl: "https://graph.microsoft.us/v1.0",
+        }),
+      ]),
+    );
+    expect(body.permissionPacks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "identity.risk.read",
+          permission: "IdentityRiskyUser.Read.All",
+          licenseNotes: expect.stringContaining("P2"),
+          documentationLastVerified: "2026-10-13",
+        }),
+      ]),
+    );
   });
 });

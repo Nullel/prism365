@@ -31,7 +31,9 @@ evidence with known gaps—not a worker-scoring system.
 - A small Fastify API with health, dashboard, capability, and permission-catalog routes.
 - Shared runtime contracts using Zod.
 - A Microsoft Graph HTTP boundary with host allowlisting, read-only-by-default behavior,
-  pagination, and `Retry-After` handling.
+  pagination, `Retry-After` handling, and code-owned global/GCC/GCC High/DoD/China profiles.
+- A machine-readable source and permission catalog that records cloud, role, license, and
+  tenant-service prerequisites for each feature.
 - A policy package that blocks unsupported productivity claims and classifies findings.
 - Automated formatting, tests, type checks, builds, dependency updates, and CodeQL.
 
@@ -73,8 +75,16 @@ Purview Audit search is a separate optional connector because it has separate li
 role, query, retention, and permission constraints. It is not silently bundled into the
 basic Graph connection.
 
-See [Roadmap](docs/ROADMAP.md), [Permissions](docs/PERMISSIONS.md), and
-[Privacy principles](docs/PRIVACY.md) before proposing a connector or report.
+The deployment target is any supported Microsoft Entra **work or school** tenant whose
+administrator grants the selected permissions and whose user/service principal, licenses,
+tenant settings, and Microsoft cloud satisfy that feature's prerequisites. Personal Microsoft
+accounts are not supported. Features degrade independently rather than demanding one broad
+permission bundle.
+
+See [Data sources](docs/DATA_SOURCES.md), [Compatibility](docs/COMPATIBILITY.md),
+[Deployment requirements](docs/REQUIREMENTS.md), [Roadmap](docs/ROADMAP.md),
+[Permissions](docs/PERMISSIONS.md), and [Privacy principles](docs/PRIVACY.md) before
+proposing a connector or report.
 
 ## Architecture at a glance
 
@@ -85,8 +95,12 @@ flowchart LR
   API --> Jobs[Ingestion jobs]
   Jobs --> Graph[Microsoft Graph adapter]
   Jobs --> Purview[Optional Purview adapter]
+  Jobs --> Activity[Optional Management Activity adapter]
+  Jobs --> Workload[Isolated workload adapters]
   Graph --> M365[Customer tenant]
   Purview --> M365
+  Activity --> M365
+  Workload --> M365
   Jobs --> Store[(Tenant-isolated storage)]
   API --> Store
   API --> Ledger[(Immutable action ledger)]
@@ -107,9 +121,9 @@ See [Architecture](docs/ARCHITECTURE.md) for the target design.
 - Re-check Microsoft documentation during implementation; permissions and availability
   can change.
 
-The initial catalog includes `User.Read.All`, `AuditLog.Read.All`, and
-`Reports.Read.All` as independent, optional read packs. Purview's
-`AuditLogsQuery-Entra.Read.All` is a separate experimental pack.
+The catalog includes separate read packs for directory, license inventory, service health,
+audit, usage, security, and device data. Purview, the Management Activity feed, and Exchange
+Online automation remain distinct connectors with their own prerequisites.
 
 ## Contributing
 

@@ -41,6 +41,10 @@ reconciliation path. No write capability is part of the MVP.
 | Object storage | Optional encrypted exports/raw archives | Post-MVP and opt-in |
 | Action ledger | Append-only record of administrative writes | Before any write action |
 
+Each provider adapter follows [the connector standard](CONNECTOR_STANDARD.md). Microsoft Graph,
+Purview, the Management Activity API, and workload-specific administration surfaces remain
+separate security boundaries even when they expose overlapping records.
+
 ## Request and ingestion flow
 
 1. An administrator signs in through Microsoft identity.

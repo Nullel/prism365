@@ -10,6 +10,7 @@ Goal: a contributor can run, understand, test, and safely extend the project.
 - [x] Original project identity, Apache-2.0 license, contribution and agent guidance.
 - [x] Responsive, accessible demo dashboard and read-only API.
 - [x] Shared contracts, Graph boundary, permission catalog, and policy tests.
+- [x] Source inventory, Microsoft-cloud profiles, and compatibility contract.
 - [x] CI, dependency updates, CodeQL, issue forms, and security policy.
 - [ ] Publish the repository after owner authentication and settings review.
 - [ ] Enable branch protection, private vulnerability reporting, secret scanning, and
@@ -24,13 +25,20 @@ tenant connection is advertised.
 Goal: an administrator can understand and grant only the read scopes for selected features.
 
 - Microsoft identity sign-in and tenant onboarding.
+- Bring-your-own single-tenant app registration for the first self-host release.
+- Cloud selection/discovery with separate deployment registrations per national cloud.
 - Credential handling design and threat-model review.
-- Consent inventory and permission health screen.
+- Consent inventory and per-feature readiness screen covering permission, role, license,
+  tenant setting, provider health, implementation status, and cloud support.
 - Read-only user inventory (`User.Read.All`).
+- Read-only license inventory (`LicenseAssignment.Read.All`) and service health
+  (`ServiceHealth.Read.All`) as independent packs.
 - Read-only directory/sign-in audit summary (`AuditLog.Read.All`).
 - Read-only Microsoft 365 usage summary (`Reports.Read.All`).
 - Clear errors for missing role, license, permission, data, or unsupported cloud.
 - Fully synthetic integration fixtures and an opt-in test-tenant runbook.
+- Compatibility tests for Worldwide and any claimed GCC/GCC High/DoD/China feature; personal
+  Microsoft accounts are explicitly unsupported.
 
 Exit: no write scopes; consent can be removed cleanly; tokens and tenant records stay out of
 logs; a security reviewer approves the connector boundary.
@@ -100,6 +108,8 @@ Exit: independent security review and no broad “manage everything” permissio
 | Issue | Owner type | Acceptance summary |
 |---|---|---|
 | Define Entra app registration and callback model | identity/security | ADR plus threat-model update; no code secrets |
+| Implement capability/readiness evaluator | identity/platform | explicit missing consent/role/license/service/cloud states with tests |
+| Build cloud-aware auth configuration | identity/platform | allowlisted authorities/hosts; cross-cloud tokens and next links rejected |
 | Implement synthetic user inventory adapter | connector | pagination, schema validation, permission declaration, tests |
 | Implement synthetic sign-in summary adapter | connector | time window, partial-data state, no productivity language |
 | Implement synthetic usage report adapter | connector | CSV/JSON normalization and interpretation warning |
