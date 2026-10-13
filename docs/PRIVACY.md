@@ -1,6 +1,6 @@
 # Privacy and responsible-use principles
 
-TenantLens handles information about people because administrators need to secure and
+Prism365 handles information about people because administrators need to secure and
 operate Microsoft 365. That access does not make every possible analysis appropriate.
 
 ## Core commitments
@@ -18,7 +18,7 @@ operate Microsoft 365. That access does not make every possible analysis appropr
 
 Sign-ins, messages, meetings, file edits, presence, audit events, and report counts do not
 measure an individual's productivity, effort, intent, quality, engagement, or performance.
-They are incomplete, context-dependent operational signals. TenantLens will not rank
+They are incomplete, context-dependent operational signals. Prism365 will not rank
 workers, generate productivity scores, infer “idle” employees, or present surveillance as
 workforce analytics.
 
@@ -44,7 +44,7 @@ separate affirmative grant. Direct identifiers and raw records are separate opt-
 off by default. Adding a future dataset does not expand an existing AI grant.
 
 Model credentials, full prompts, evidence bundles, and answers are excluded from routine logs.
-The AI access ledger records non-content metadata needed for accountability. TenantLens does not
+The AI access ledger records non-content metadata needed for accountability. Prism365 does not
 use tenant prompts, responses, or evidence to train a shared model.
 
 ## Retention defaults

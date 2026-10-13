@@ -23,7 +23,7 @@ const app = createApp();
 
 try {
   await app.listen({ host, port });
-  console.log(`TenantLens demo API listening on http://${host}:${port}`);
+  console.log(`Prism365 demo API listening on http://${host}:${port}`);
 } catch (error) {
   app.log.error(error);
   process.exitCode = 1;

@@ -1,6 +1,6 @@
 # Governance
 
-TenantLens is an Apache-2.0 community project. During pre-alpha, `@nlj3` is the founding
+Prism365 is an Apache-2.0 community project. During pre-alpha, `@nlj3` is the founding
 maintainer and final reviewer for releases, repository administration, permission changes,
 authentication, tenant isolation, retention, security policy, and Microsoft connector scope.
 This describes review responsibility, not unilateral ownership of contributor copyright.

@@ -1,4 +1,4 @@
-# What is needed to operate TenantLens
+# What is needed to operate Prism365
 
 This is a requirements checklist for a real deployment, not a promise that the pre-alpha
 scaffold already connects to a tenant.
@@ -33,7 +33,7 @@ scaffold already connects to a tenant.
 - Dependency scanning, secret scanning, CodeQL, protected reviews, signed release artifacts,
   an SBOM, and a documented upgrade/rollback path before a stable release.
 - Microsoft documentation re-verification at release time; cloud support and permissions can
-  change independently of TenantLens.
+  change independently of Prism365.
 - AI provider conformance, citation, privacy, prompt-injection, cost, and model-version regression
   tests before any adapter is marked supported.
 

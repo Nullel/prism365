@@ -1,7 +1,7 @@
 # Pluggable AI analysis
 
-TenantLens supports a replaceable, read-only AI analysis layer. A tenant may connect a local,
-tenant-hosted, or external model provider and explicitly grant it access to selected TenantLens
+Prism365 supports a replaceable, read-only AI analysis layer. A tenant may connect a local,
+tenant-hosted, or external model provider and explicitly grant it access to selected Prism365
 datasets. The model receives bounded evidence bundles, not Microsoft credentials, database
 credentials, unrestricted SQL, or direct Graph access.
 
@@ -9,7 +9,7 @@ The governing decision is [ADR-0004](decisions/0004-governed-ai-gateway.md).
 
 ## What “all data” means
 
-An administrator can grant a provider every dataset that TenantLens currently knows about:
+An administrator can grant a provider every dataset that Prism365 currently knows about:
 
 - findings, directory metadata, licenses, and service health;
 - sign-ins and directory audits;
@@ -19,7 +19,7 @@ An administrator can grant a provider every dataset that TenantLens currently kn
 
 There is deliberately no permanent `all` wildcard. “All” is a snapshot containing every
 current dataset ID. A newly added connector remains unavailable to existing AI grants until an
-administrator reviews and adds it. TenantLens cannot expose data it was not authorized to
+administrator reviews and adds it. Prism365 cannot expose data it was not authorized to
 collect, and content such as mail bodies, chats, files, calendars, or presence is not added
 merely to make the AI broader.
 
@@ -31,7 +31,7 @@ coverage metadata.
 
 ```mermaid
 flowchart LR
-  User[Authorized administrator] --> API[TenantLens API]
+  User[Authorized administrator] --> API[Prism365 API]
   API --> Policy[AI access grant + local RBAC]
   Policy --> Gateway[AI analysis broker]
   Gateway --> Reader[Tenant-scoped evidence reader]
@@ -44,7 +44,7 @@ flowchart LR
 ```
 
 The model provider has one operation: analyze structured evidence and return a structured,
-cited explanation. It has no TenantLens tools, Graph tokens, database handle, export capability,
+cited explanation. It has no Prism365 tools, Graph tokens, database handle, export capability,
 or management actions. A future tool or MCP surface is a separate security milestone and must
 use the same authorization gateway; token passthrough is forbidden.
 
@@ -56,7 +56,7 @@ use the same authorization gateway; token passthrough is forbidden.
 | Tenant-hosted | Model endpoint operated in the customer's cloud/account | Suitable when the tenant controls network, region, keys, and retention |
 | External | Third-party hosted inference API | Disabled until an administrator explicitly allows external processing for that exact provider |
 
-`@tenantlens/ai` defines the provider interface without requiring a vendor SDK. Provider
+`@prism365/ai` defines the provider interface without requiring a vendor SDK. Provider
 credentials are injected server-side from a secret service and never appear in tenant config,
 prompts, the browser, logs, or the AI access ledger. Endpoints are operator-configured and
 allowlisted; they are not taken from a chat question or tenant record.

@@ -1,4 +1,4 @@
-# Contributing to TenantLens
+# Contributing to Prism365
 
 Thank you for helping build a safer, open Microsoft 365 administration platform.
 

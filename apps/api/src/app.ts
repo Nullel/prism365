@@ -1,5 +1,5 @@
-import { capabilitySummarySchema } from "@tenantlens/contracts";
-import { microsoftCloudProfiles, permissionPacks } from "@tenantlens/graph";
+import { capabilitySummarySchema } from "@prism365/contracts";
+import { microsoftCloudProfiles, permissionPacks } from "@prism365/graph";
 import Fastify from "fastify";
 import { demoDashboard } from "./demo-data.ts";
 

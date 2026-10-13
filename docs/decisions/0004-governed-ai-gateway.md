@@ -6,7 +6,7 @@
 
 ## Context
 
-Administrators want an AI assistant that can analyze all data available in TenantLens. Giving a
+Administrators want an AI assistant that can analyze all data available in Prism365. Giving a
 model direct database or Graph access would bypass tenant isolation, purpose limits, field
 minimization, provider disclosure, and the future authorization layer. It would also turn prompt
 injection in provider data into a privileged control path.

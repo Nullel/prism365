@@ -74,7 +74,7 @@ pilot feedback from administrators.
 
 ## Milestone 4 — optional read-only AI analyst
 
-Goal: let an administrator connect a chosen model to authorized TenantLens data without giving
+Goal: let an administrator connect a chosen model to authorized Prism365 data without giving
 the model tenant credentials, silent future access, or administrative tools.
 
 - Local, tenant-hosted, and external provider adapter manifests.

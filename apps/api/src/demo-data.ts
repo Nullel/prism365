@@ -1,4 +1,4 @@
-import { dashboardSummarySchema } from "@tenantlens/contracts";
+import { dashboardSummarySchema } from "@prism365/contracts";
 
 export const demoDashboard = dashboardSummarySchema.parse({
   mode: "demo",

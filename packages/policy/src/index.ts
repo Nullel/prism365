@@ -39,8 +39,7 @@ export function evaluateFinding(input: FindingPolicyInput): FindingPolicyDecisio
   if (input.purpose === "workforce-performance") {
     return {
       allowed: false,
-      reason:
-        "TenantLens does not use Microsoft 365 activity as evidence of workforce performance.",
+      reason: "Prism365 does not use Microsoft 365 activity as evidence of workforce performance.",
     };
   }
 

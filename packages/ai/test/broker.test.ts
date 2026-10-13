@@ -1,4 +1,4 @@
-import type { AiAccessGrant, AiAnalysisRequest, AiEvidenceRecord } from "@tenantlens/contracts";
+import type { AiAccessGrant, AiAnalysisRequest, AiEvidenceRecord } from "@prism365/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
   type AiAnalysisAuditEvent,

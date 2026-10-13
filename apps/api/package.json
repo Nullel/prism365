@@ -1,5 +1,5 @@
 {
-  "name": "@tenantlens/api",
+  "name": "@prism365/api",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@tenantlens/contracts": "0.0.0",
-    "@tenantlens/graph": "0.0.0",
+    "@prism365/contracts": "0.0.0",
+    "@prism365/graph": "0.0.0",
     "fastify": "5.12.7"
   }
 }

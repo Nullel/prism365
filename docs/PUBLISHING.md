@@ -10,7 +10,7 @@ request can read it. Do not skip that verification.
 - [ ] Run `npm run check` and `npm run build` from a clean checkout.
 - [ ] Confirm fixtures and screenshots are synthetic and no secret scanner reports findings.
 - [ ] Confirm the authenticated GitHub login is exactly `nlj3`.
-- [ ] Confirm `https://github.com/nlj3/tenantlens` is still available.
+- [ ] Confirm `https://github.com/nlj3/prism365` is still available.
 
 The current machine's GitHub CLI token was invalid when the scaffold was created. The owner
 must reauthenticate interactively:
@@ -23,7 +23,7 @@ gh api user --jq .login
 Only if the second command prints `nlj3`, create the public repository:
 
 ```bash
-gh repo create nlj3/tenantlens \
+gh repo create nlj3/prism365 \
   --public \
   --source=. \
   --remote=origin \
@@ -51,7 +51,7 @@ gh repo create nlj3/tenantlens \
 
 Publishing is complete only when all are true:
 
-1. `gh repo view nlj3/tenantlens --json isPrivate,url` reports `isPrivate: false`.
-2. The returned URL is `https://github.com/nlj3/tenantlens`.
+1. `gh repo view nlj3/prism365 --json isPrivate,url` reports `isPrivate: false`.
+2. The returned URL is `https://github.com/nlj3/prism365`.
 3. An unauthenticated request can read the repository README.
 4. CI has run on `main` and the required checks are visible.

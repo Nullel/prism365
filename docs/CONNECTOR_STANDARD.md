@@ -1,6 +1,6 @@
 # Connector standard
 
-Every TenantLens connector must ship a versioned manifest and a narrow adapter. The manifest
+Every Prism365 connector must ship a versioned manifest and a narrow adapter. The manifest
 is both product documentation and an enforceable contract.
 
 ## Required manifest fields

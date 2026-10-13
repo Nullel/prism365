@@ -1,6 +1,6 @@
-# TenantLens
+# Prism365
 
-TenantLens is a community-built, privacy-conscious Microsoft 365 administration,
+Prism365 is a community-built, privacy-conscious Microsoft 365 administration,
 reporting, and auditing platform. It is an independent project: it is not affiliated
 with, endorsed by, or derived from AdminDroid or Microsoft.
 
@@ -11,7 +11,7 @@ with, endorsed by, or derived from AdminDroid or Microsoft.
 ## Why this exists
 
 Microsoft 365 administrators should be able to understand tenant health without buying
-an opaque reporting suite or granting a tool more access than it needs. TenantLens aims
+an opaque reporting suite or granting a tool more access than it needs. Prism365 aims
 to provide:
 
 - fast, accessible reporting for identity, audit, usage, and service health;
@@ -21,7 +21,7 @@ to provide:
 - safe administration workflows with preview, approval, and rollback where possible;
 - a contributor experience that works well for humans and AI agents.
 
-TenantLens does **not** treat activity logs, presence, message counts, or other telemetry
+Prism365 does **not** treat activity logs, presence, message counts, or other telemetry
 as proof of employee productivity or performance. Audit data is operational and security
 evidence with known gaps—not a worker-scoring system.
 
@@ -156,7 +156,7 @@ client secrets, directory object identifiers, or audit records in an issue. Foll
 
 ## License and trademarks
 
-TenantLens is licensed under the [Apache License 2.0](LICENSE). Apache-2.0 is permissive
+Prism365 is licensed under the [Apache License 2.0](LICENSE). Apache-2.0 is permissive
 and includes an explicit patent license, which is useful for a broad contributor base.
 
 “Microsoft,” “Microsoft 365,” “Entra,” “Graph,” and “Purview” are trademarks of

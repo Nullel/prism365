@@ -23,7 +23,7 @@ navigation, previews, and clear diffs reduce effort without removing accountabil
 
 ## Progressive capability
 
-TenantLens should remain useful when a tenant declines an optional permission. Enable
+Prism365 should remain useful when a tenant declines an optional permission. Enable
 features independently and report missing capability precisely.
 
 ## Transparent operations

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-TenantLens is pre-alpha. Only the latest commit on the default branch will receive fixes.
+Prism365 is pre-alpha. Only the latest commit on the default branch will receive fixes.
 Do not connect this scaffold to a production tenant.
 
 ## Reporting a vulnerability

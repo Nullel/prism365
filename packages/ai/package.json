@@ -1,5 +1,5 @@
 {
-  "name": "@tenantlens/ai",
+  "name": "@prism365/ai",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@tenantlens/contracts": "0.0.0",
-    "@tenantlens/policy": "0.0.0"
+    "@prism365/contracts": "0.0.0",
+    "@prism365/policy": "0.0.0"
   }
 }

@@ -9,8 +9,8 @@ import {
   type AiProviderDeployment,
   type AiProviderResult,
   aiProviderResultSchema,
-} from "@tenantlens/contracts";
-import { containsUnsupportedWorkforceClaim } from "@tenantlens/policy";
+} from "@prism365/contracts";
+import { containsUnsupportedWorkforceClaim } from "@prism365/policy";
 
 export const AI_SYSTEM_POLICY = [
   "You are a read-only Microsoft 365 administration analyst.",

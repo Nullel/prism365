@@ -191,7 +191,7 @@ export const permissionPacks = [
     phase: "mvp",
     defaultEnabled: false,
     purpose: "Respect whether the tenant conceals names in Microsoft 365 usage reports.",
-    deniedBehavior: "TenantLens assumes identifiers must remain concealed.",
+    deniedBehavior: "Prism365 assumes identifiers must remain concealed.",
     clouds: ["worldwide", "gcc"],
     prerequisites: ["reports.usage.read"],
     roleNotes: "Delegated callers require a supported role.",

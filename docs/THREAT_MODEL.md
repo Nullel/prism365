@@ -14,7 +14,7 @@ deployment, or write actions.
 
 ## Trust boundaries
 
-- Browser to TenantLens API.
+- Browser to Prism365 API.
 - API/worker to Microsoft identity, Graph, and Purview.
 - AI gateway to local, tenant-hosted, or external model providers.
 - API/worker to database, queue, cache, and object storage.

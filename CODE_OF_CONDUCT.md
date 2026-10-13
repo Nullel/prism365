@@ -1,6 +1,6 @@
 # Community code of conduct
 
-TenantLens contributors must help maintain a welcoming, harassment-free community.
+Prism365 contributors must help maintain a welcoming, harassment-free community.
 Participate with empathy, give actionable feedback, respect privacy, and assume good faith
 while still holding security-sensitive work to a high standard.
 

@@ -1,4 +1,4 @@
-import { dashboardSummarySchema, type DashboardSummary, type Metric } from "@tenantlens/contracts";
+import { dashboardSummarySchema, type DashboardSummary, type Metric } from "@prism365/contracts";
 import { useEffect, useId, useState } from "react";
 import {
   ActivityIcon,
@@ -234,11 +234,11 @@ export function App() {
         Skip to main content
       </a>
       <aside className="sidebar" aria-label="Primary navigation">
-        <a className="brand" href="#main-content" aria-label="TenantLens home">
+        <a className="brand" href="#main-content" aria-label="Prism365 home">
           <span className="brand__mark">
             <span />
           </span>
-          <span>TenantLens</span>
+          <span>Prism365</span>
         </a>
 
         <button
@@ -313,7 +313,7 @@ export function App() {
             <span className="brand__mark">
               <span />
             </span>
-            TenantLens
+            Prism365
           </div>
           <button
             className="search"
@@ -544,7 +544,7 @@ export function App() {
           </div>
 
           <footer className="page-footer">
-            <span>TenantLens pre-alpha · built in the open</span>
+            <span>Prism365 pre-alpha · built in the open</span>
             <span>Demo mode · writes disabled · no tenant data stored</span>
           </footer>
         </div>

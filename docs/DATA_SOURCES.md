@@ -1,6 +1,6 @@
 # Data-source strategy
 
-TenantLens is a federation of explicit connectors, not a screen scraper and not a single
+Prism365 is a federation of explicit connectors, not a screen scraper and not a single
 oversized Microsoft Graph application. Every connector must declare its API, permissions,
 tenant prerequisites, supported clouds, data sensitivity, retention, and failure states.
 
@@ -35,9 +35,9 @@ with broader access.
 
 ## Open-source projects we can learn from
 
-| Project | Useful contribution to TenantLens | License and integration approach |
+| Project | Useful contribution to Prism365 | License and integration approach |
 |---|---|---|
-| [CISA ScubaGear](https://github.com/cisagov/ScubaGear) | Machine-testable Microsoft 365 security-baseline ideas and evidence-oriented assessment patterns | CC0-1.0. Consume versioned public baselines with source/version provenance; do not present CISA guidance as a TenantLens guarantee |
+| [CISA ScubaGear](https://github.com/cisagov/ScubaGear) | Machine-testable Microsoft 365 security-baseline ideas and evidence-oriented assessment patterns | CC0-1.0. Consume versioned public baselines with source/version provenance; do not present CISA guidance as a Prism365 guarantee |
 | [Maester](https://github.com/maester365/maester) | Extensible Microsoft 365 security tests and result-export patterns | MIT. Prefer an optional import/adapter or independently implemented compatible evidence schema |
 | [Microsoft365DSC](https://github.com/Microsoft365DSC/Microsoft365DSC) | Configuration extraction, drift concepts, and broad workload coverage | MIT. Treat exported snapshots as an optional source; do not make PowerShell a requirement for the core UI |
 

@@ -42,14 +42,14 @@ This table groups the intended scope for review.
 `AuditLog.Read.All` is the documented least-privileged permission for listing sign-ins, and
 `Reports.Read.All` is required for Office 365 usage reports. Delegated sign-in access also
 depends on the signed-in user's Entra role. Conditional Access details require additional
-policy-reading permission; TenantLens must show those details as unavailable rather than
+policy-reading permission; Prism365 must show those details as unavailable rather than
 requesting them silently.
 
 Purview Audit Search is distinct from Entra directory audits. The query API has
-workload-specific permissions and a broad `AuditLogsQuery.Read.All`; TenantLens starts with
+workload-specific permissions and a broad `AuditLogsQuery.Read.All`; Prism365 starts with
 the narrower Entra workload permission and does not request the broad permission by default.
 
-Having the API permission is not, by itself, proof that a feature can run. TenantLens also
+Having the API permission is not, by itself, proof that a feature can run. Prism365 also
 checks the signed-in user or service principal role, product license, tenant configuration,
 endpoint/cloud availability, and provider health. See [Compatibility](COMPATIBILITY.md).
 

@@ -1,7 +1,7 @@
 # Tenant and account compatibility
 
 The compatibility goal is precise: any supported Microsoft Entra work or school tenant can
-self-host TenantLens and enable the features for which it has the required cloud support,
+self-host Prism365 and enable the features for which it has the required cloud support,
 administrator consent, calling-identity role, product license, and tenant configuration.
 
 It does **not** mean that one permission makes every feature work in every Microsoft cloud.
@@ -59,7 +59,7 @@ The API and UI use explicit states rather than a generic “access denied”:
 | `missingLicense` | Tenant lacks the required product entitlement | Name the dependency; do not upsell or infer data |
 | `unsupportedCloud` | Microsoft does not expose the endpoint in this cloud | Disable only this feature |
 | `notEnabled` | Required tenant service, audit, or subscription is off | Show the tenant-side prerequisite |
-| `notImplemented` | TenantLens has not shipped the adapter | Never imply a tenant problem |
+| `notImplemented` | Prism365 has not shipped the adapter | Never imply a tenant problem |
 | `providerUnavailable` | Microsoft is throttling, degraded, or unreachable | Preserve stale data with freshness warning where safe |
 | `unknown` | Readiness could not be established | Default to unavailable and explain the missing check |
 

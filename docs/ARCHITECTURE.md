@@ -2,7 +2,7 @@
 
 ## Design goals
 
-TenantLens is a multi-tenant administrative system handling privileged organizational
+Prism365 is a multi-tenant administrative system handling privileged organizational
 metadata. Its architecture favors isolation, explainability, and failure containment over
 connector count or ingestion speed.
 
@@ -49,7 +49,7 @@ separate security boundaries even when they expose overlapping records.
 ## Request and ingestion flow
 
 1. An administrator signs in through Microsoft identity.
-2. The API maps the issuer and tenant claims to a TenantLens organization and local role.
+2. The API maps the issuer and tenant claims to a Prism365 organization and local role.
 3. The permission service exposes only enabled features whose required consent exists.
 4. A scheduled job requests a short-lived access token from the tenant credential broker.
 5. The connector calls a documented `/v1.0` endpoint through `packages/graph`.
