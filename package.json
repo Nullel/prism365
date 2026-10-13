@@ -1,0 +1,34 @@
+{
+  "name": "tenantlens",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Open-source Microsoft 365 administration, reporting, and auditing platform",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24",
+    "npm": ">=11"
+  },
+  "packageManager": "npm@11.19.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
+    "dev:api": "npm run dev --workspace @tenantlens/api",
+    "dev:web": "npm run dev --workspace @tenantlens/web",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "test": "vitest run",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "26.6.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4"
+  }
+}

@@ -1,0 +1,47 @@
+name: Feature proposal
+description: Propose one user outcome with explicit permission and privacy impact.
+title: "feat: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Administrator problem
+      description: What decision or task is difficult today? Avoid prescribing a solution first.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome and non-goals
+    validations:
+      required: true
+  - type: textarea
+    id: permission
+    attributes:
+      label: Microsoft permissions and endpoints
+      description: List exact permissions/endpoints, or state none. Link current Microsoft Learn pages.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Data, retention, and privacy impact
+      description: Fields, purpose, viewers, storage duration, deletion, and safer alternatives.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance checks
+    validations:
+      required: true
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Product principles
+      options:
+        - label: This does not rank or infer employee productivity/performance from activity.
+          required: true
+        - label: This can degrade gracefully if optional consent is denied.
+          required: true

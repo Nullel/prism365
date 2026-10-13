@@ -1,0 +1,81 @@
+import { dashboardSummarySchema } from "@tenantlens/contracts";
+
+export const demoDashboard = dashboardSummarySchema.parse({
+  mode: "demo",
+  generatedAt: "2026-10-13T17:00:00.000Z",
+  timeWindow: "Synthetic 7-day view",
+  state: "demo",
+  metrics: [
+    {
+      id: "secure-sign-ins",
+      label: "Protected sign-ins",
+      value: 98.7,
+      displayValue: "98.7%",
+      state: "demo",
+      trend: { direction: "up", value: 1.8, label: "vs prior window", sentiment: "positive" },
+    },
+    {
+      id: "risky-events",
+      label: "Events to review",
+      value: 12,
+      displayValue: "12",
+      state: "demo",
+      trend: { direction: "down", value: 4, label: "vs prior window", sentiment: "positive" },
+    },
+    {
+      id: "guest-accounts",
+      label: "Guest accounts",
+      value: 184,
+      displayValue: "184",
+      state: "demo",
+      trend: { direction: "up", value: 7, label: "new this window", sentiment: "neutral" },
+    },
+    {
+      id: "coverage",
+      label: "Connected coverage",
+      value: 3,
+      displayValue: "3 / 5",
+      state: "demo",
+      trend: { direction: "flat", value: 0, label: "permission packs", sentiment: "neutral" },
+    },
+  ],
+  signInTrend: [
+    { label: "Mon", safe: 3860, review: 92, elevated: 24 },
+    { label: "Tue", safe: 4230, review: 104, elevated: 31 },
+    { label: "Wed", safe: 4510, review: 86, elevated: 18 },
+    { label: "Thu", safe: 4190, review: 73, elevated: 16 },
+    { label: "Fri", safe: 3980, review: 96, elevated: 21 },
+    { label: "Sat", safe: 1520, review: 38, elevated: 9 },
+    { label: "Sun", safe: 1310, review: 29, elevated: 7 },
+  ],
+  recentActivity: [
+    {
+      id: "activity-1",
+      title: "Legacy authentication observed",
+      detail: "Two synthetic sign-ins used a legacy client. Review the affected protocol policy.",
+      category: "identity",
+      severity: "high",
+      observedAt: "2026-10-13T16:42:00.000Z",
+      evidence: "Demo sign-in events · selected 7-day window",
+    },
+    {
+      id: "activity-2",
+      title: "External sharing policy changed",
+      detail:
+        "A synthetic SharePoint policy moved from existing guests to new and existing guests.",
+      category: "sharing",
+      severity: "medium",
+      observedAt: "2026-10-13T14:18:00.000Z",
+      evidence: "Demo directory audit · synthetic actor",
+    },
+    {
+      id: "activity-3",
+      title: "Consent inventory is incomplete",
+      detail: "Two optional permission packs are not enabled, so affected reports remain hidden.",
+      category: "system",
+      severity: "info",
+      observedAt: "2026-10-13T12:06:00.000Z",
+      evidence: "Demo connector state · no tenant connected",
+    },
+  ],
+});

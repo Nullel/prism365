@@ -1,0 +1,55 @@
+name: Microsoft integration proposal
+description: Propose a Graph, Purview, or Microsoft 365 integration boundary.
+title: "integration: "
+labels: [integration, security-review, triage]
+body:
+  - type: input
+    id: workload
+    attributes:
+      label: Workload and API version
+      placeholder: Microsoft Graph v1.0 — signIns
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: Primary documentation
+      description: Link endpoint, permission, throttling, licensing, and availability documentation.
+    validations:
+      required: true
+  - type: textarea
+    id: permissions
+    attributes:
+      label: Least-privileged permission plan
+      description: Delegated/application mode, roles, admin consent, optional behavior, and alternatives.
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data lifecycle
+      description: Fields, validation, normalization, storage, retention, deletion, export, and logging.
+    validations:
+      required: true
+  - type: textarea
+    id: reliability
+    attributes:
+      label: Reliability behavior
+      description: Pagination/delta, throttling, retry, partial results, expiry, and reconciliation.
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Synthetic test plan
+    validations:
+      required: true
+  - type: checkboxes
+    id: review
+    attributes:
+      label: Review gates
+      options:
+        - label: I will update docs/PERMISSIONS.md and the threat model.
+          required: true
+        - label: No production tenant data will enter fixtures or logs.
+          required: true

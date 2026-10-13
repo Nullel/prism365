@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible defect using synthetic or fully redacted information.
+title: "bug: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Never include tokens, tenant IDs, UPNs, IP addresses, audit records, or customer data.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What happened?
+      description: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal steps using demo or synthetic data.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: data
+    attributes:
+      label: Data used
+      options:
+        - Built-in demo data
+        - Fully synthetic data
+        - Fully redacted description only
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets, personal data, tenant identifiers, and customer records.
+          required: true
+        - label: This is not a vulnerability report; I read SECURITY.md.
+          required: true

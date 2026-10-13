@@ -1,0 +1,9 @@
+# Replace or expand ownership as the maintainer group grows.
+* @nlj3
+
+# Sensitive boundaries always require owner review.
+/packages/graph/ @nlj3
+/packages/policy/ @nlj3
+/docs/PERMISSIONS.md @nlj3
+/docs/THREAT_MODEL.md @nlj3
+/.github/ @nlj3
