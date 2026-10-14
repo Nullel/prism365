@@ -27,6 +27,7 @@ This table groups the intended scope for review.
 |---|---|---|---|---|
 | `profile`, `directory.users.read` | Graph | `User.Read`, `User.Read.All` | MVP | Work/school tenant; delegated access is bounded by the user's privileges |
 | `tenant.licenses.read` | Graph | `LicenseAssignment.Read.All` | MVP | Delegated caller needs an allowed directory role |
+| `user.licenses.read` | Graph | `LicenseAssignment.Read.All` | Pilot implemented | `/users/{id}/licenseDetails` supports delegated access only, plus an allowed Entra role |
 | `service.health.read` | Graph | `ServiceHealth.Read.All` | MVP | Service health available for tenant services |
 | `audit.signins.read` | Graph | `AuditLog.Read.All` | MVP | Delegated caller needs an allowed role; license affects fields/retention |
 | `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Usage-report availability and privacy setting; global/GCC target only |
@@ -50,8 +51,11 @@ workload-specific permissions and a broad `AuditLogsQuery.Read.All`; Prism365 st
 the narrower Entra workload permission and does not request the broad permission by default.
 
 Having the API permission is not, by itself, proof that a feature can run. Prism365 also
-checks the signed-in user or service principal role, product license, tenant configuration,
-endpoint/cloud availability, and provider health. See [Compatibility](COMPATIBILITY.md).
+needs the signed-in user or service principal role, product license, tenant configuration,
+endpoint/cloud availability, and provider health. The pilot validates configured cloud, actor,
+and granted scopes, then reports source-specific failures; it does not yet implement exhaustive
+role/license/service probes. A provider 403 is classified as uncertain, not automatically missing
+consent. See [Compatibility](COMPATIBILITY.md).
 
 ## Not approved for the MVP
 
@@ -60,6 +64,27 @@ endpoint/cloud availability, and provider health. See [Compatibility](COMPATIBIL
 - Mail, chat, channel-message, file-content, calendar-content, or presence permissions.
 - Broad Purview `AuditLogsQuery.Read.All` without a reviewed feature case.
 - A permission added only because it makes an implementation simpler.
+
+## Future lifecycle action packs — disabled
+
+The preview contracts name these permissions so an administrator can understand the eventual
+impact. They are not requested by the current app, are not present in the executable read catalog,
+and cannot be used because no execution route or write identity exists.
+
+| Capability | Candidate least permission / authorization | Constraint before approval |
+|---|---|---|
+| Create a user | `User.Create` | Approved property template; separate write identity |
+| Disable or enable a user | `User.EnableDisableAccount.All` + `User.Read.All` | Entra role and target-role checks; protected accounts blocked |
+| Revoke sessions | `User.RevokeSessions.All` | Eventual propagation; external-user limitation disclosed |
+| Assign or remove licenses | `LicenseAssignment.ReadWrite.All` | Capacity, dependency, and retention preview |
+| Add or remove static group members | `GroupMember.ReadWrite.All` | Dynamic and role-assignable groups excluded by default |
+| Mailbox handoff | Resource-scoped Exchange Online RBAC | Separate connector/identity; recipient and resource scope |
+| File/data handoff | Workload-specific resource authorization | Ownership, sharing, retention, hold, and region policy |
+
+Prism365 will not replace these packs with `Directory.ReadWrite.All`. Authentication-method
+deletion, user deletion, role assignment, dynamic-group mutation, and legal-hold changes require
+separate designs and are not part of the initial lifecycle runbooks. See
+[Lifecycle automation](AUTOMATION.md).
 
 ## Endpoint constraints
 
@@ -91,3 +116,9 @@ endpoint/cloud availability, and provider health. See [Compatibility](COMPATIBIL
 - [List Secure Scores](https://learn.microsoft.com/en-us/graph/api/security-list-securescores?view=graph-rest-1.0)
 - [List Defender incidents](https://learn.microsoft.com/en-us/graph/api/security-list-incidents?view=graph-rest-1.0)
 - [List Intune managed devices](https://learn.microsoft.com/en-us/graph/api/intune-devices-manageddevice-list?view=graph-rest-1.0)
+- [Create user](https://learn.microsoft.com/en-us/graph/api/user-post-users?view=graph-rest-1.0)
+- [Update user](https://learn.microsoft.com/en-us/graph/api/user-update?view=graph-rest-1.0)
+- [Revoke sign-in sessions](https://learn.microsoft.com/en-us/graph/api/user-revokesigninsessions?view=graph-rest-1.0)
+- [Assign license](https://learn.microsoft.com/en-us/graph/api/user-assignlicense?view=graph-rest-1.0)
+- [Add group member](https://learn.microsoft.com/en-us/graph/api/group-post-members?view=graph-rest-1.0)
+- [Exchange Online application RBAC](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac)

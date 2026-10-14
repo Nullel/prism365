@@ -49,7 +49,9 @@ API such as Exchange can additionally require provider-specific RBAC.
 
 ## Capability states
 
-The API and UI use explicit states rather than a generic “access denied”:
+The contracts define explicit states rather than a generic “access denied”. The pilot implements
+scope checks and source-specific uncertainty/failure states; exhaustive readiness probes remain
+future work:
 
 | State | Meaning | UI behavior |
 |---|---|---|
@@ -96,7 +98,8 @@ pass against a non-production tenant for that cloud. The matrix must include:
 
 Until this matrix has real-tenant evidence, the repository must say “targeted” or “planned,”
 not “works in every tenant.” The current code contains cloud profiles and safety boundaries,
-but production tenant authentication is not implemented yet.
+and the Worldwide single-tenant delegated authentication pilot is implemented. Live cloud/tenant
+acceptance is still pending, so these profiles are not a universal support claim.
 
 ## Primary references
 

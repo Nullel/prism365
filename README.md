@@ -4,9 +4,9 @@ Prism365 is a community-built, privacy-conscious Microsoft 365 administration,
 reporting, and auditing platform. It is an independent project: it is not affiliated
 with, endorsed by, or derived from AdminDroid or Microsoft.
 
-> **Status: pre-alpha.** The current repository is a runnable product shell with demo
-> data, architecture boundaries, safety policy, and contribution workflow. It does not
-> yet connect to a production Microsoft 365 tenant.
+> **Status: pre-alpha pilot.** User investigation, server-side Microsoft sign-in, local AI,
+> and private script import are implemented. Live Microsoft tenant acceptance is still required;
+> production support and tenant write actions are not yet available. Demo mode is the default.
 
 ## Why this exists
 
@@ -27,17 +27,27 @@ evidence with known gaps—not a worker-scoring system.
 
 ## What runs today
 
-- A polished responsive dashboard populated with clearly labelled demo data.
-- A small Fastify API with health, dashboard, capability, and permission-catalog routes.
+- A responsive user investigation view, synthetic overview, and lifecycle preview.
+- A Fastify API with session/consent, investigation, AI grant/analysis, and private package routes.
+- Server-side MSAL authorization-code sign-in with PKCE, one-use state, nonce, verified ID tokens,
+  an operator allowlist, HttpOnly sessions, Origin/CSRF protection, and rate limits.
+- A real delegated adapter for selected user profile fields, license details, and up to 100
+  sign-ins from a seven-day window. Optional sources fail independently with visible coverage.
 - Shared runtime contracts using Zod.
 - A Microsoft Graph HTTP boundary with host allowlisting, read-only-by-default behavior,
   pagination, `Retry-After` handling, and code-owned global/GCC/GCC High/DoD/China profiles.
 - A machine-readable source and permission catalog that records cloud, role, license, and
   tenant-service prerequisites for each feature.
 - A policy package that blocks unsupported productivity claims and classifies findings.
-- A provider-neutral AI analysis broker with explicit dataset grants, tenant-bound evidence,
-  identifier/raw-record gates, citation validation, no write tools, and a disabled-by-default
-  loopback Ollama adapter. No provider is configured in the demo.
+- A provider-neutral AI broker with trusted expiring grants, current actor authorization,
+  bounded minimized evidence, supplied citations, and access-attempt/completion/failure records.
+  An optional loopback Ollama integration analyzes directory/license/sign-in evidence.
+- A preview-only lifecycle automation scaffold with reviewed onboarding/offboarding runbooks,
+  a synthetic sample package, exact step/permission/recovery plans, and a private JSON script-import
+  library with SHA256 content identity. Actual script execution remains unavailable.
+- Encrypted PostgreSQL state, forced tenant row policies, a restricted runtime role, expiry cleanup,
+  and an append-only application access ledger. Memory mode is limited to development.
+- A non-root self-host container and optional PostgreSQL/local-model Compose profiles.
 - Automated formatting, tests, type checks, builds, dependency updates, and CodeQL.
 
 ## Quick start
@@ -56,6 +66,9 @@ npm run dev:web
 ```
 
 Open `http://localhost:5173`. The API listens only on `127.0.0.1:8787` by default.
+See [Setup and pilot acceptance](docs/SETUP.md) to connect a non-production tenant, configure
+durable storage, or run the self-host container. The core stack is React/Vite and Fastify;
+there is no framework migration requirement to contribute.
 
 Useful checks:
 
@@ -87,8 +100,9 @@ permission bundle.
 
 See [Data sources](docs/DATA_SOURCES.md), [Compatibility](docs/COMPATIBILITY.md),
 [Deployment requirements](docs/REQUIREMENTS.md), [Roadmap](docs/ROADMAP.md),
-[Permissions](docs/PERMISSIONS.md), [AI integration](docs/AI_INTEGRATION.md), and
-[Privacy principles](docs/PRIVACY.md) before proposing a connector or report.
+[Permissions](docs/PERMISSIONS.md), [AI integration](docs/AI_INTEGRATION.md),
+[Lifecycle automation](docs/AUTOMATION.md), and [Privacy principles](docs/PRIVACY.md) before
+proposing a connector, report, or runbook.
 
 ## Architecture at a glance
 
@@ -111,12 +125,16 @@ flowchart LR
   AI --> Store
   AI --> Model[Selected local or hosted model]
   AI --> Ledger
+  API -. future approved plan .-> Runner[Isolated automation worker]
+  Runner -. capability grant .-> M365
+  Runner --> Ledger
   API --> Ledger[(Immutable action ledger)]
 ```
 
 The current scaffold implements the browser, API contract, policy core, safe Graph boundary,
-and provider-neutral AI analysis boundary. Durable jobs, tenant-isolated persistence, a real
-evidence reader, and provider adapters arrive after the connection flow.
+server-side identity, user investigation, encrypted state, governed local AI, and private script
+imports. Scheduled ingestion, tenant-wide reporting, raw audit storage, additional AI providers,
+and an isolated automation runner remain later milestones.
 See [Architecture](docs/ARCHITECTURE.md) for the target design.
 
 ## Permission philosophy

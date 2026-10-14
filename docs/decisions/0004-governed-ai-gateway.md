@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-10-13
 - Owners: maintainers
+- Implementation update: 2026-10-14
 
 ## Context
 
@@ -18,16 +19,34 @@ one vendor SDK part of the domain model.
 
 - Put all model calls behind a provider-neutral `AiAnalysisBroker`.
 - Authorize an exact, expiring tenant/provider/purpose/dataset grant on every analysis.
+- Resolve grants from trusted tenant/actor-scoped storage and recheck authenticated actor access
+  and revocation immediately before disclosure; browser-submitted grants are not authority.
 - Represent “all data” as the explicit list of current dataset IDs, never a future-expanding
   wildcard.
 - Retrieve bounded tenant-scoped evidence through an application-owned reader; never give the
   model Graph tokens, SQL, database credentials, or direct connector access.
-- Omit direct identifiers and reject raw records unless separately authorized.
+- Omit direct identifiers by default and reduce evidence to dataset-specific reviewed scalar
+  fields; omit arbitrary source/limitation text and retain structural coverage flags.
+- Use opaque model citation IDs with a mapping back to authorized application evidence.
 - Require structured answers with supplied evidence citations and limitations.
 - Treat questions, evidence, and model responses as untrusted; enforce deterministic output
   policies outside the model.
 - Provide no write tools or autonomous administrative authority.
-- Record non-content access metadata in an AI audit ledger.
+- Persist non-content authorized-attempt metadata before evidence-reader access and disclosure;
+  record completion or failure, and fail closed if the initial durable append is unavailable.
+
+## Implemented pilot
+
+The authenticated API and UI support expiring/revocable grants for directory, license and sign-in
+investigation snapshots. The grant permits seven days and 102 records, expires after one hour,
+and disallows direct identifiers, raw records and external processing. Optional local inference
+requires `AI_LOCAL_MODEL` and encrypted PostgreSQL state. The Ollama adapter rejects redirects,
+caps streamed response bytes, propagates cancellation and verifies the configured model name.
+
+The initial live-auth integration has not been verified against a real authorized tenant/provider.
+It does not implement durable report ingestion or broader provider adapters. Question redaction is
+heuristic and can leave unknown operator-typed personal names; local execution is not a guarantee
+against sensitive-data disclosure. See [AI integration](../AI_INTEGRATION.md) for current limits.
 
 ## Consequences
 

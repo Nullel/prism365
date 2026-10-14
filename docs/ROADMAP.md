@@ -3,6 +3,15 @@
 Dates are intentionally omitted until maintainers know contributor capacity. Milestones are
 outcome gates, not feature promises.
 
+## Implemented pilot slice
+
+Single-tenant server-side delegated sign-in, user profile/license/sign-in investigations, encrypted
+PostgreSQL control state/access ledger, local AI dataset grants/analysis, immutable private script
+imports, and a self-host container are implemented. They have synthetic security/interface tests
+and database/container CI checks. Live Microsoft tenant and model acceptance remain pending.
+Scheduled ingestion, full reporting, Purview, additional cloud/provider support, and script execution
+are not implied by this slice. See [Setup](SETUP.md).
+
 ## Milestone 0 — trustworthy foundation
 
 Goal: a contributor can run, understand, test, and safely extend the project.
@@ -12,6 +21,7 @@ Goal: a contributor can run, understand, test, and safely extend the project.
 - [x] Shared contracts, Graph boundary, permission catalog, and policy tests.
 - [x] Source inventory, Microsoft-cloud profiles, and compatibility contract.
 - [x] Provider-neutral AI broker, access-grant contract, and synthetic isolation/policy tests.
+- [x] Preview-only lifecycle runbook contracts, synthetic UI, and isolated-runner design.
 - [x] CI, dependency updates, CodeQL, issue forms, and security policy.
 - [ ] Publish the repository after owner authentication and settings review.
 - [ ] Enable branch protection, private vulnerability reporting, secret scanning, and
@@ -106,6 +116,10 @@ Goal: introduce a very small number of reversible or recoverable actions safely.
 
 - Separate write application identity and permission review.
 - Dry-run diff, policy engine, step-up confirmation, idempotency, ledger, reconciliation.
+- Immutable package import, signature/digest review, and tenant/capability approval binding.
+- Ephemeral isolated PowerShell 7 worker with denied egress and a capability-broker mode.
+- Onboarding/offboarding protected-account rules, second approval, partial-failure recovery,
+  emergency kill switch, and test-tenant destructive-action suite.
 - First action selected through a threat-model and user-research issue.
 - Break-glass disable switch and incident runbook.
 
@@ -135,3 +149,16 @@ Exit: independent security review and no broad “manage everything” permissio
 | Define finding/evidence schema | domain/security | facts separated from inference; rule version and limitations |
 | Create self-host deployment threat model | platform/security | secrets, updates, backup, restore, ingress, health checks |
 | Implement first local AI provider adapter | AI/security | provider manifest, no action tools, bounded evidence, citations, injection tests |
+
+## Next scoped issues
+
+| Issue | Owner type | Acceptance summary |
+|---|---|---|
+| Run Worldwide test-tenant pilot | identity/connector | actual app registration, consent/role denial, login/logout/revocation, user lookup and partial evidence checks |
+| Add complete readiness probes | identity/platform | distinguish proven consent, role, license, service and cloud prerequisites without broad convenience permissions |
+| Implement resumable report ingestion | data/platform | tenant-scoped queue/cursors, retries/deferred throttles, restart recovery, retention/deletion and source coverage |
+| Add tenant license/service-health reporting | connector/frontend | narrow opt-in adapters, clear source states and accessible report views |
+| Verify local model pilot | AI/security | model identity/citations/coverage, no identifiers/raw disclosure, grants/revocation/cancellation/audit failure |
+| Design first native write action | automation/security | dedicated write identity, exact before/after preview, second approval, protected target checks, idempotency, recovery |
+| Implement isolated script worker | automation/platform | reviewed immutable digest, capability broker, runtime bounds, denied egress, action ledger and reconciliation |
+| Complete stable-release operations | platform/security | image digests, backup/restore, encryption-key rotation, audit retention/deletion, SBOM/release signing and external review |

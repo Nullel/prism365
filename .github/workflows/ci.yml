@@ -16,6 +16,23 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: prism365_ci
+          POSTGRES_USER: postgres
+          # Public fixture password for this disposable service, never a production secret.
+          POSTGRES_PASSWORD: prism365_ci_synthetic_password_12345
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d prism365_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_ADMIN_URL: postgresql://postgres:prism365_ci_synthetic_password_12345@127.0.0.1:5432/prism365_ci
     steps:
       - name: Check out source
         uses: actions/checkout@v5
@@ -30,3 +47,5 @@ jobs:
         run: npm run check
       - name: Build applications and packages
         run: npm run build
+      - name: Build self-host container image
+        run: docker build --tag prism365:ci .

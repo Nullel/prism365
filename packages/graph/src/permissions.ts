@@ -74,6 +74,28 @@ export const permissionPacks = [
     documentationLastVerified: "2026-10-13",
   },
   {
+    id: "user.licenses.read",
+    label: "User license details",
+    source: "microsoftGraph",
+    permission: "LicenseAssignment.Read.All",
+    mode: "delegated",
+    phase: "mvp",
+    defaultEnabled: false,
+    purpose:
+      "Read assigned product licenses and service-plan provisioning for one investigated user.",
+    deniedBehavior:
+      "User license details are unavailable; profile and sign-in sections remain independent.",
+    clouds: allGraphClouds,
+    prerequisites: ["Delegated administrator session"],
+    roleNotes:
+      "Directory Readers, Guest Inviter, License Administrator, User Administrator, or an appropriate custom role is required.",
+    licenseNotes:
+      "This endpoint does not support application permissions; returned details include direct and group assignments.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/user-list-licensedetails?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-13",
+  },
+  {
     id: "tenant.licenses.read",
     label: "Tenant license inventory",
     source: "microsoftGraph",

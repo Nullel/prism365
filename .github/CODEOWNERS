@@ -4,6 +4,11 @@
 # Sensitive boundaries always require owner review.
 /packages/graph/ @nlj3
 /packages/policy/ @nlj3
+/packages/ai/ @nlj3
+/packages/automation/ @nlj3
+/packages/storage/ @nlj3
+/apps/api/src/identity.ts @nlj3
+/apps/api/src/config.ts @nlj3
 /docs/PERMISSIONS.md @nlj3
 /docs/THREAT_MODEL.md @nlj3
 /.github/ @nlj3

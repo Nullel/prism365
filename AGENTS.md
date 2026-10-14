@@ -36,6 +36,7 @@ feature-count parity with a commercial product.
    architecture decision records. Connector work also requires `docs/DATA_SOURCES.md`,
    `docs/COMPATIBILITY.md`, and `docs/CONNECTOR_STANDARD.md`.
    AI work additionally requires `docs/AI_INTEGRATION.md` and ADR-0004.
+   Lifecycle automation work additionally requires `docs/AUTOMATION.md` and ADR-0005.
 2. Find or create a scoped issue. For local multi-agent work, claim one row in `TASKS.md`.
 3. Record the files or subsystem you own. Avoid overlapping edits; coordinate explicitly
    when overlap is unavoidable.
@@ -75,6 +76,9 @@ is a lightweight coordination aid and must not contain secrets or customer infor
 - Route model access through `packages/ai`. Require an exact tenant/provider/dataset grant,
   bounded evidence, supplied-ID citations, and output policy checks. Never call a model SDK
   directly from UI, domain, or connector code.
+- Route lifecycle plans through `packages/automation`. Never execute an imported script in the
+  API process, pass it a provider token by convenience, or expose an execute route before the
+  runner, ledger, approval, idempotency, reconciliation, and recovery controls are reviewed.
 - UI changes must work by keyboard, preserve visible focus, respect reduced motion, and meet
   WCAG 2.2 AA contrast and semantics.
 

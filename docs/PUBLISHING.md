@@ -12,8 +12,8 @@ request can read it. Do not skip that verification.
 - [ ] Confirm the authenticated GitHub login is exactly `nlj3`.
 - [ ] Confirm `https://github.com/nlj3/prism365` is still available.
 
-The current machine's GitHub CLI token was invalid when the scaffold was created. The owner
-must reauthenticate interactively:
+GitHub CLI account access was verified as `nlj3` on 2026-10-14. If access expires, authenticate
+interactively and re-verify the login before any publishing action:
 
 ```bash
 gh auth login -h github.com

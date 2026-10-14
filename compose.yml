@@ -1,0 +1,60 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8787"
+    environment:
+      DATA_MODE: ${DATA_MODE:-demo}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
+      ENTRA_ADMIN_OBJECT_IDS: ${ENTRA_ADMIN_OBJECT_IDS:-}
+      ENABLED_READ_FEATURES: ${ENABLED_READ_FEATURES:-directory.users.read}
+      ENTRA_CERTIFICATE_PATH: ${ENTRA_CERTIFICATE_PATH:-}
+      ENTRA_PRIVATE_KEY_PATH: ${ENTRA_PRIVATE_KEY_PATH:-}
+      DATABASE_URL: postgresql://prism365_app:${DATABASE_APP_PASSWORD:-}@db:5432/prism365
+      STATE_ENCRYPTION_KEY: ${STATE_ENCRYPTION_KEY:-}
+      AI_LOCAL_MODEL: ${AI_LOCAL_MODEL:-}
+    volumes:
+      - ./secrets:/run/secrets:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  db:
+    image: postgres:17
+    profiles: [live]
+    environment:
+      POSTGRES_DB: prism365
+      POSTGRES_PASSWORD: ${DATABASE_ADMIN_PASSWORD:-}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d prism365"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  migrate:
+    build: .
+    profiles: [live]
+    command: [node, packages/storage/src/migrate.ts]
+    environment:
+      DATABASE_ADMIN_URL: postgresql://postgres:${DATABASE_ADMIN_PASSWORD:-}@db:5432/prism365
+      DATABASE_APP_PASSWORD: ${DATABASE_APP_PASSWORD:-}
+    depends_on:
+      db:
+        condition: service_healthy
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [ai]
+    network_mode: service:app
+    volumes:
+      - models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  database:
+  models:

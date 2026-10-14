@@ -5,7 +5,7 @@ secrets, personal data, or customer data. Once published, link each row to a Git
 
 | ID | State | Owner | Scope / files | Dependencies | Handoff |
 |---|---|---|---|---|---|
-| TL-001 | ready | — | Entra app connection spike | ADR-0002, human test tenant | — |
+| TL-001 | review | Codex | Identity, authenticated API integration, single-tenant setup | ADR-0002, human test tenant | Implemented 2026-10-14: MSAL/PKCE/session/CSRF, encrypted state, API integration; synthetic authorization tests pass; live tenant acceptance pending; no writes |
 | TL-002 | ready | — | Synthetic user inventory adapter | TL-001 | — |
 | TL-003 | ready | — | Sign-in summary adapter | TL-001 | — |
 | TL-004 | ready | — | Usage reports adapter | TL-001 | — |
@@ -18,6 +18,12 @@ secrets, personal data, or customer data. Once published, link each row to a Git
 | TL-011 | ready | — | Service health and license inventory adapters | TL-001 | — |
 | TL-012 | ready | — | Management Activity connector design | TL-005, unified-audit test tenant | — |
 | TL-013 | done | Codex | Pluggable AI analysis boundary and policy tests | Privacy/threat-model review | Changed: contracts, `packages/ai`, policy, docs<br>Verified: 31 tests, checks, build<br>Impact: optional named-dataset disclosure; no Microsoft scope/write change<br>Risk: no production evidence reader/setup UI<br>Next: tenant-scoped reader and provider setup screen |
+| TL-014 | done | Codex | Lifecycle automation contracts, guarded preview API/UI, and runner design | Write-safety architecture review | Changed: contracts, automation package, API/UI, ADR-0005, docs<br>Verified: 37 tests, checks, build<br>Impact: synthetic preview only; no tenant writes or new consent<br>Risk: import and execution remain unavailable<br>Next: authenticated package registry, approval ledger, and isolated worker |
+| TL-015 | done | integration_review | Graph hardening and validated user investigation | TL-001 | Changed: graph, investigation contracts/tests; 28 scoped tests; no writes; next: live tenant pilot |
+| TL-016 | done | ai_automation_review | Trusted grants, audited minimized AI, bounded local transport | Authenticated API | Changed: AI broker/transport/evidence/tests/docs; 37 scoped tests; no external/raw/identifier disclosure in pilot; next: configured model acceptance |
+| TL-017 | done | ui_delivery_review | Tenant setup, investigation, AI and private import UI | API contracts | Changed: web components/styles/tests; 12 interface tests plus integrated browser checks; next: live role/consent/model acceptance |
+| TL-018 | done | ai_automation_review | Private immutable PowerShell JSON package inspection | Authenticated API and encrypted storage | Changed: registry/contracts/API/UI; digest/path/size/isolation tests; imports unreviewed, execution disabled; next: reviewed approval and isolated runner |
+| TL-019 | review | integration_review | PostgreSQL isolation and container CI verification | Disposable CI service | Six opt-in database cases added; skipped locally without PostgreSQL/Docker; verify CI before claiming runtime isolation |
 
 ## Claim format
 

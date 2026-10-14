@@ -1,6 +1,6 @@
 # ADR-0002: Microsoft identity and tenant connection model
 
-- Status: proposed
+- Status: accepted for single-tenant pilot; live acceptance pending
 - Date: 2026-10-13
 - Owners: identity/security maintainer
 - Related issue: TL-001 / Milestone 1
@@ -12,7 +12,7 @@ service may use a verified multi-tenant app. Interactive administration and back
 collection have different authorization risks. National clouds use different issuers and
 endpoints. Choosing prematurely could bake broad application permissions into every install.
 
-## Candidate decision
+## Decision
 
 For the first test-tenant milestone:
 
@@ -25,7 +25,12 @@ For the first test-tenant milestone:
 - keep tenant writes disabled and preserve a distinct future write identity;
 - support the global Microsoft cloud first and fail closed for other clouds.
 
-This is a proposal, not an implemented or accepted connection contract.
+The pilot implements a confidential server-side authorization-code client, PKCE, browser-bound
+single-use state, nonce, signed ID-token verification, encrypted server cache, explicit local
+operator allowlist, and CSRF-protected logout. Delegated packs are requested incrementally from
+the configured allowlist. Production uses customer certificates and restricted PostgreSQL state;
+local development can use an in-memory cache and a development secret. Scheduled application
+collection remains a separate future identity.
 
 ## Consequences
 

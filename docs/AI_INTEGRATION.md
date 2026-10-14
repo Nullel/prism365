@@ -1,15 +1,15 @@
 # Pluggable AI analysis
 
-Prism365 supports a replaceable, read-only AI analysis layer. A tenant may connect a local,
-tenant-hosted, or external model provider and explicitly grant it access to selected Prism365
-datasets. The model receives bounded evidence bundles, not Microsoft credentials, database
-credentials, unrestricted SQL, or direct Graph access.
+Prism365 defines a replaceable, read-only AI analysis layer. The current pilot integrates a local
+Ollama provider with an authenticated user investigation and explicit dataset grants. Tenant-hosted
+and external adapters remain future integrations. The model receives bounded evidence bundles,
+not Microsoft credentials, database credentials, unrestricted SQL, or direct Graph access.
 
 The governing decision is [ADR-0004](decisions/0004-governed-ai-gateway.md).
 
 ## What “all data” means
 
-An administrator can grant a provider every dataset that Prism365 currently knows about:
+The grant contract names datasets explicitly. Its intended catalog includes:
 
 - findings, directory metadata, licenses, and service health;
 - sign-ins and directory audits;
@@ -23,6 +23,9 @@ administrator reviews and adds it. Prism365 cannot expose data it was not author
 collect, and content such as mail bodies, chats, files, calendars, or presence is not added
 merely to make the AI broader.
 
+The current setup exposes only `directory`, `licenses`, and `signIns`, drawn from the selected
+user investigation. Other catalog entries do not imply implemented collection or UI availability.
+
 Large datasets are retrieved in bounded, relevant evidence windows rather than copied into one
 prompt. This avoids context truncation, reduces disclosure, and preserves citations and
 coverage metadata.
@@ -35,12 +38,13 @@ flowchart LR
   API --> Policy[AI access grant + local RBAC]
   Policy --> Gateway[AI analysis broker]
   Gateway --> Reader[Tenant-scoped evidence reader]
-  Reader --> Store[(Normalized tenant data)]
+  Reader --> Graph[Current Graph investigation snapshot]
   Gateway --> Redaction[Identifier/raw-record gate]
   Redaction --> Provider[Pluggable model provider]
   Provider --> Validation[Citation + output policy validation]
   Validation --> User
   Gateway --> Ledger[(AI access ledger)]
+  Policy --> State[(Encrypted grants in PostgreSQL)]
 ```
 
 The model provider has one operation: analyze structured evidence and return a structured,
@@ -56,15 +60,18 @@ use the same authorization gateway; token passthrough is forbidden.
 | Tenant-hosted | Model endpoint operated in the customer's cloud/account | Suitable when the tenant controls network, region, keys, and retention |
 | External | Third-party hosted inference API | Disabled until an administrator explicitly allows external processing for that exact provider |
 
-`@prism365/ai` defines the provider interface without requiring a vendor SDK. Provider
-credentials are injected server-side from a secret service and never appear in tenant config,
-prompts, the browser, logs, or the AI access ledger. Endpoints are operator-configured and
-allowlisted; they are not taken from a chat question or tenant record.
+`@prism365/ai` defines the provider interface without requiring a vendor SDK. The current local
+adapter uses no provider credential. Future credential-bearing adapters must inject secrets on the
+server and exclude them from prompts, browser state, logs, and the access ledger. Endpoints are
+operator-configured and allowlisted; chat questions and tenant records cannot override them.
 
 The first concrete adapter calls Ollama's local `/api/chat` endpoint. It permits only an exact
 loopback URL, requests non-streaming JSON-schema output at temperature zero, supplies no tools,
-bounds request/response size and timeout, and returns provider-controlled failures as redacted
-status errors. It is not enabled until a real tenant evidence reader and setup flow exist.
+bounds request/response size and timeout, rejects redirects, cancels stalled response reads, and
+requires the returned model name to match the configured model. Provider failures are redacted.
+Set `AI_LOCAL_MODEL` on a live server with Microsoft sign-in and encrypted PostgreSQL state to
+make this pilot available. The browser cannot select an arbitrary provider endpoint. Matching a
+model name does not establish an immutable model-artifact version.
 
 Potential adapters include Ollama-compatible local inference, Azure-hosted model endpoints,
 and hosted APIs. Each adapter needs its own reviewed data-use statement, retention behavior,
@@ -81,14 +88,37 @@ Every analysis requires a time-bounded grant containing:
 - maximum lookback period and evidence-record count;
 - approving administrator, approval time, and expiration.
 
-The administrator sees these choices before enablement. Direct identifiers are stored in a
-separate evidence field and omitted by default. Raw records are blocked by default. The broker
+The current UI lets an administrator select available datasets for a security-investigation grant.
+It fixes the window at seven days, the evidence limit at 102 records, and expiration at one hour.
+Direct identifiers, raw records, and external processing are disabled. Grants are encrypted and
+stored under the authenticated tenant and actor; a DELETE grant route revokes access.
+
+The broker accepts a server-derived actor and grant ID, loads the authoritative grant, and checks
+the current actor authorization rather than trusting a browser-submitted grant. It rechecks both
+immediately before provider disclosure. Direct identifiers occupy a separate evidence field and
+are omitted by default. Even authorized raw inputs are reduced to reviewed scalar fields; the
+current broker has no raw-body passthrough. The broker
 rejects cross-tenant records, out-of-window evidence, duplicate evidence IDs, unauthorized
 datasets, expired grants, invented citations, and prohibited workforce-performance claims.
 
-The audit ledger records metadata such as actor, provider, datasets, record count, identifier
-mode, and time. It does not record the question, evidence, answer, credentials, or prompt body
-by default.
+Dataset-specific allowlists accept reviewed numbers, booleans, and enums. Arbitrary nested JSON,
+source labels, and source limitation text are omitted. The `complete` boolean preserves license
+and sign-in coverage; false adds a deterministic capped/partial-source limitation. Empty successful
+sign-in windows are represented explicitly, while unavailable sources cannot be treated as empty
+success. Opaque model citation IDs map back to authorized application evidence IDs.
+Reviewed coverage and disclosure limitations are also appended to the displayed answer even if
+the model omits them.
+
+Questions are free text. By default, known evidence identifiers, emails, IPv4 addresses, and UUIDs
+are redacted, but unknown personal names and other sensitive operator-typed text can remain. The
+UI and provider limitations disclose this residual risk; this is not a zero-data-leak guarantee.
+
+The durable audit ledger records grant approval/revocation and correlated authorized, completed,
+or failed analysis events. The broker persists its authorized attempt before evidence-reader access
+and provider disclosure, and refuses to send evidence if that append fails. Metadata includes actor,
+provider, datasets, record count, identifier mode, and time. Questions, evidence, answers,
+credentials, and prompt bodies are not stored in the ledger. An unavailable completion/failure
+append leaves the already-persisted attempt available for investigation.
 
 ## Prompt injection and untrusted output
 
@@ -125,10 +155,17 @@ Provider terms and behavior can change. Re-verify them at release and periodical
 
 ## Current state
 
-The provider interface, governed broker, schemas, policy checks, loopback Ollama adapter, and
-synthetic tests exist. No production tenant evidence reader or configured provider is enabled
-yet, and the API truthfully advertises `analysisEnabled: false`, `providerConfigured: false`,
-and `writeToolsEnabled: false`.
+The API and UI integrate grant creation/revocation, bounded user-investigation evidence, the
+governed broker, and optional local inference. Live AI requires authenticated Microsoft sessions,
+`AI_LOCAL_MODEL`, and durable encrypted PostgreSQL storage; demo mode keeps it unavailable.
+Write tools remain disabled. This first live-auth integration is a pilot that has not yet been
+verified against an authorized Microsoft tenant or a real local model.
+
+Evidence is collected from request-time Graph investigations, not a durable reporting warehouse.
+Broader dataset collection, ingestion jobs, additional providers, provider cost/rate controls,
+complete local-role policy, independent privacy/security review, and live conformance testing
+remain outstanding. Synthetic tests prove boundaries and failure behavior, not universal Microsoft
+license, role, cloud, or tenant compatibility.
 
 ## Primary references
 

@@ -9,3 +9,8 @@ coverage/
 .idea/
 .vscode/
 *.tsbuildinfo
+secrets/
+*.pem
+*.pfx
+*.p12
+*.key

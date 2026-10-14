@@ -3,6 +3,10 @@
 This is a requirements checklist for a real deployment, not a promise that the pre-alpha
 scaffold already connects to a tenant.
 
+The current pilot implements interactive delegated user investigations and encrypted control
+state. Follow [Setup](SETUP.md). Background collection, normalized historical report tables, and
+production compatibility acceptance remain future gates.
+
 ## For a self-hosted administrator
 
 - A Microsoft Entra work or school tenant; personal Microsoft accounts are not supported.
