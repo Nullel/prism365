@@ -152,6 +152,9 @@ export class PostgresStateStore implements StateStore {
       connectionTimeoutMillis: 5_000,
       statement_timeout: 10_000,
     });
+    // pg removes failed idle clients. Handle that event without emitting credential-bearing
+    // driver objects; active operation failures still reject and are sanitized by the API.
+    this.#pool.on("error", () => {});
     this.#cipher = new StateCipher(options.encryptionKey);
   }
 

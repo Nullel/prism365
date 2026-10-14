@@ -111,8 +111,19 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
     if (bootstrap) {
       try {
         // These targets were created by this suite, with unguessable fixture-only names.
-        if (createdDatabase)
-          await bootstrap.query(`DROP DATABASE ${identifier(databaseName)} WITH (FORCE)`);
+        if (createdDatabase) {
+          // Pool.end can resolve just before idle sockets finish their close handshake. Do not
+          // force-terminate them: that races a late FATAL event against the test process.
+          for (let attempt = 0; attempt < 50; attempt += 1) {
+            const active = await bootstrap.query<{ count: string }>(
+              "SELECT count(*) FROM pg_stat_activity WHERE datname=$1",
+              [databaseName],
+            );
+            if (active.rows[0]?.count === "0") break;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          await bootstrap.query(`DROP DATABASE ${identifier(databaseName)}`);
+        }
         if (createdOwnerRole) await bootstrap.query(`DROP ROLE ${identifier(ownerRole)}`);
         if (createdAppRole) await bootstrap.query("DROP ROLE prism365_app");
       } finally {
