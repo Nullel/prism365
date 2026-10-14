@@ -5,6 +5,14 @@ request can read it. Do not skip that verification.
 
 ## Before publishing
 
+Publication verified 2026-10-14: [nlj3/prism365](https://github.com/nlj3/prism365) is public,
+anonymous README access returned HTTP 200, owner login is `nlj3`, and CI/CodeQL passed for
+the initial pilot commit. Secret scanning, push protection, private vulnerability reporting,
+dependency alerts and automatic security fixes are enabled. Main requires CI/CodeQL,
+a reviewed pull request, resolved conversations and linear history; force push/deletion are
+disabled. Administrators retain bypass rights during solo-maintainer pre-alpha; this must be
+revisited as maintainers join.
+
 - [ ] Review the name, description, Apache-2.0 license, NOTICE, and trademark disclaimer.
 - [ ] Review every tracked file with `git status` and `git diff --cached`.
 - [ ] Run `npm run check` and `npm run build` from a clean checkout.
@@ -33,19 +41,19 @@ gh repo create nlj3/prism365 \
 
 ## Immediately after publishing
 
-- [ ] Open the repository in a logged-out/private browser and verify README visibility.
-- [ ] Enable private vulnerability reporting, secret scanning, push protection, and
+- [x] Verify README visibility through an unauthenticated request.
+- [x] Enable private vulnerability reporting, secret scanning, push protection, and
   Dependabot alerts where the account supports them.
-- [ ] Protect `main`: require a pull request, required CI/CodeQL checks, conversation
+- [x] Protect `main`: require a pull request, required CI/CodeQL checks, conversation
   resolution, and no force pushes or deletion.
 - [ ] Enable Discussions only if a maintainer will moderate them.
-- [ ] Create milestones from `docs/ROADMAP.md`, beginning with “M0 trustworthy foundation.”
-- [ ] Create the eight scoped issues in the roadmap and label `good first issue` only where
+- [x] Create the [read-only tenant pilot milestone](https://github.com/nlj3/prism365/milestone/1).
+- [x] Create six scoped [contribution issues](https://github.com/nlj3/prism365/issues) and label `good first issue` only where
   the acceptance criteria are self-contained.
-- [ ] Add repository topics such as `microsoft-365`, `microsoft-graph`, `entra-id`,
+- [x] Add repository topics such as `microsoft-365`, `microsoft-graph`, `entra-id`,
   `open-source`, `security`, and `reporting`.
-- [ ] Verify CODEOWNERS resolves to the intended account.
-- [ ] Replace the security contact fallback with GitHub's private reporting URL.
+- [x] Verify CODEOWNERS resolves to the intended account.
+- [x] Replace the security contact fallback with GitHub's private reporting URL.
 
 ## Public verification
 

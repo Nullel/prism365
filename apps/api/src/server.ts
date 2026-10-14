@@ -33,7 +33,12 @@ try {
       "Development sessions are held in memory and reset on restart. Configure PostgreSQL before deployment.",
     );
 } catch (error) {
-  app.log.error(error);
+  const code = error instanceof Error && "code" in error ? error.code : null;
+  console.error(
+    code === "EADDRINUSE"
+      ? "Prism365 could not start: PORT is already in use. Choose a free port."
+      : "Prism365 could not start. Check the configured host, port, and deployment settings.",
+  );
   process.exitCode = 1;
 }
 

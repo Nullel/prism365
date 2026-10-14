@@ -7,9 +7,8 @@ Do not connect this scaffold to a production tenant.
 
 ## Reporting a vulnerability
 
-Do not open a public issue. Use GitHub's private vulnerability reporting once enabled on
-the repository. Until then, contact the repository owner privately through their verified
-GitHub profile and provide only the minimum reproduction information needed.
+Do not open a public issue. Use [GitHub private vulnerability reporting](https://github.com/nlj3/prism365/security/advisories/new)
+and provide only the minimum reproduction information needed. It was enabled on 2026-10-14.
 
 Never include live access tokens, secrets, personal data, tenant IDs, directory object IDs,
 or audit records. If sensitive data was exposed, revoke or rotate it before reporting.

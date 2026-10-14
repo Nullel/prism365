@@ -49,3 +49,12 @@ jobs:
         run: npm run build
       - name: Build self-host container image
         run: docker build --tag prism365:ci .
+      - name: Smoke test the self-hosted UI and API
+        run: |
+          docker run --detach --name prism365-ci-smoke --publish 127.0.0.1:8080:8787 prism365:ci
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/health
+          curl --fail http://127.0.0.1:8080/api/v1/session
+          curl --fail --output /dev/null http://127.0.0.1:8080/
+      - name: Clean up the smoke-test container
+        if: always()
+        run: docker rm --force prism365-ci-smoke || true

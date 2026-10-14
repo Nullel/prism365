@@ -23,7 +23,20 @@ secrets, personal data, or customer data. Once published, link each row to a Git
 | TL-016 | done | ai_automation_review | Trusted grants, audited minimized AI, bounded local transport | Authenticated API | Changed: AI broker/transport/evidence/tests/docs; 37 scoped tests; no external/raw/identifier disclosure in pilot; next: configured model acceptance |
 | TL-017 | done | ui_delivery_review | Tenant setup, investigation, AI and private import UI | API contracts | Changed: web components/styles/tests; 12 interface tests plus integrated browser checks; next: live role/consent/model acceptance |
 | TL-018 | done | ai_automation_review | Private immutable PowerShell JSON package inspection | Authenticated API and encrypted storage | Changed: registry/contracts/API/UI; digest/path/size/isolation tests; imports unreviewed, execution disabled; next: reviewed approval and isolated runner |
-| TL-019 | review | integration_review | PostgreSQL isolation and container CI verification | Disposable CI service | Six opt-in database cases added; skipped locally without PostgreSQL/Docker; verify CI before claiming runtime isolation |
+| TL-019 | done | integration_review | PostgreSQL isolation and container CI verification | Disposable CI service | CI passed 2026-10-14, including all six real PostgreSQL isolation cases and container build; runtime smoke check added in publication handoff |
+
+## Public contribution issues
+
+- [#1: Worldwide tenant pilot](https://github.com/nlj3/prism365/issues/1) — human-authorized test tenant required; TL-001 acceptance.
+- [#2: Readiness probes](https://github.com/nlj3/prism365/issues/2) — TL-009; permission changes require review.
+- [#3: Persistent ingestion jobs](https://github.com/nlj3/prism365/issues/3) — next data/platform slice.
+- [#4: Native lifecycle action design](https://github.com/nlj3/prism365/issues/4) — no execution until approval controls are reviewed.
+- [#5: Private package review](https://github.com/nlj3/prism365/issues/5) — immutable digest and separated reviewer authority.
+- [#6: Local model acceptance](https://github.com/nlj3/prism365/issues/6) — synthetic conformance first.
+
+Claim one issue, name the files you own, and provide the handoff format below. The founding
+maintainer remains the final reviewer; issues do not authorize real tenant writes or public data
+disclosure.
 
 ## Claim format
 

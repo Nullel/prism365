@@ -23,10 +23,10 @@ Goal: a contributor can run, understand, test, and safely extend the project.
 - [x] Provider-neutral AI broker, access-grant contract, and synthetic isolation/policy tests.
 - [x] Preview-only lifecycle runbook contracts, synthetic UI, and isolated-runner design.
 - [x] CI, dependency updates, CodeQL, issue forms, and security policy.
-- [ ] Publish the repository after owner authentication and settings review.
-- [ ] Enable branch protection, private vulnerability reporting, secret scanning, and
+- [x] Publish the repository after owner authentication and settings review; public README verified 2026-10-14.
+- [x] Enable branch protection, private vulnerability reporting, secret scanning, and
   required CI checks in GitHub.
-- [ ] Record maintainer and release governance.
+- [x] Record maintainer and release governance; founding maintainer `nlj3`.
 
 Exit: the default branch is public, reproducible, green, and protected; no production
 tenant connection is advertised.

@@ -4,6 +4,8 @@ Prism365 is a community-built, privacy-conscious Microsoft 365 administration,
 reporting, and auditing platform. It is an independent project: it is not affiliated
 with, endorsed by, or derived from AdminDroid or Microsoft.
 
+Public source and contribution issues: [nlj3/prism365](https://github.com/nlj3/prism365).
+
 > **Status: pre-alpha pilot.** User investigation, server-side Microsoft sign-in, local AI,
 > and private script import are implemented. Live Microsoft tenant acceptance is still required;
 > production support and tenant write actions are not yet available. Demo mode is the default.

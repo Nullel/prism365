@@ -650,7 +650,7 @@ export function App() {
         </div>
         <a
           className="sidebar__footer"
-          href="https://github.com/nlj3"
+          href="https://github.com/nlj3/prism365"
           target="_blank"
           rel="noreferrer"
         >
