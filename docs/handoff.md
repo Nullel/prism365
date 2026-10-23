@@ -18,8 +18,8 @@ its own. The only thing that crosses is the two files, carried by the administra
 ## 1. Exporting a handoff
 
 On an audit's results, **Export for action** sits next to Export CSV. It is offered for audits
-whose rows are accounts (every audit with a person column; not License capacity) and for a run
-that finished. It exports exactly the accounts the page shows: the same view, filters, search and
+whose rows are accounts (every audit with a person column, such as Inactive accounts or Risky
+users; not License capacity or Conditional Access policies) and for a run that finished. It exports exactly the accounts the page shows: the same view, filters, search and
 sort as the CSV export, read by the same code on the server, so the CSV and the handoff of one
 view always hold the same accounts in the same order. Rows that are not an account are left out.
 
