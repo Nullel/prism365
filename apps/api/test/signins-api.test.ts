@@ -52,6 +52,7 @@ beforeAll(async () => {
   const registry = new ModuleRegistry().register(createSigninsAuditModule());
   const database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     graphClient: (getAccessToken) =>

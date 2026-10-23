@@ -1,4 +1,4 @@
-import { licenseName, type AuditRow } from "@prism365/contracts";
+import { type AuditRow, licenseName } from "@prism365/contracts";
 import type { Audit } from "./definition.ts";
 import { readSkus, tagOf } from "./directory.ts";
 

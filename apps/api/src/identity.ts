@@ -1,18 +1,18 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
-  ConfidentialClientApplication,
   type AccountInfo,
+  ConfidentialClientApplication,
   type Configuration,
   ResponseMode,
 } from "@azure/msal-node";
 import type { StateStore } from "@prism365/storage";
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { createRemoteJWKSet, type JWTVerifyGetKey, jwtVerify } from "jose";
 import { z } from "zod";
 import {
   type IdentityConfig,
+  isUuid,
   type SupportedReadFeature,
   supportedReadFeatures,
-  isUuid,
 } from "./config.ts";
 
 export type LoginRejection =

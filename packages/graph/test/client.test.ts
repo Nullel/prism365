@@ -58,6 +58,45 @@ describe("read packs added for the change feed and the consent-batch audits", ()
     ).toBe(false);
   });
 
+  it("refuses $expand in any spelling, so navigations a pack leaves out stay unreachable", async () => {
+    const apps = ["directory.applications.read", "Application.Read.All"] as const;
+    const refused = async (path: string) =>
+      client()
+        .request(path, { feature: apps[0], permission: apps[1] })
+        .then(
+          () => false,
+          (error: unknown) => error instanceof Error && /\$expand/.test(error.message),
+        );
+    expect(await refused("servicePrincipals/sp-1?$expand=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?%24expand=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?$EXPAND=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?expand=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?$select=id")).toBe(false);
+  });
+
+  it("keeps sibling navigations, deeper paths and encoded separators out of the new packs", async () => {
+    const apps = ["directory.applications.read", "Application.Read.All"] as const;
+    for (const path of [
+      "servicePrincipals/sp-1/oauth2PermissionGrants",
+      "servicePrincipals/sp-1/memberOf",
+      "servicePrincipals/sp-1/transitiveMemberOf",
+      "servicePrincipals/sp-1/appRoleAssignments/extra",
+      "servicePrincipals/x%2Fowners",
+    ])
+      expect(await allowed(path, ...apps)).toBe(false);
+    const audit = ["audit.directory.read", "AuditLog.Read.All"] as const;
+    expect(await allowed("auditLogs/provisioning", ...audit)).toBe(false);
+    expect(await allowed("auditLogs/directoryAudits/a/b", ...audit)).toBe(false);
+    const grants = ["directory.permission-grants.read", "Directory.Read.All"] as const;
+    expect(await allowed("oauth2PermissionGrants/grant-1", ...grants)).toBe(false);
+    expect(await allowed("x/oauth2PermissionGrants", ...grants)).toBe(false);
+    const ca = ["identity.conditional-access.read", "Policy.Read.All"] as const;
+    expect(await allowed("identity/conditionalAccess/policies/p-1/extra", ...ca)).toBe(false);
+    const usage = ["reports.usage.read", "Reports.Read.All"] as const;
+    expect(await allowed("reports/getM365AppUserDetail(period='D90')/extra", ...usage)).toBe(false);
+    expect(await allowed("reports/getM365AppUserCounts(period='D90')", ...usage)).toBe(false);
+  });
+
   it("allows the one usage report that answers in JSON", async () => {
     const pack = ["reports.usage.read", "Reports.Read.All"] as const;
     expect(await allowed("reports/getM365AppUserDetail(period='D90')", ...pack)).toBe(true);

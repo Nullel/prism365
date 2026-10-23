@@ -22,7 +22,11 @@ const tenantId = "11111111-1111-4111-8111-111111111111";
 const otherTenantId = "99999999-9999-4999-8999-999999999999";
 const actorId = "22222222-2222-4222-8222-222222222222";
 const origin = "http://localhost:5173";
-const features = ["directory.users.read", "audit.signins.read"] as const;
+const features = [
+  "directory.users.read",
+  "audit.signins.read",
+  "reports.authentication-methods.read",
+] as const;
 const identityConfig: IdentityConfig = {
   tenantId,
   clientId: "33333333-3333-4333-8333-333333333333",
@@ -152,6 +156,7 @@ async function harness(withModules = true) {
   const registry = createModuleRegistry(config);
   const database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     graphClient: (getAccessToken) => new GraphHttpClient({ getAccessToken }),
