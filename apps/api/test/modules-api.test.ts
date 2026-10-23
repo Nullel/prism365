@@ -1,11 +1,11 @@
 import { GraphHttpClient } from "@prism365/graph";
 import {
   ModuleRegistry,
-  writeCollectionIntent,
-  readCollectionIntent,
   ModuleScheduler,
   type PrismModule,
+  readCollectionIntent,
   upsertFinding,
+  writeCollectionIntent,
 } from "@prism365/modules";
 import {
   MemoryStateStore,
@@ -19,6 +19,7 @@ import { z } from "zod";
 // Each test opens PGlite with every built-in module's migrations; under a loaded machine that
 // cold start alone can pass the default 5 s budget.
 vi.setConfig({ testTimeout: 30_000 });
+
 import { createApp } from "../src/app.ts";
 import type { AppConfig, IdentityConfig, SupportedReadFeature } from "../src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../src/identity.ts";
@@ -138,6 +139,7 @@ async function setup(
   const registry = new ModuleRegistry().register(module ?? probe(counter));
   const database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     graphClient: (getAccessToken) =>

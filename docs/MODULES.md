@@ -96,7 +96,7 @@ Backfill is a collector run with `since = now - N days` and no overlap, flagged 
 | 2 | `mail.forwarding` | port of the forwarding monitor's Graph half: inbox rules that forward or redirect, per mailbox | application `MailboxSettings.Read` (delegated access reaches only mailboxes delegated to the admin) | waits for the application credential, see ADR-0009 |
 | 3 | `directory.changes` | the directory audit log kept for good, a filterable feed, changes on each person's page, findings for risky changes | `AuditLog.Read.All` (consented) | in progress, see `docs/EYES-PLAN.md` S1 |
 | 4 | `licenses` | subscribedSkus daily, reclaim candidates | `LicenseAssignment.Read.All` (consented) | cheap, immediately useful |
-| 5 | `usage.reports` | the Graph report CSVs | `Reports.Read.All` + a reviewed download adapter | needs the 302 adapter the client refuses today |
+| 5 | `usage.reports` | the per-user Microsoft 365 apps report, which v1.0 serves as JSON; the other per-user reports still answer with a CSV redirect the client refuses | `Reports.Read.All` | built as an on-demand audit instead of a module, see `docs/EYES-PLAN.md` S6 |
 | 6 | `service.health`, `service.messages` | built: incidents, advisories and Message center into the notification center, see `modules/service-health.md` | `ServiceHealth.Read.All`, `ServiceMessage.Read.All` | platform-level, no per-person data; first source of the notification center (ADR-0007) |
 
 The AI analyst reads `finding` and the digest, nothing else. That is how "oversee everything

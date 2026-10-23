@@ -9,9 +9,9 @@ import { licenseReclaimAudit } from "./reclaim.ts";
 
 export * from "./definition.ts";
 export * from "./directory.ts";
+export { methodLabel, strongestMethod } from "./mfa.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
-export { strongestMethod, methodLabel } from "./mfa.ts";
 export {
   guestAccountsAudit,
   inactiveAccountsAudit,
@@ -52,6 +52,23 @@ export function auditDefinition(audit: Audit): AuditDefinition {
       (permission) => !permissions.includes(permission),
     ),
   });
+}
+
+// What one run may read: the audit's required packs plus only the optional packs the operator
+// enabled, and only the granted permissions those packs carry. Several packs share a permission
+// (AuditLog.Read.All serves sign-ins, directory audits and MFA registration), so a permission
+// granted for one enabled pack must not open another pack the operator left off.
+export function auditReadScope(
+  audit: Audit,
+  enabledPacks: readonly string[],
+  grantedScopes: readonly string[],
+): { packs: GraphFeatureId[]; granted: string[] } {
+  const enabled = new Set(enabledPacks);
+  const packs = [
+    ...new Set([...audit.packs, ...audit.optionalPacks.filter((pack) => enabled.has(pack))]),
+  ];
+  const carried = new Set(permissionsOf(packs.filter((pack) => enabled.has(pack))));
+  return { packs, granted: grantedScopes.filter((scope) => carried.has(scope)) };
 }
 
 export function findAudit(id: string): Audit | undefined {
