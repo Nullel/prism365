@@ -18,6 +18,7 @@
     "@prism365/automation": "0.0.0",
     "@prism365/contracts": "0.0.0",
     "@prism365/graph": "0.0.0",
+    "@prism365/module-directory-changes": "0.0.0",
     "@prism365/module-service-health": "0.0.0",
     "@prism365/module-signins-audit": "0.0.0",
     "@prism365/modules": "0.0.0",
