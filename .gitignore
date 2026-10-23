@@ -1,9 +1,11 @@
 node_modules/
 dist/
+dist-demo/
 coverage/
 .env
 .env.*
 !.env.example
+!.env.demo
 *.log
 .DS_Store
 .idea/

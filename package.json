@@ -15,15 +15,18 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "build:demo": "npm run build:demo --workspace @prism365/web",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
     "dev:api": "npm run dev --workspace @prism365/api",
     "dev:web": "npm run dev --workspace @prism365/web",
     "db:migrate": "npm run migrate --workspace @prism365/api",
+    "demo:record": "tsx scripts/demo/record.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
     "test": "vitest run",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "demo": "npm run build:demo && npm run preview --workspace @prism365/web -- --outDir dist-demo"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
