@@ -156,7 +156,13 @@ export function migrationChecksum(sql: string): string {
 }
 
 export async function loadCoreMigrations(): Promise<Migration[]> {
-  const files = ["001-state.sql", "002-modules.sql", "003-attention.sql", "004-audit-runs.sql"];
+  const files = [
+    "001-state.sql",
+    "002-modules.sql",
+    "003-attention.sql",
+    "004-audit-runs.sql",
+    "005-audit-trends.sql",
+  ];
   return Promise.all(
     files.map(async (file) => ({
       id: file.replace(/\.sql$/, ""),

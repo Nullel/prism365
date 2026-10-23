@@ -9,8 +9,10 @@ import { licenseReclaimAudit } from "./reclaim.ts";
 
 export * from "./definition.ts";
 export * from "./directory.ts";
+export * from "./schedule.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
+export * from "./trend.ts";
 export { strongestMethod, methodLabel } from "./mfa.ts";
 export {
   guestAccountsAudit,

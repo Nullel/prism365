@@ -10,14 +10,19 @@ import {
   readAuditScope,
   type RunOutcome,
 } from "@prism365/audits";
-import { auditRowSchema, auditSummaryItemSchema, type AuditRun } from "@prism365/contracts";
+import {
+  type AuditRun,
+  type AuditRunTrigger,
+  auditRowSchema,
+  auditSummaryItemSchema,
+} from "@prism365/contracts";
 import {
   GraphBoundaryError,
   type GraphHttpClient,
   GraphRequestError,
   GraphRetryDeferredError,
 } from "@prism365/graph";
-import { scopeGraph } from "@prism365/modules";
+import { CredentialUnavailableError, scopeGraph } from "@prism365/modules";
 import type { ModuleDatabase } from "@prism365/storage";
 import { z } from "zod";
 
@@ -118,6 +123,13 @@ export function describeAuditFailure(
       message: `Microsoft's answer could not be read safely (${error.reason}). Try again; if it repeats, the server log has the category.`,
     };
   }
+  // A scheduled run's sign-in ended (signed out, expired, or refused by Microsoft): the same
+  // category a manual run gets when its session ends.
+  if (error instanceof CredentialUnavailableError)
+    return {
+      code: "session",
+      message: "The Microsoft session ended. Sign in again and rerun the audit.",
+    };
   const name = error instanceof Error ? error.name : "";
   if (name === "InteractionRequiredAuthError")
     return {
@@ -181,21 +193,25 @@ export class AuditRunner {
     return recovery;
   }
 
-  // Starts a run, or returns the one already running for this audit.
+  // Starts a run, or returns the one already running for this audit. `done` resolves once the
+  // run (this one or the one joined) has been recorded, however it ended.
   async start(input: {
     tenantId: string;
     actor: { id: string; name: string | null };
     audit: Audit;
     client: GraphHttpClient;
     granted: readonly string[];
+    // An administrator's request unless the audit's schedule started it.
+    trigger?: AuditRunTrigger;
     // Runs once, only for a run this call started, after it is stored and before anything is
     // read: the access-ledger entry. If it fails, the run is closed as failed and reads nothing.
     beforeRead?: (run: AuditRun) => Promise<void>;
-  }): Promise<{ runId: string; started: boolean; run: AuditRun | null }> {
+  }): Promise<{ runId: string; started: boolean; run: AuditRun | null; done: Promise<void> }> {
     if (this.#closed) throw new AuditStoppedError("shutdown");
     const key = `${input.tenantId}:${input.audit.definition.id}`;
     const existing = this.#running.get(key);
-    if (existing) return { runId: existing.runId, started: false, run: null };
+    if (existing)
+      return { runId: existing.runId, started: false, run: null, done: existing.done };
     const runId = randomUUID();
     const controller = new AbortController();
     let release: () => void = () => {};
@@ -226,6 +242,7 @@ export class AuditRunner {
           startedAt: this.#now(),
           startedBy: input.actor,
           scope: saved?.domains ?? null,
+          trigger: input.trigger ?? "manual",
         });
       });
     } catch (error) {
@@ -253,7 +270,7 @@ export class AuditRunner {
         if (!stored) this.#recovered.delete(input.tenantId);
         release();
       });
-    return { runId, started: true, run };
+    return { runId, started: true, run, done: entry.done };
   }
 
   // Records how a run ended and prunes old runs. false when storage refused.

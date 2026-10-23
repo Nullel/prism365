@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresModuleDatabase, PostgresStateStore, runPostgresMigrations } from "../src/index.ts";
+import { migrationsBeforeTrends, trendMigrationSuite } from "./audit-trend-migration-suite.ts";
 import { isolationSuite, probeScope } from "./module-isolation-suite.ts";
 
 // This public password belongs only to the disposable CI database; it is not a secret.
@@ -379,3 +380,57 @@ describe.skipIf(!adminUrl)("PostgreSQL module runtime role", () => {
     }
   });
 });
+
+// Migration 005 (audit trends) on real PostgreSQL, starting from a database migrated up to 004
+// that already holds audit runs. Last in this file, so it never races the suites above for the
+// shared prism365_app role.
+trendMigrationSuite(
+  "PostgreSQL",
+  async () => {
+    const parsed = new URL(adminUrl ?? "");
+    if (!["localhost", "127.0.0.1"].includes(parsed.hostname) || parsed.pathname !== "/prism365_ci")
+      throw new Error("TEST_DATABASE_ADMIN_URL must point to a disposable prism365_ci database.");
+    const trendDatabase = `prism365_trends_${randomBytes(8).toString("hex")}`;
+    const bootstrap = new Pool({
+      connectionString: parsed.toString(),
+      connectionTimeoutMillis: 5_000,
+    });
+    const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
+    const createdAppRole = existing.rowCount === 0;
+    if (createdAppRole)
+      await bootstrap.query(
+        `CREATE ROLE prism365_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${syntheticPassword}'`,
+      );
+    await bootstrap.query(`CREATE DATABASE ${identifier(trendDatabase)}`);
+    parsed.pathname = `/${trendDatabase}`;
+    const trendAdminUrl = parsed.toString();
+    const owner = new Pool({ connectionString: trendAdminUrl, connectionTimeoutMillis: 5_000 });
+    for (const migration of await migrationsBeforeTrends()) await owner.query(migration.sql);
+    return {
+      owner: async (sql: string, params?: unknown[]) => {
+        // A migration file is several statements, which pg answers with one result each.
+        const result = (await owner.query(sql, params)) as unknown;
+        const last = (Array.isArray(result) ? result.at(-1) : result) as
+          | { rows?: Record<string, unknown>[] }
+          | undefined;
+        return last?.rows ?? [];
+      },
+      migrateAll: () =>
+        runPostgresMigrations({
+          adminUrl: trendAdminUrl,
+          appPassword: syntheticPassword,
+          scopes: [],
+        }),
+      close: async () => {
+        await owner.end();
+        try {
+          await bootstrap.query(`DROP DATABASE ${identifier(trendDatabase)} WITH (FORCE)`);
+          if (createdAppRole) await bootstrap.query("DROP ROLE prism365_app");
+        } finally {
+          await bootstrap.end();
+        }
+      },
+    };
+  },
+  Boolean(adminUrl),
+);

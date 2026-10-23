@@ -46,6 +46,8 @@ export class DelegatedSessionCredential implements CollectionCredential {
   readonly kind = "delegated" as const;
   readonly tenantId: string;
   readonly actorId: string;
+  // The administrator's name when the session knows it, for runs started on their sign-in.
+  readonly displayName: string | null;
   readonly sessionKey: string;
   readonly #identity: IdentityService;
   readonly #handle: string;
@@ -62,6 +64,7 @@ export class DelegatedSessionCredential implements CollectionCredential {
     this.#permitted = permitted;
     this.tenantId = session.tenantId;
     this.actorId = session.actorId;
+    this.displayName = session.displayName;
     this.sessionKey = digest(handle);
   }
 
@@ -123,7 +126,12 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
       // verified, so starting before `npm run db:migrate` finished would refuse every query on
       // them until a restart; refusing to start makes the container retry instead.
       if (tenantId)
-        for (const table of ["prism365_attention", "prism365_preference", "prism365_audit_run"]) {
+        for (const table of [
+          "prism365_attention",
+          "prism365_preference",
+          "prism365_audit_run",
+          "prism365_audit_trend",
+        ]) {
           const exists = await postgres.tenant(tenantId, (sql) =>
             sql.query<{ present: boolean }>("SELECT to_regclass($1) IS NOT NULL AS present", [
               `public.${table}`,
