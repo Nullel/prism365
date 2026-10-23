@@ -15,7 +15,7 @@ export const supportedReadFeatures = {
   "identity.risk.read": "IdentityRiskyUser.Read.All",
   "devices.intune.read": "DeviceManagementManagedDevices.Read.All",
   "directory.applications.read": "Application.Read.All",
-  "directory.permission-grants.read": "DelegatedPermissionGrant.Read.All",
+  "directory.permission-grants.read": "Directory.Read.All",
   "reports.usage.read": "Reports.Read.All",
   "reports.settings.read": "ReportSettings.Read.All",
 } as const;

@@ -68,7 +68,7 @@ const scopes = [
   "IdentityRiskyUser.Read.All",
   "DeviceManagementManagedDevices.Read.All",
   "Application.Read.All",
-  "DelegatedPermissionGrant.Read.All",
+  "Directory.Read.All",
   "Reports.Read.All",
   "ReportSettings.Read.All",
 ];

@@ -124,7 +124,9 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
     /^\/v1\.0\/servicePrincipals(?:\/[^/]+(?:\/appRoleAssignments)?)?\/?$/i,
   "directory.permission-grants.read": /^\/v1\.0\/oauth2PermissionGrants\/?$/i,
   "identity.risk.read": /^\/v1\.0\/identityProtection\/riskyUsers(?:\/[^/]+)?\/?$/i,
-  "reports.usage.read": /^\/v1\.0\/reports\/get[A-Za-z0-9]+\([^/]+\)\/?$/i,
+  // The Microsoft 365 apps report is the one usage report v1.0 returns as JSON; the others answer
+  // with a redirect to a CSV download, which this client refuses.
+  "reports.usage.read": /^\/v1\.0\/reports\/getM365AppUserDetail\(period='D(?:7|30|90|180)'\)\/?$/i,
   "reports.settings.read": /^\/v1\.0\/admin\/reportSettings\/?$/i,
   "security.score.read":
     /^\/v1\.0\/security\/(?:secureScores|secureScoreControlProfiles)(?:\/[^/]+)?\/?$/i,

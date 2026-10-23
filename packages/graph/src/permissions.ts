@@ -362,7 +362,7 @@ export const permissionPacks = [
     id: "directory.permission-grants.read",
     label: "Delegated permission grants",
     source: "microsoftGraph",
-    permission: "DelegatedPermissionGrant.Read.All",
+    permission: "Directory.Read.All",
     mode: "either",
     phase: "experimental",
     defaultEnabled: false,
@@ -371,7 +371,8 @@ export const permissionPacks = [
     deniedBehavior: "The app consents audit lists application permissions only.",
     clouds: allGraphClouds,
     prerequisites: ["directory.applications.read"],
-    roleNotes: "Delegated callers need a role such as Global Reader.",
+    roleNotes:
+      "Microsoft documents Directory.Read.All as the least-privileged permission for listing grants. Delegated callers need a role such as Global Reader.",
     licenseNotes: "No additional license is required.",
     documentationUrl:
       "https://learn.microsoft.com/en-us/graph/api/oauth2permissiongrant-list?view=graph-rest-1.0",
