@@ -159,6 +159,7 @@ async function setup(
   const registry = new ModuleRegistry().register(createSigninsAuditModule(config));
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   scheduler = new ModuleScheduler({
+    enabledPacks: registry.list().flatMap((module) => [...module.packs]),
     registry,
     database,
     now: () => clock,

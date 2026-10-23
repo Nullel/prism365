@@ -3,6 +3,7 @@ import {
   type AuditScheduleMap,
   auditDefinition,
   auditDue,
+  auditReadScope,
   latestRunStart,
   readAuditSchedule,
   scheduledAuditCount,
@@ -61,6 +62,8 @@ export interface AuditSchedulerOptions {
   audits: readonly Audit[];
   // The credential collection runs on, or null while collection is off.
   credential: () => ScheduleCredential | null;
+  // The read packs this installation enabled (ENABLED_READ_FEATURES).
+  enabledPacks: readonly string[];
   // The rule the manual Run route uses, given the permissions the credential has granted.
   availability: (audit: Audit, granted: readonly string[]) => AuditAvailability;
   // A read-only Graph client with the audits' budgets.
@@ -82,6 +85,7 @@ export class AuditScheduler {
   readonly #database: ModuleDatabase;
   readonly #audits: readonly Audit[];
   readonly #credential: () => ScheduleCredential | null;
+  readonly #enabledPacks: readonly string[];
   readonly #availability: AuditSchedulerOptions["availability"];
   readonly #graphClient: AuditSchedulerOptions["graphClient"];
   readonly #ledger: AuditSchedulerOptions["ledger"];
@@ -100,6 +104,7 @@ export class AuditScheduler {
     this.#database = options.database;
     this.#audits = options.audits;
     this.#credential = options.credential;
+    this.#enabledPacks = options.enabledPacks;
     this.#availability = options.availability;
     this.#graphClient = options.graphClient;
     this.#ledger = options.ledger;
@@ -183,23 +188,28 @@ export class AuditScheduler {
     }));
     if (!auditDue(current[id] ?? "off", lastStart, this.#now())) return true;
     if (this.#runner.runningId(tenantId, id)) return true;
-    let granted: readonly string[];
+    let scopes: readonly string[];
     try {
-      granted = [...(await credential.grantedPermissions())];
+      scopes = await credential.grantedPermissions();
     } catch {
       this.#log("Prism365 scheduled audits paused: the collecting sign-in is not available.");
       return false;
     }
-    const availability = this.#availability(audit, granted);
+    // Skipped unless every pack the audit needs is enabled and granted, by the manual route's
+    // rule; a skipped audit stays due and is tried again on the next tick.
+    const availability = this.#availability(audit, scopes);
     if (availability.state !== "available") {
       this.#log(`Prism365 scheduled audit ${id} skipped (${availability.state}).`);
       return true;
     }
+    // The run reads the audit's packs and only the optional packs this installation enabled,
+    // with the permissions those packs carry, exactly as a manual run does.
+    const read = auditReadScope(audit, this.#enabledPacks, scopes);
     const definition = auditDefinition(audit);
     // The ledger names what this run will read, as the manual route's entry does.
     const datasets = [
       ...definition.permissions,
-      ...definition.optionalPermissions.filter((permission) => granted.includes(permission)),
+      ...definition.optionalPermissions.filter((permission) => read.granted.includes(permission)),
     ];
     let started: Awaited<ReturnType<AuditSchedulerOptions["runner"]["start"]>>;
     try {
@@ -207,8 +217,9 @@ export class AuditScheduler {
         tenantId,
         actor: { id: actorId, name: credential.displayName },
         audit,
-        client: this.#graphClient(() => credential.accessToken(granted)),
-        granted,
+        client: this.#graphClient(() => credential.accessToken(read.granted)),
+        packs: read.packs,
+        granted: read.granted,
         trigger: "schedule",
         beforeRead: (run) =>
           this.#ledger(tenantId, actorId, {

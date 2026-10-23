@@ -51,6 +51,9 @@ export interface AppConfig {
   // Reverse proxies in front of the API whose X-Forwarded-For entry is trusted for the client
   // address (TRUST_PROXY_HOPS). 0 trusts none. The Docker install runs behind one proxy.
   trustProxyHops?: number;
+  // The configured public certificate's fingerprint and expiry, for the setup checklist. Public
+  // facts only; the private key stays in identity.credential.
+  certificate?: { thumbprintSha256: string; expiresAt: string };
 }
 
 export function isUuid(value: string) {
@@ -123,11 +126,11 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
       const privateKey = await readFile(env.ENTRA_PRIVATE_KEY_PATH, "utf8");
       if (!certificate.checkPrivateKey(createPrivateKey(privateKey)))
         throw new Error("Certificate mismatch");
-      credential = {
-        clientCertificate: {
-          thumbprintSha256: certificate.fingerprint256.replaceAll(":", ""),
-          privateKey,
-        },
+      const thumbprintSha256 = certificate.fingerprint256.replaceAll(":", "");
+      credential = { clientCertificate: { thumbprintSha256, privateKey } };
+      base.certificate = {
+        thumbprintSha256,
+        expiresAt: new Date(certificate.validTo).toISOString(),
       };
     } catch {
       throw new Error("Unable to load the matching Entra certificate and private key.");

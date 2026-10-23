@@ -13,6 +13,12 @@ import {
   type TableAccess,
   TransactionAbortedError,
 } from "@prism365/storage";
+import {
+  AttentionInputError,
+  readAttentionPreferences,
+  retireAttention,
+  upsertAttention,
+} from "./attention.ts";
 import type {
   Collector,
   CollectorContext,
@@ -21,12 +27,6 @@ import type {
   FindingInput,
   PrismModule,
 } from "./contract.ts";
-import {
-  AttentionInputError,
-  readAttentionPreferences,
-  retireAttention,
-  upsertAttention,
-} from "./attention.ts";
 import { FindingPolicyError, severityAtLeast, upsertFinding } from "./findings.ts";
 import { ModuleBoundaryError, scopeGraph } from "./graph-scope.ts";
 import { type ModuleRegistry, modulePermissions, moduleTablePrefix } from "./registry.ts";
@@ -136,6 +136,10 @@ export interface SchedulerOptions {
   registry: ModuleRegistry;
   database: ModuleDatabase;
   graphClient: (getAccessToken: () => Promise<string>) => GraphHttpClient;
+  // Read packs the operator enabled (ENABLED_READ_FEATURES). A module runs only when every pack it
+  // declares is enabled: several packs share one Microsoft permission (AuditLog.Read.All), so a
+  // consented permission must not switch on a module whose own pack the operator left off.
+  enabledPacks: readonly string[];
   sinks?: readonly FindingSink[];
   now?: () => Date;
   tickMilliseconds?: number;
@@ -186,6 +190,7 @@ export class ModuleScheduler {
   readonly #registry: ModuleRegistry;
   readonly #database: ModuleDatabase;
   readonly #graphClient: SchedulerOptions["graphClient"];
+  readonly #enabledPacks: ReadonlySet<string>;
   readonly #sinks: readonly FindingSink[];
   readonly #now: () => Date;
   readonly #tickMilliseconds: number;
@@ -212,6 +217,7 @@ export class ModuleScheduler {
     this.#registry = options.registry;
     this.#database = options.database;
     this.#graphClient = options.graphClient;
+    this.#enabledPacks = new Set(options.enabledPacks);
     this.#sinks = options.sinks ?? [];
     this.#now = options.now ?? (() => new Date());
     this.#tickMilliseconds = options.tickMilliseconds ?? 60_000;
@@ -370,7 +376,11 @@ export class ModuleScheduler {
     for (const module of this.#registry.list()) {
       if (!this.#current(credential)) return;
       const needed = modulePermissions(module);
-      const missing = needed.filter((permission) => !granted.includes(permission));
+      const notEnabled = module.packs.filter((pack) => !this.#enabledPacks.has(pack));
+      const missing =
+        notEnabled.length > 0
+          ? notEnabled
+          : needed.filter((permission) => !granted.includes(permission));
       if (missing.length > 0) {
         const previous = this.#skipped.get(module.id)?.join(",");
         this.#skipped.set(module.id, missing);

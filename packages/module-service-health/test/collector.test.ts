@@ -116,6 +116,7 @@ async function setup(granted = ["ServiceHealth.Read.All", "ServiceMessage.Read.A
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   opened = true;
   scheduler = new ModuleScheduler({
+    enabledPacks: registry.list().flatMap((module) => [...module.packs]),
     registry,
     database,
     now: () => clock,

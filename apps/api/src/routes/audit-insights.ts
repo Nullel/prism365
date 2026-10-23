@@ -69,7 +69,7 @@ export function registerAuditInsightRoutes(app: FastifyInstance, context: RouteC
     );
     return auditScheduleSettingsSchema.parse({
       audits: schedule,
-      collecting: context.collectingCredential() !== null,
+      collecting: context.collectingAdmin() !== null,
     });
   });
 
@@ -98,7 +98,7 @@ export function registerAuditInsightRoutes(app: FastifyInstance, context: RouteC
     );
     return auditScheduleSettingsSchema.parse({
       audits: saved,
-      collecting: context.collectingCredential() !== null,
+      collecting: context.collectingAdmin() !== null,
     });
   });
 }

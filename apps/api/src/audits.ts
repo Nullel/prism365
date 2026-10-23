@@ -7,8 +7,8 @@ import {
   insertRun,
   interruptRuns,
   pruneRuns,
-  readAuditScope,
   type RunOutcome,
+  readAuditScope,
 } from "@prism365/audits";
 import {
   type AuditRun,
@@ -18,6 +18,7 @@ import {
 } from "@prism365/contracts";
 import {
   GraphBoundaryError,
+  type GraphFeatureId,
   type GraphHttpClient,
   GraphRequestError,
   GraphRetryDeferredError,
@@ -200,6 +201,9 @@ export class AuditRunner {
     actor: { id: string; name: string | null };
     audit: Audit;
     client: GraphHttpClient;
+    // The packs this run may read and the permissions they carry, from auditReadScope: the
+    // audit's own packs plus only the optional packs the operator enabled.
+    packs: readonly GraphFeatureId[];
     granted: readonly string[];
     // An administrator's request unless the audit's schedule started it.
     trigger?: AuditRunTrigger;
@@ -295,6 +299,7 @@ export class AuditRunner {
       tenantId: string;
       audit: Audit;
       client: GraphHttpClient;
+      packs: readonly GraphFeatureId[];
       granted: readonly string[];
       scope: ReadonlySet<string> | null;
     },
@@ -318,9 +323,14 @@ export class AuditRunner {
       stopped.catch(() => {});
       timer = setTimeout(() => controller.abort(new AuditStoppedError("timeout")), this.#timeout);
       // The signal also stops paging and the request in flight, so a stopped run stops reading.
+      // Only the packs this run was given, which always include the audit's required ones.
+      const allowed = new Set<string>([...audit.packs, ...audit.optionalPacks]);
+      const packs = input.packs.filter((pack) => allowed.has(pack));
+      if (audit.packs.some((pack) => !packs.includes(pack)))
+        throw new AuditError("not_enabled", "This audit's read packs are not all enabled.");
       const graph = scopeGraph(
         input.client,
-        [...audit.packs, ...audit.optionalPacks],
+        packs,
         () => controller.signal.throwIfAborted(),
         controller.signal,
       );

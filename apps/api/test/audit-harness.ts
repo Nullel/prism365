@@ -157,6 +157,7 @@ export async function auditHarness(
   const scheduler = new ModuleScheduler({
     registry,
     database,
+    enabledPacks: config.enabledFeatures,
     graphClient: (getAccessToken) => new GraphHttpClient({ getAccessToken }),
   });
   const runner = new AuditRunner({

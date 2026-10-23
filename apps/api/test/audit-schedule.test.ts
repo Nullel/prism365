@@ -11,7 +11,7 @@ import {
 import { type AuditAvailability, type AuditSchedule, auditTrendSchema } from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
 import { PGliteModuleDatabase } from "@prism365/storage";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AuditScheduler, type ScheduleCredential } from "../src/audit-schedule.ts";
 import type { AuditRunner } from "../src/audits.ts";
 import { actorId, auditHarness, manualTimers, tenantId } from "./audit-harness.ts";
@@ -87,22 +87,33 @@ function fakeRunner(database: PGliteModuleDatabase, clock: () => Date) {
   };
 }
 
-// The manual route's rule, reduced to what these tests need: every required permission granted.
-function availability(audit: Audit, granted: readonly string[]): AuditAvailability {
-  const missing = auditDefinition(audit).permissions.filter((item) => !granted.includes(item));
-  return missing.length > 0
-    ? { state: "missing_permission", missing, grantFeature: null, enable: [] }
-    : { state: "available", missing: [], grantFeature: null, enable: [] };
-}
+// The manual route's rule, reduced to what these tests need: every required pack enabled and its
+// permission granted.
+const somePacks = ["directory.users.read", "audit.signins.read"];
+const morePacks = [...somePacks, "reports.authentication-methods.read"];
+const availability =
+  (enabledPacks: readonly string[]) =>
+  (audit: Audit, granted: readonly string[]): AuditAvailability => {
+    const off = audit.packs.filter((pack) => !enabledPacks.includes(pack));
+    if (off.length > 0)
+      return { state: "not_enabled", missing: [], grantFeature: null, enable: off };
+    const missing = auditDefinition(audit).permissions.filter((item) => !granted.includes(item));
+    return missing.length > 0
+      ? { state: "missing_permission", missing, grantFeature: null, enable: [] }
+      : { state: "available", missing: [], grantFeature: null, enable: [] };
+  };
 
-const databases: PGliteModuleDatabase[] = [];
-afterEach(async () => {
-  for (const database of databases.splice(0)) await database.close();
+// One database for the scheduler tests; each test works in a tenant of its own.
+let database: PGliteModuleDatabase;
+beforeAll(async () => {
+  database = await PGliteModuleDatabase.open();
+}, 60_000);
+afterAll(async () => {
+  await database?.close();
 });
 
-async function setup(schedule: AuditSchedule["audits"]) {
-  const database = await PGliteModuleDatabase.open();
-  databases.push(database);
+async function setup(schedule: AuditSchedule["audits"], enabledPacks = somePacks) {
+  const tenantId = randomUUID();
   let now = new Date("2026-10-22T12:00:00Z");
   const clock = () => now;
   const fake = fakeRunner(database, clock);
@@ -122,7 +133,8 @@ async function setup(schedule: AuditSchedule["audits"]) {
     database,
     audits: builtInAudits,
     credential: () => credential,
-    availability,
+    enabledPacks,
+    availability: availability(enabledPacks),
     graphClient: (getAccessToken) => new GraphHttpClient({ getAccessToken }),
     ledger: async (tenant, actor, event) => {
       ledger.push({ tenantId: tenant, actorId: actor, event });
@@ -137,6 +149,7 @@ async function setup(schedule: AuditSchedule["audits"]) {
     );
   await save(schedule);
   return {
+    tenantId,
     database,
     scheduler,
     fake,
@@ -184,15 +197,15 @@ describe("audit scheduler", () => {
   it("counts a weekly audit from the newest start of any run, manual and failed included", async () => {
     const s = await setup({ "guests.review": "weekly" });
     const id = randomUUID();
-    await s.database.tenant(tenantId, async (sql) => {
-      await insertRun(sql, tenantId, {
+    await s.database.tenant(s.tenantId, async (sql) => {
+      await insertRun(sql, s.tenantId, {
         id,
         auditId: "guests.review",
         auditVersion: 1,
         startedAt: new Date("2026-10-15T13:00:00Z"),
         startedBy: { id: actorId, name: null },
       });
-      await finishRun(sql, tenantId, id, new Date("2026-10-15T13:01:00Z"), {
+      await finishRun(sql, s.tenantId, id, new Date("2026-10-15T13:01:00Z"), {
         status: "failed",
         code: "forbidden",
         message: "Microsoft refused.",
@@ -218,8 +231,8 @@ describe("audit scheduler", () => {
     s.advance(60_000);
     await s.scheduler.tick();
     expect(s.fake.starts).toHaveLength(2);
-    const runs = await s.database.tenant(tenantId, (sql) =>
-      listRuns(sql, tenantId, "accounts.inactive"),
+    const runs = await s.database.tenant(s.tenantId, (sql) =>
+      listRuns(sql, s.tenantId, "accounts.inactive"),
     );
     expect(runs.map((run) => [run.status, run.trigger])).toEqual([
       ["failed", "schedule"],
@@ -227,14 +240,26 @@ describe("audit scheduler", () => {
     ]);
   });
 
-  it("skips an audit the collecting sign-in has not granted, and logs only a category", async () => {
-    const s = await setup({ "mfa.registration": "daily", "guests.review": "daily" });
+  it("skips an audit whose packs are not enabled or granted, and logs only a category", async () => {
+    const s = await setup({
+      "accounts.inactive": "daily",
+      "mfa.registration": "daily",
+      "guests.review": "daily",
+    });
     s.grant(["User.Read", "User.Read.All"]);
     await s.scheduler.tick();
     expect(s.fake.started()).toEqual(["guests.review"]);
-    expect(s.logs).toContain("Prism365 scheduled audit mfa.registration skipped (missing_permission).");
+    expect(s.logs).toContain(
+      "Prism365 scheduled audit accounts.inactive skipped (missing_permission).",
+    );
+    // The MFA audit's own pack is not enabled here, whatever the session granted.
+    expect(s.logs).toContain("Prism365 scheduled audit mfa.registration skipped (not_enabled).");
+    // Skipped audits stay due: granted later, they run on the next tick.
+    s.grant(["User.Read", "User.Read.All", "AuditLog.Read.All"]);
+    await s.scheduler.tick();
+    expect(s.fake.started()).toEqual(["guests.review", "accounts.inactive"]);
     const logged = s.logs.join("\n");
-    expect(logged).not.toContain(tenantId);
+    expect(logged).not.toContain(s.tenantId);
     expect(logged).not.toContain(actorId);
     expect(logged).not.toContain("Synthetic admin");
   });
@@ -256,16 +281,23 @@ describe("audit scheduler", () => {
   });
 
   it("stops the pass when collection stops, or a schedule is turned off, during a run", async () => {
-    const s = await setup({
-      "accounts.inactive": "daily",
-      "licenses.reclaim": "daily",
-      "mfa.registration": "daily",
-      "guests.review": "daily",
-    });
+    const s = await setup(
+      {
+        "accounts.inactive": "daily",
+        "licenses.reclaim": "daily",
+        "mfa.registration": "daily",
+        "guests.review": "daily",
+      },
+      morePacks,
+    );
     s.fake.finishWith("hold");
     const pass = s.scheduler.tick();
     await vi.waitFor(() => expect(s.fake.starts).toHaveLength(1));
-    await s.save({ "accounts.inactive": "daily", "mfa.registration": "daily", "guests.review": "daily" });
+    await s.save({
+      "accounts.inactive": "daily",
+      "mfa.registration": "daily",
+      "guests.review": "daily",
+    });
     await s.fake.release();
     // Reclaim was turned off while inactive accounts ran: MFA is next.
     await vi.waitFor(() => expect(s.fake.starts).toHaveLength(2));
@@ -279,7 +311,7 @@ describe("audit scheduler", () => {
 
   it("leaves an audit alone while a run of it is in progress", async () => {
     const s = await setup({ "accounts.inactive": "daily" });
-    s.fake.running.set(`${tenantId}:accounts.inactive`, randomUUID());
+    s.fake.running.set(`${s.tenantId}:accounts.inactive`, randomUUID());
     await s.scheduler.tick();
     expect(s.fake.starts).toEqual([]);
   });
@@ -288,18 +320,21 @@ describe("audit scheduler", () => {
     const s = await setup({ "guests.review": "daily" });
     await s.scheduler.tick();
     const [input] = s.fake.starts;
+    // Its own pack and the enabled optional one, with only the permissions those carry; the
+    // license pack is not enabled here, so it is not read.
     expect(input).toMatchObject({
-      tenantId,
+      tenantId: s.tenantId,
       actor: { id: actorId, name: "Synthetic admin" },
       trigger: "schedule",
-      granted: ["User.Read", "User.Read.All", "AuditLog.Read.All"],
+      packs: ["directory.users.read", "audit.signins.read"],
+      granted: ["User.Read.All", "AuditLog.Read.All"],
     });
-    const [run] = await s.database.tenant(tenantId, (sql) =>
-      listRuns(sql, tenantId, "guests.review"),
+    const [run] = await s.database.tenant(s.tenantId, (sql) =>
+      listRuns(sql, s.tenantId, "guests.review"),
     );
     expect(s.ledger).toEqual([
       {
-        tenantId,
+        tenantId: s.tenantId,
         actorId,
         event: {
           type: "audit.run.started",
@@ -317,7 +352,7 @@ describe("audit scheduler", () => {
   it("pauses the pass when the collecting sign-in is gone", async () => {
     const s = await setup({ "accounts.inactive": "daily" });
     s.setCredential({
-      tenantId,
+      tenantId: s.tenantId,
       actorId,
       displayName: null,
       grantedPermissions: async () => {
