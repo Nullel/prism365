@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type Audit,
   finishRun,
   getRun,
   guestAccountsAudit,
@@ -182,7 +183,23 @@ describe("audits API", () => {
       "mfa.registration",
       "guests.review",
       "licenses.capacity",
+      "devices.managed",
+      "apps.consents",
+      "usage.m365-apps",
     ]);
+    // Reads this installation has not enabled are named, so the page says what to add.
+    expect(by("devices.managed")).toMatchObject({
+      state: "not_enabled",
+      enable: ["devices.intune.read"],
+    });
+    expect(by("apps.consents")).toMatchObject({
+      state: "not_enabled",
+      enable: ["directory.applications.read"],
+    });
+    expect(by("usage.m365-apps")).toMatchObject({
+      state: "not_enabled",
+      enable: ["reports.usage.read"],
+    });
     expect(by("accounts.inactive")).toEqual({
       state: "missing_permission",
       missing: ["AuditLog.Read.All"],
@@ -343,6 +360,22 @@ describe("audit runner", () => {
     gate = null;
     const stopped = await database.tenant(tenantId, (sql) => getRun(sql, tenantId, runId));
     expect(stopped).toMatchObject({ status: "failed", error: { code: "interrupted" } });
+  });
+
+  it("tells an audit which Microsoft tenant the session belongs to", async () => {
+    let seen: string | undefined;
+    const probe: Audit = {
+      ...guestAccountsAudit,
+      definition: { ...guestAccountsAudit.definition, id: "probe.tenant" },
+      async run(context) {
+        seen = context.tenantId;
+        return { rows: [], summary: [], notes: [], complete: true };
+      },
+    };
+    const fresh = new AuditRunner({ database });
+    await fresh.start({ tenantId, actor, audit: probe, client: client(), granted: [] });
+    await fresh.idle();
+    expect(seen).toBe(tenantId);
   });
 });
 

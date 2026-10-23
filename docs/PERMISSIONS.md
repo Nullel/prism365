@@ -36,7 +36,9 @@ This table groups the intended scope for review.
 | `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Entra ID P2; not targeted for China |
 | `security.score.read` | Graph | `SecurityEvents.Read.All` | Experimental | Applicable subscriptions; not targeted for China |
 | `security.incidents.read` | Graph | `SecurityIncident.Read.All` | Experimental | Defender entitlement and security role; not targeted for China |
-| `devices.intune.read` | Graph | `DeviceManagementManagedDevices.Read.All` | Experimental | Active Intune license and role |
+| `devices.intune.read` | Graph | `DeviceManagementManagedDevices.Read.All` | Experimental | Active Intune license and role; read by the Managed devices audit |
+| `directory.applications.read` | Graph | `Application.Read.All` | Experimental | App consents audit; a role that can read app role assignments (Directory Readers or an application administrator; Microsoft does not list Global Reader for that call) |
+| `directory.permission-grants.read` | Graph | `Directory.Read.All` | Experimental | Optional for the App consents audit: delegated consents; a role such as Global Reader or Directory Readers |
 | `purview.entra.read` | Graph/Purview | `AuditLogsQuery-Entra.Read.All` | Experimental | Purview Audit availability, roles, query limits, and retention |
 | `audit.activity-feed.read` | Management Activity | `ActivityFeed.Read` | Future | Unified audit enabled and content subscription started |
 | `exchange.configuration.read` | Exchange Online PowerShell | `Exchange.ManageAsApp` | Future | Certificate/federation plus narrow Exchange RBAC |

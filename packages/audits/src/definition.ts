@@ -16,6 +16,9 @@ export interface AuditContext {
   // The account domains the administrator limited the audits to, as saved when the run started,
   // in lower case. null means every domain. Only an audit that declares `scoped` looks at it.
   readonly scope: ReadonlySet<string> | null;
+  // The Microsoft tenant ID of the signed-in session, for an audit that has to tell this tenant's
+  // own objects from other organisations'. Unset when the caller does not know it.
+  readonly tenantId?: string;
 }
 
 export interface AuditResult {
