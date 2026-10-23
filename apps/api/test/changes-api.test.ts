@@ -174,9 +174,14 @@ const get = (url: string, session = cookie, target = app) =>
   target.inject({ method: "GET", url, headers: session ? { cookie: session } : {} });
 
 describe("change feed API", () => {
-  it("requires a session", async () => {
-    for (const url of ["/v1/changes", `/v1/people/${personId}/changes`])
+  it("requires a session, in live mode and in demo mode", async () => {
+    const demo = createApp();
+    for (const url of ["/v1/changes", `/v1/people/${personId}/changes`]) {
       expect((await get(url, "")).statusCode).toBe(401);
+      // Demo mode has no sign-in in front of the routes: the route's own check answers.
+      expect((await get(url, "", demo)).statusCode).toBe(401);
+    }
+    await demo.close();
   });
 
   it("answers 409 in plain words without module storage or without the module", async () => {

@@ -66,6 +66,19 @@ The "Check Have I Been Pwned" button on a person page opens haveibeenpwned.com w
 address in the link, so the administrator's browser, not Prism365, sends it to HIBP, only when
 the button is pressed. The address also lands in that browser's history.
 
+## Directory changes
+
+The directory change feed (`docs/modules/directory-changes.md`) keeps every Microsoft Entra
+directory audit event it collects: when it happened, the activity, who made the change (name,
+sign-in name or application ID, never the IP address), the accounts and objects it was made to,
+and the changed values before and after, each cut to 400 characters. This table has no
+retention rule. Microsoft keeps the events 7 or 30 days, and keeping them longer is the reason
+the feature exists, so the history stays until the operator deletes it from the database; a
+deletion route does not exist yet and is required before a stable release, as for findings.
+Opening the feed or a person's changes writes an access-ledger entry (`changes.viewed`,
+`person.changes.viewed`) that names the dataset and the range in days, not a person, a search
+text or a value.
+
 ## Audit results
 
 Each audit run stores the rows it found in `prism365_audit_run`: account names, sign-in names,
