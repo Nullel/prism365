@@ -661,6 +661,10 @@ export function ResultTable({
     [definition.columns, hasPeople, rows],
   );
   const [handoff, setHandoff] = useState({ busy: false, error: "", noted: false });
+  // Only an audit of accounts an action tool works on offers a handoff, and only for a run whose
+  // rows name accounts by their directory id.
+  const handoffable =
+    definition.handoff && hasPeople && run.rows.some((row) => Boolean(row.personId));
   const queryKey = JSON.stringify([view, facets, search, sort]);
   const limit = page.key === queryKey ? page.limit : PAGE_ROWS;
   const columns = definition.columns.filter((column) => shown.has(column.key));
@@ -779,7 +783,7 @@ export function ResultTable({
             >
               <DownloadIcon /> Export CSV
             </a>
-            {hasPeople ? (
+            {handoffable ? (
               <button
                 className="button button--secondary"
                 type="button"

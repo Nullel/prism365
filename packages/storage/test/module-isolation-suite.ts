@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Receipt } from "@prism365/contracts";
+// The import route's store, run here so the race between imports of one id is tried on real
+// PostgreSQL, where transactions truly overlap, as well as on PGlite.
+import { insertReceipt } from "../../../apps/api/src/handoff-store.ts";
 import { type MigrationScope, type ModuleDatabase, SqlGuardError } from "../src/index.ts";
 
 // Shared by the PGlite run (module-db.test.ts) and the PostgreSQL run (postgres.test.ts), so
@@ -123,8 +127,8 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
           sql.query(
             `INSERT INTO prism365_receipt (tenant_id, id, handoff_id, tool_name, tool_version,
                performed_at, performed_by, items, done_count, failed_count, skipped_count,
-               imported_at, imported_by, digest)
-             VALUES ($1,$2,$3,'Example tool','1',now(),'Operator',1,1,0,0,now(),$1,$4)`,
+               imported_at, imported_by, digest, digest_version)
+             VALUES ($1,$2,$3,'Example tool','1',now(),'Operator',1,1,0,0,now(),$1,$4,1)`,
             [tenant, receipt, null, "a".repeat(64)],
           ),
         );
@@ -136,15 +140,16 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
         await db().tenant(tenant, (sql) =>
           sql.query(
             `INSERT INTO prism365_receipt_item (tenant_id, receipt_id, position, user_id,
-               user_principal_name, action, status, detail)
-             VALUES ($1,$2,0,NULL,'Shared@Example.invalid','account.disabled','done',$3)`,
+               user_principal_name, user_principal_key, action, status, detail)
+             VALUES ($1,$2,0,NULL,'Shared@Example.invalid','shared@example.invalid',
+                     'account.disabled','done',$3)`,
             [tenant, receipt, detail],
           ),
         );
       }
       const seen = await db().tenant(tenantA, (sql) =>
         sql.query<{ detail: string }>(
-          "SELECT detail FROM prism365_receipt_item WHERE lower(user_principal_name) = lower($1)",
+          "SELECT detail FROM prism365_receipt_item WHERE user_principal_key = $1",
           ["shared@example.invalid"],
         ),
       );
@@ -154,9 +159,9 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
       const addHandoff = (tenant: string, owner: string) =>
         db().tenant(tenant, (sql) =>
           sql.query(
-            `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, items,
-               generated_at, generated_by)
-             VALUES ($1,$2,'accounts.inactive','Inactive accounts',$3,0,now(),$3)`,
+            `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, complete,
+               items, generated_at, generated_by)
+             VALUES ($1,$2,'accounts.inactive','Inactive accounts',$3,true,0,now(),$3)`,
             [owner, handoff, randomUUID()],
           ),
         );
@@ -167,8 +172,8 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
           sql.query(
             `INSERT INTO prism365_receipt (tenant_id, id, handoff_id, tool_name, tool_version,
                performed_at, performed_by, items, done_count, failed_count, skipped_count,
-               imported_at, imported_by, digest)
-             VALUES ($1,$2,$3,'Example tool','1',now(),'Operator',1,1,0,0,now(),$1,$4)`,
+               imported_at, imported_by, digest, digest_version)
+             VALUES ($1,$2,$3,'Example tool','1',now(),'Operator',1,1,0,0,now(),$1,$4,1)`,
             [tenantA, randomUUID(), handoff, "a".repeat(64)],
           ),
         ),
@@ -184,6 +189,53 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
           ),
         ),
       ).rejects.toMatchObject({ code: "23514" });
+    });
+
+    it("keeps one receipt when imports of one id overlap, and tells each which one", async () => {
+      const id = randomUUID();
+      const receipt = (items: number): Receipt => ({
+        format: "prism365.receipt",
+        version: 1,
+        id,
+        handoffId: null,
+        tool: { name: "Example action tool", version: "1" },
+        performedAt: new Date().toISOString(),
+        performedBy: "Operator",
+        items: Array.from({ length: items }, (_, index) => ({
+          userId: `user-${index}`,
+          userPrincipalName: null,
+          action: "account.disabled",
+          status: "done",
+          detail: "",
+        })),
+      });
+      // Eight imports at once: four of a one-item receipt, four of a two-item one.
+      const outcomes = await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          db().tenant(tenantA, (sql) =>
+            insertReceipt(sql, tenantA, receipt(index % 2 ? 1 : 2), {
+              digest: (index % 2 ? "b" : "c").repeat(64),
+              digestVersion: 1,
+              importedAt: new Date(),
+              importedBy: tenantA,
+            }),
+          ),
+        ),
+      );
+      expect(outcomes.filter((outcome) => outcome.inserted)).toHaveLength(1);
+      const winner = outcomes.find((outcome) => outcome.inserted);
+      // Every other import sees the winner, whichever it lost to.
+      for (const outcome of outcomes) {
+        expect(outcome.digest).toBe(winner?.digest);
+        expect(outcome.summary.items).toBe(winner?.summary.items);
+      }
+      const stored = await db().tenant(tenantA, (sql) =>
+        sql.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM prism365_receipt_item WHERE receipt_id=$1",
+          [id],
+        ),
+      );
+      expect(stored.rows[0]?.n).toBe(winner?.summary.items);
     });
 
     it("refuses identity, setting, schema, and multi-statement SQL at runtime", async () => {

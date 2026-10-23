@@ -233,6 +233,8 @@ export function createM365AppUsageAudit(options: UsageAuditOptions = {}): Audit 
   return {
     definition: {
       id: "usage.m365-apps",
+      // Accounts an action tool could act on (docs/handoff.md).
+      handoff: true,
       version: 1,
       title: "Microsoft 365 app usage",
       description:

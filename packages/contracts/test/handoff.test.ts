@@ -10,11 +10,14 @@ import {
   handoffItems,
   handoffSchema,
   handoffSelection,
+  handoffView,
   MAX_HANDOFF_ITEMS,
   MAX_RECEIPT_ITEMS,
+  principalKey,
   queryAuditRows,
   receiptProblem,
   receiptSchema,
+  scopeFileSuffix,
 } from "../src/index.ts";
 
 // Synthetic accounts and tools only.
@@ -92,7 +95,7 @@ const receipt = (overrides: Record<string, unknown> = {}, item: Record<string, u
   ...overrides,
 });
 
-const handoff = () =>
+const handoff = (run: { complete?: boolean; scope?: string[] | null } = {}) =>
   buildHandoff({
     id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
     generatedAt: "2026-10-22T15:00:00.000Z",
@@ -104,6 +107,8 @@ const handoff = () =>
       auditVersion: 3,
       startedAt: "2026-10-21T09:00:00.000Z",
       finishedAt: "2026-10-21T09:01:00.000Z",
+      complete: run.complete ?? true,
+      scope: run.scope ?? null,
     },
     query: { view: "d30" },
     rows: queryAuditRows(definition, rows, { view: "d30" }),
@@ -121,6 +126,8 @@ describe("handoff v1", () => {
       auditVersion: 3,
       runId: "66666666-6666-4666-8666-666666666666",
       runFinishedAt: "2026-10-21T09:01:00.000Z",
+      scope: null,
+      complete: true,
       view: { id: "d30", label: "30+ days" },
       search: "",
       facets: {},
@@ -143,6 +150,19 @@ describe("handoff v1", () => {
     });
   });
 
+  it("says when its run was limited to some domains or partial", () => {
+    const limited = handoff({ complete: false, scope: ["contoso.example", "sales.example"] });
+    expect(limited.source.scope).toEqual(["contoso.example", "sales.example"]);
+    expect(limited.source.complete).toBe(false);
+    // An empty scope is every domain, as the run store reads it.
+    expect(handoff({ scope: [] }).source.scope).toBeNull();
+    expect(
+      handoffSchema.safeParse({ ...limited, source: { ...limited.source, scope: [] } }).success,
+    ).toBe(false);
+    const { complete: _complete, ...withoutComplete } = limited.source;
+    expect(handoffSchema.safeParse({ ...limited, source: withoutComplete }).success).toBe(false);
+  });
+
   it("takes the columns the page shows, keeping two columns with one label apart", () => {
     const [item] = handoffItems(
       definition,
@@ -155,13 +175,30 @@ describe("handoff v1", () => {
   it("records what the export applied, as queryAuditRows applies it", () => {
     expect(
       handoffSelection(definition, {
-        view: "missing",
+        view: "d90",
         facets: { status: "Disabled", days: "1", department: "" },
         search: "  person ",
         sort: { column: "nope", direction: "asc" },
       }),
-    ).toEqual({ view: null, search: "person", facets: { status: "Disabled" }, sort: null });
+    ).toEqual({
+      view: { id: "d90", label: "90+ days" },
+      search: "person",
+      facets: { status: "Disabled" },
+      sort: null,
+    });
     expect(handoffSelection(definition, {}).view).toEqual({ id: "d30", label: "30+ days" });
+  });
+
+  it("never stands an unknown view in for every row", () => {
+    // queryAuditRows selects every row for a view the audit does not have; a handoff refuses it.
+    expect(queryAuditRows(definition, rows, { view: "missing" })).toHaveLength(rows.length);
+    expect(handoffView(definition, "missing")).toBeNull();
+    expect(handoffView(definition, null)?.id).toBe("d30");
+    expect(() => handoffSelection(definition, { view: "missing" })).toThrow(RangeError);
+    const document = handoff();
+    expect(
+      handoffSchema.safeParse({ ...document, source: { ...document.source, view: null } }).success,
+    ).toBe(false);
   });
 
   it("cleans and bounds stored text on the way out", () => {
@@ -216,10 +253,16 @@ describe("handoff v1", () => {
     for (const value of invalid) expect(handoffSchema.safeParse(value).success).toBe(false);
   });
 
-  it("names the file after the audit and the day of its run", () => {
+  it("names the file after the audit and the day of its run, and says when it is limited", () => {
     expect(handoffFileName("accounts.inactive", "2026-10-21T09:00:00.000Z")).toBe(
       "prism365-handoff-accounts.inactive-2026-10-21.json",
     );
+    expect(handoffFileName("accounts.inactive", "2026-10-21T09:00:00.000Z", ["a.example"])).toBe(
+      "prism365-handoff-accounts.inactive-2026-10-21-limited-to-1-domain.json",
+    );
+    expect(scopeFileSuffix(["a.example", "b.example"])).toBe("-limited-to-2-domains");
+    expect(scopeFileSuffix([])).toBe("");
+    expect(scopeFileSuffix(null)).toBe("");
   });
 });
 
@@ -295,7 +338,16 @@ describe("receipt v1", () => {
       [receipt({ performedAt: "9999-12-31T23:59:59-14:00" }), false],
       [receipt({ performedAt: "1999-12-31T23:59:59Z" }), false],
       [receipt({ performedAt: "2000-01-01T00:00:00Z" }), true],
-      [receipt({ performedAt: "2099-12-31T23:59:59+02:00" }), true],
+      // Offsets PostgreSQL refuses: it takes 15:59 at most, the format allows 23:59.
+      [receipt({ performedAt: "2026-10-22T14:30:00+16:00" }), false],
+      [receipt({ performedAt: "2026-10-22T14:30:00-16:00" }), false],
+      [receipt({ performedAt: "2026-10-22T14:30:00+23:59" }), false],
+      [receipt({ performedAt: "2026-10-22T14:30:00+15:59" }), true],
+      [receipt({ performedAt: "2026-10-22T14:30:00-15:59" }), true],
+      // More than a day ahead of the clock would sort first for as long as it is kept.
+      [receipt({ performedAt: new Date(Date.now() + 2 * 86_400_000).toISOString() }), false],
+      [receipt({ performedAt: new Date(Date.now() + 3_600_000).toISOString() }), true],
+      [receipt({ performedAt: "2099-12-31T23:59:59+02:00" }), false],
       [receipt({ format: "prism365.handoff" }), false],
       [receipt({ version: 2 }), false],
     ];
@@ -317,8 +369,37 @@ describe("receipt v1", () => {
       "account_disabled",
       "account disabled",
       "account/disabled",
+      // Kept for Prism365's own names.
+      "prism365.account.disabled",
     ])
       expect(receiptSchema.safeParse(receipt({}, { action })).success, action).toBe(false);
+  });
+
+  it("keeps performedAt in UTC", () => {
+    const at = (performedAt: string) => receiptSchema.parse(receipt({ performedAt })).performedAt;
+    expect(at("2026-10-22T14:30:00+02:00")).toBe("2026-10-22T12:30:00.000Z");
+    expect(at("2026-10-22T14:30:00+00:00")).toBe(at("2026-10-22T14:30:00Z"));
+  });
+
+  it("never lets a receipt pass for Prism365's own", () => {
+    for (const name of [
+      "Prism365",
+      "prism365",
+      " PRISM365 ",
+      "\uFF30\uFF52\uFF49\uFF53\uFF4D\uFF13\uFF16\uFF15",
+      "\u202EPrism365",
+    ])
+      expect(receiptSchema.safeParse(receipt({ tool: { name, version: "1" } })).success, name).toBe(
+        false,
+      );
+    expect(
+      receiptSchema.safeParse(receipt({ tool: { name: "Prism365 helper", version: "1" } })).success,
+    ).toBe(true);
+    const result = receiptSchema.safeParse(receipt({ tool: { name: "Prism365", version: "1" } }));
+    if (!result.success)
+      expect(receiptProblem(receipt(), result.error)).toBe(
+        "tool.name cannot be Prism365: a receipt reports what another tool did.",
+      );
   });
 
   it("cleans every string the tool sent", () => {
@@ -335,6 +416,27 @@ describe("receipt v1", () => {
     expect(parsed.performedBy).toBe("Op�erator");
     expect(parsed.items[0]?.userPrincipalName).toBe("avery@example.invalid");
     expect(parsed.items[0]?.detail).toBe("Blocked at�");
+  });
+
+  it("removes characters that reorder how text is displayed", () => {
+    const parsed = receiptSchema.parse(
+      receipt(
+        { tool: { name: "Example \u202Eloot\u202C tool", version: "\u2066 1.0\u2069" } },
+        {
+          userPrincipalName: "\u200Favery@example.invalid",
+          detail: "Blocked \u202Agnp.exe\u202C after \u2067review\u2069\u200E",
+        },
+      ),
+    );
+    expect(parsed.tool).toEqual({ name: "Example loot tool", version: "1.0" });
+    expect(parsed.items[0]?.userPrincipalName).toBe("avery@example.invalid");
+    expect(parsed.items[0]?.detail).toBe("Blocked gnp.exe after review");
+  });
+
+  it("matches principal names by one key whatever their form", () => {
+    // The Kelvin sign and fullwidth letters are the same name once NFKC-normalised.
+    expect(principalKey("\u212Aelvin@Example.invalid")).toBe("kelvin@example.invalid");
+    expect(principalKey("\uFF41very@example.invalid")).toBe("avery@example.invalid");
   });
 
   it("says what is wrong in plain words", () => {
@@ -378,6 +480,17 @@ describe("receipt v1", () => {
     expect(problem(receipt({ handoffId: 7 }))).toBe("handoffId should be a string or null.");
     expect(problem(receipt({ performedAt: "1970-01-01T00:00:00Z" }))).toBe(
       "performedAt is not between the years 2000 and 2099.",
+    );
+    expect(problem(receipt({ performedAt: "2026-10-22T14:30:00+16:00" }))).toBe(
+      "performedAt has a time zone offset beyond 15:59, which no time zone uses.",
+    );
+    expect(
+      problem(receipt({ performedAt: new Date(Date.now() + 2 * 86_400_000).toISOString() })),
+    ).toBe(
+      "performedAt is more than a day in the future. Check the clock of the computer the tool ran on.",
+    );
+    expect(problem(receipt({}, { action: "prism365.account.disabled" }))).toBe(
+      "items[0].action starts with prism365., which is kept for Prism365's own names.",
     );
   });
 

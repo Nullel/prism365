@@ -74,6 +74,10 @@ export const auditDefinitionSchema = z.object({
   requirements: z.array(text).max(10),
   // The audit only covers the account domains the administrator chose (see auditScopeSchema).
   scoped: z.boolean().default(false),
+  // Its rows are accounts an action tool could act on, so its results can be exported as a
+  // handoff (docs/handoff.md). Off unless the audit says so: a person column alone (a device's
+  // owner) does not make a row an account to act on.
+  handoff: z.boolean().default(false),
 });
 export type AuditDefinition = z.infer<typeof auditDefinitionSchema>;
 export type AuditDefinitionInput = z.input<typeof auditDefinitionSchema>;

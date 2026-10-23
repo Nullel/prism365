@@ -5,6 +5,7 @@ import {
   canonicalJson,
   handoffFileName,
   handoffListSchema,
+  handoffView,
   hasPersonColumn,
   MAX_RECEIPT_BYTES,
   normalizeUserId,
@@ -27,8 +28,10 @@ import {
   listHandoffs,
   listReceipts,
   personReceiptItems,
+  pruneHandoffs,
   receiptItems,
   type StoredReceipt,
+  statusCounts,
 } from "../handoff-store.ts";
 import type { RouteContext } from "./context.ts";
 
@@ -47,6 +50,11 @@ const signIn = {
   error: "authentication_required",
   message: "Sign in with an authorized administrator account.",
 };
+const unknownHandoff = {
+  error: "unknown_handoff",
+  message:
+    "handoffId is not a handoff exported from this Prism365. Check that the receipt answers a handoff from this tenant, or send null.",
+};
 const runParams = z.object({ runId: z.uuid() });
 // The columns the page shows, as comma-separated keys: up to 30 keys of up to 40 characters.
 const columnsParam = z
@@ -63,14 +71,22 @@ const personParams = z.object({ userId: personIdSchema });
 // The principal name the person's page shows, for items that name only that.
 const personQuery = z.object({ principal: z.string().trim().min(1).max(500).optional() });
 
-function receiptDigest(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+// How a receipt's digest is taken: the SHA-256 of the body as received, in canonical JSON (keys
+// sorted, no whitespace), before any validation, cleaning or normalisation. Sending the same file
+// again always gives the same digest, whatever later versions of Prism365 change in how they
+// clean or normalise. Stored with each receipt; a change to this method takes a new version.
+export const RECEIPT_DIGEST_VERSION = 1;
+
+export function receiptDigest(body: unknown): string {
+  return createHash("sha256").update(canonicalJson(body)).digest("hex");
 }
 
 // A receipt id already stored: the same receipt again is answered as before, a different one is
-// refused. A kept receipt never changes; a tool corrects itself with a new receipt.
+// refused. A kept receipt never changes; a tool corrects itself with a new receipt. A digest
+// taken another way cannot be compared, so a receipt kept under another version is answered as
+// kept rather than refused.
 function answerStored(reply: FastifyReply, stored: StoredReceipt, digest: string) {
-  if (stored.digest === digest)
+  if (stored.digestVersion !== RECEIPT_DIGEST_VERSION || stored.digest === digest)
     return reply
       .status(200)
       .send(receiptImportSchema.parse({ receipt: stored.summary, imported: false }));
@@ -83,6 +99,9 @@ function answerStored(reply: FastifyReply, stored: StoredReceipt, digest: string
 
 export function registerHandoffRoutes(app: FastifyInstance, context: RouteContext): void {
   const { store } = context;
+  // Handoffs and receipts older than this are deleted when the next one is stored.
+  const retentionStart = () =>
+    new Date(Date.now() - context.settings.handoffRetentionDays * 86_400_000);
 
   // The accounts in an audit's current view, with reasons and evidence, as a file for the tool
   // that acts on them. It takes the same parameters as the CSV export and parses them the same
@@ -109,12 +128,27 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
         .status(404)
         .send({ error: "run_not_found", message: "That run has no results." });
     const definition = auditDefinition(audit);
-    if (!hasPersonColumn(definition))
+    // Only audits whose rows are accounts a tool could act on say so; a person column alone (a
+    // device's owner) is not enough.
+    if (!definition.handoff || !hasPersonColumn(definition))
+      return reply.status(404).send({
+        error: "not_handed_off",
+        message: "This audit's rows are not accounts for an action tool, so it has no handoff.",
+      });
+    // An account is handed off by its directory id. A run whose rows carry none (a usage report
+    // that names accounts only by sign-in name, or conceals them) has nothing to hand off.
+    if (!run.rows.some((row) => row.personId))
       return reply.status(404).send({
         error: "no_accounts",
-        message: "This audit lists no accounts, so it has nothing to hand off.",
+        message: "This run names no accounts by their directory id, so it has nothing to hand off.",
       });
     const selection = auditExportQuery(query.data);
+    // The CSV export takes an unknown view to mean every row. A handoff never does: it would hand
+    // off accounts nobody chose.
+    if (!handoffView(definition, selection.view ?? null))
+      return reply
+        .status(400)
+        .send({ error: "unknown_view", message: "This audit has no view with that name." });
     const handoff = buildHandoff({
       id: randomUUID(),
       generatedAt: new Date().toISOString(),
@@ -136,24 +170,27 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
       occurredAt: handoff.generatedAt,
     });
     const { source } = handoff;
-    await modules.database.tenant(tenantId, (sql) =>
-      insertHandoff(sql, tenantId, {
+    await modules.database.tenant(tenantId, async (sql) => {
+      await insertHandoff(sql, tenantId, {
         id: handoff.id,
         auditId: source.auditId,
         auditTitle: source.auditTitle,
         runId: source.runId,
         view: source.view,
         filtered: source.search !== "" || Object.keys(source.facets).length > 0,
+        scope: source.scope,
+        complete: source.complete,
         items: handoff.items.length,
         generatedAt: handoff.generatedAt,
         generatedBy: { id: session.actorId, name: handoff.generatedBy.name },
-      }),
-    );
+      });
+      await pruneHandoffs(sql, tenantId, retentionStart());
+    });
     return reply
       .header("Content-Type", "application/json; charset=utf-8")
       .header(
         "Content-Disposition",
-        `attachment; filename="${handoffFileName(run.auditId, run.startedAt)}"`,
+        `attachment; filename="${handoffFileName(run.auditId, run.startedAt, run.scope)}"`,
       )
       .send(`${JSON.stringify(handoff, null, 2)}\n`);
   });
@@ -207,38 +244,49 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
           .status(400)
           .send({ error: "invalid_receipt", message: receiptProblem(request.body, parsed.error) });
       const receipt = parsed.data;
-      // Of the receipt as validated and cleaned, so key order and spacing never matter.
-      const digest = receiptDigest(receipt);
+      // Of the body as received (RECEIPT_DIGEST_VERSION), not of the cleaned receipt.
+      const digest = receiptDigest(request.body);
       const tenantId = session.tenantId;
       const known = await modules.database.tenant(tenantId, async (sql) => ({
         stored: await findReceipt(sql, tenantId, receipt.id),
         handoff: receipt.handoffId ? await handoffExists(sql, tenantId, receipt.handoffId) : true,
       }));
       if (known.stored) return answerStored(reply, known.stored, digest);
-      if (!known.handoff)
-        return reply.status(400).send({
-          error: "unknown_handoff",
-          message:
-            "handoffId is not a handoff exported from this Prism365. Check that the receipt answers a handoff from this tenant, or send null.",
-        });
+      if (!known.handoff) return reply.status(400).send(unknownHandoff);
       const importedAt = new Date();
-      // The ledger entry comes first, so no receipt is ever kept unrecorded.
+      const counts = statusCounts(receipt);
+      // The ledger entry comes before anything is stored, so no receipt is ever kept unrecorded.
+      // Ids and counts only: nothing the tool wrote in its own words.
       await store.appendAudit(tenantId, session.actorId, {
         type: "receipt.imported",
         receiptId: receipt.id,
         handoffId: receipt.handoffId,
         items: receipt.items.length,
-        tool: receipt.tool.name,
+        done: counts.done,
+        failed: counts.failed,
+        skipped: counts.skipped,
         occurredAt: importedAt.toISOString(),
       });
-      // The receipt and all its items in one transaction: any item that fails keeps nothing.
-      const outcome = await modules.database.tenant(tenantId, (sql) =>
-        insertReceipt(sql, tenantId, receipt, {
-          digest,
-          importedAt,
-          importedBy: session.actorId,
-        }),
-      );
+      // The receipt and all its items in one transaction, with the retention clean-up after the
+      // insert: any item that fails keeps nothing.
+      let outcome: Awaited<ReturnType<typeof insertReceipt>>;
+      try {
+        outcome = await modules.database.tenant(tenantId, async (sql) => {
+          const stored = await insertReceipt(sql, tenantId, receipt, {
+            digest,
+            digestVersion: RECEIPT_DIGEST_VERSION,
+            importedAt,
+            importedBy: session.actorId,
+          });
+          if (stored.inserted) await pruneHandoffs(sql, tenantId, retentionStart());
+          return stored;
+        });
+      } catch (error) {
+        // The handoff was deleted for age between the check above and the insert.
+        if ((error as { code?: unknown } | null)?.code === "23503")
+          return reply.status(400).send(unknownHandoff);
+        throw error;
+      }
       // Another request kept the same id a moment earlier.
       if (!outcome.inserted) return answerStored(reply, outcome, digest);
       return reply

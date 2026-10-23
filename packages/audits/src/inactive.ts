@@ -33,6 +33,8 @@ const thresholdLabel = (days: number) => (days === 365 ? "1 year+" : `${days}+ d
 export const inactiveAccountsAudit: Audit = {
   definition: {
     id: "accounts.inactive",
+    // Accounts an action tool could act on (docs/handoff.md).
+    handoff: true,
     version: 3,
     title: "Inactive accounts",
     description:

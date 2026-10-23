@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
+  auditDefinition,
+  builtInAudits,
+  findAudit,
   finishRun,
   inactiveAccountsAudit,
   insertRun,
   licenseCapacityAudit,
 } from "@prism365/audits";
-import { type AuditRow, handoffSchema, receiptSchema } from "@prism365/contracts";
+import { type AuditRow, canonicalJson, handoffSchema, receiptSchema } from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
 import { ModuleScheduler } from "@prism365/modules";
 import {
@@ -14,10 +17,10 @@ import {
   PGliteModuleDatabase,
   type SqlClient,
 } from "@prism365/storage";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.ts";
 import { AuditRunner } from "../src/audits.ts";
-import type { AppConfig, IdentityConfig } from "../src/config.ts";
+import { type AppConfig, type IdentityConfig, loadConfig } from "../src/config.ts";
 import { insertReceipt } from "../src/handoff-store.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../src/identity.ts";
 import { createModuleRegistry } from "../src/modules.ts";
@@ -90,8 +93,14 @@ const rows: AuditRow[] = [
 ];
 
 let failItemsFrom: number | null = null;
-// The module database the app sees: the real one, with a switch that makes storing receipt items
-// fail from a given position, to show a failed item keeps nothing of its receipt.
+// Makes the next look-up of a stored receipt answer "not found", as when another request stores
+// the same id between this request's check and its insert.
+let hideStoredReceiptOnce = false;
+// Reads of the handoff and receipt tables, to show the ledger entry is written before them.
+let handoffReads = 0;
+// The module database the app sees: the real one, with switches that make storing receipt items
+// fail from a given position, to show a failed item keeps nothing of its receipt, and that make
+// the import lose a race.
 function failingItems(database: ModuleDatabase): ModuleDatabase {
   return {
     kind: database.kind,
@@ -102,12 +111,17 @@ function failingItems(database: ModuleDatabase): ModuleDatabase {
         (sql) =>
           operation({
             query: <T extends object>(text: string, params?: readonly unknown[]) => {
+              if (/^\s*SELECT[\s\S]*FROM prism365_(handoff|receipt)/.test(text)) handoffReads += 1;
               if (
                 failItemsFrom !== null &&
                 text.includes("INSERT INTO prism365_receipt_item") &&
                 Number(params?.[2]) >= failItemsFrom
               )
                 return Promise.reject(new Error("Synthetic storage failure."));
+              if (hideStoredReceiptOnce && /WHERE r\.tenant_id=\$1 AND r\.id=\$2/.test(text)) {
+                hideStoredReceiptOnce = false;
+                return Promise.resolve({ rows: [] as T[], rowCount: 0 });
+              }
               return sql.query<T>(text, params);
             },
           } satisfies SqlClient),
@@ -126,16 +140,27 @@ let admin: { cookie: string; csrf: string };
 let inactiveRun: string;
 let capacityRun: string;
 let failedRun: string;
+let scopedRun: string;
+let devicesRun: string;
+let usageRun: string;
+
+// The API allows 60 requests a minute per session, so each test signs in afresh.
+async function signIn() {
+  const login = await identity.startLogin("directory.users.read");
+  const loggedIn = await identity.finishLogin("synthetic-code", login.state, login.state);
+  return {
+    cookie: `prism365_session=${loggedIn.handle}`,
+    csrf: (await identity.session(loggedIn.handle))?.csrfToken ?? "",
+  };
+}
+
+beforeEach(async () => {
+  admin = await signIn();
+});
 
 beforeAll(async () => {
   store = new MemoryStateStore();
   identity = new IdentityService(identityConfig, store, provider);
-  const login = await identity.startLogin("directory.users.read");
-  const loggedIn = await identity.finishLogin("synthetic-code", login.state, login.state);
-  admin = {
-    cookie: `prism365_session=${loggedIn.handle}`,
-    csrf: (await identity.session(loggedIn.handle))?.csrfToken ?? "",
-  };
   const registry = createModuleRegistry(config);
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   const seen = failingItems(database);
@@ -157,6 +182,7 @@ beforeAll(async () => {
     auditId: string,
     version: number,
     outcome: Parameters<typeof finishRun>[4],
+    scope: string[] | null = null,
   ) => {
     const id = randomUUID();
     await database.tenant(tenantId, async (sql) => {
@@ -166,6 +192,7 @@ beforeAll(async () => {
         auditVersion: version,
         startedAt: new Date("2026-10-21T09:00:00Z"),
         startedBy: actor,
+        scope,
       });
       await finishRun(sql, tenantId, id, new Date("2026-10-21T09:01:00Z"), outcome);
     });
@@ -188,6 +215,32 @@ beforeAll(async () => {
     status: "failed",
     code: "x",
     message: "Synthetic failure.",
+  });
+  // A run limited to two domains, which Microsoft answered only in part.
+  scopedRun = await stored(
+    inactive.id,
+    inactive.version,
+    { status: "succeeded", complete: false, summary: [], notes: [], rows },
+    ["example.invalid", "sales.example.invalid"],
+  );
+  // Devices with an owner: a person column, but the rows are devices, not accounts to act on.
+  const devices = findAudit("devices.managed");
+  const usage = findAudit("usage.m365-apps");
+  if (!devices || !usage) throw new Error("The device and usage audits are missing.");
+  devicesRun = await stored(devices.definition.id, devices.definition.version, {
+    status: "succeeded",
+    complete: true,
+    summary: [],
+    notes: [],
+    rows: [{ ...account(1, 3, "Enabled", ["not-compliant"]), key: "device-1" }],
+  });
+  // The usage report names accounts only by sign-in name, so its rows carry no directory id.
+  usageRun = await stored(usage.definition.id, usage.definition.version, {
+    status: "succeeded",
+    complete: true,
+    summary: [],
+    notes: [],
+    rows: [{ ...account(2, 40, "Enabled", ["idle"]), personId: null }],
   });
 }, 60_000);
 
@@ -263,6 +316,14 @@ describe("handoff routes", () => {
       payload: JSON.stringify(receipt(randomUUID(), [item()])),
     });
     expect(anonymous.statusCode).toBe(401);
+    // 2 MB that is not JSON: parsing it would answer 400, so a 401 shows it was never read.
+    const unread = await app.inject({
+      method: "POST",
+      url: "/v1/receipts",
+      headers: { "content-type": "application/json", origin },
+      payload: `{${"x".repeat(2 * 1024 * 1024)}`,
+    });
+    expect(unread.statusCode).toBe(401);
     const forged = await importReceipt(receipt(randomUUID(), [item()]), { "x-csrf-token": "no" });
     expect(forged.statusCode).toBe(403);
     expect(ledger("receipt.imported")).toHaveLength(0);
@@ -277,7 +338,7 @@ describe("handoff export", () => {
       "view=d90&sort=days&direction=asc",
       "view=all&f.status=Disabled",
       "view=all&search=PERSON4",
-      "view=no-such-view&sort=no-such-column",
+      "view=all&sort=no-such-column",
     ]) {
       const csv = await get(`/v1/audit-runs/${inactiveRun}/export.csv?${query}`);
       const json = await get(`/v1/audit-runs/${inactiveRun}/handoff.json?${query}`);
@@ -343,15 +404,88 @@ describe("handoff export", () => {
       items: 3,
       occurredAt: document.generatedAt,
     });
+    expect(document.source).toMatchObject({ scope: null, complete: true });
     const list = await get("/v1/handoffs");
     expect(list.json().handoffs[0]).toMatchObject({
       id: document.id,
       auditTitle: "Inactive accounts",
       view: { id: "d90", label: "90+ days" },
       filtered: false,
+      scope: null,
+      complete: true,
       items: 3,
       generatedBy: { id: actorId, name: "Synthetic admin" },
     });
+  });
+
+  it("says when its run was limited to some domains or partial, in the file and its name", async () => {
+    const response = await get(`/v1/audit-runs/${scopedRun}/handoff.json?view=d90`);
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-disposition"]).toBe(
+      'attachment; filename="prism365-handoff-accounts.inactive-2026-10-21-limited-to-2-domains.json"',
+    );
+    // The CSV of the same run carries the same suffix.
+    expect(
+      (await get(`/v1/audit-runs/${scopedRun}/export.csv`)).headers["content-disposition"],
+    ).toContain("-limited-to-2-domains.csv");
+    const document = handoffSchema.parse(response.json());
+    expect(document.source).toMatchObject({
+      scope: ["example.invalid", "sales.example.invalid"],
+      complete: false,
+    });
+    expect((await get("/v1/handoffs")).json().handoffs[0]).toMatchObject({
+      id: document.id,
+      scope: ["example.invalid", "sales.example.invalid"],
+      complete: false,
+    });
+  });
+
+  it("refuses a view the audit does not have, where the CSV export takes every row", async () => {
+    const before = ledger("handoff.exported").length;
+    const response = await get(`/v1/audit-runs/${inactiveRun}/handoff.json?view=no-such-view`);
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "unknown_view" });
+    expect(ledger("handoff.exported")).toHaveLength(before);
+    expect(
+      (await get(`/v1/audit-runs/${inactiveRun}/export.csv?view=no-such-view`)).statusCode,
+    ).toBe(200);
+  });
+
+  it("is offered only by audits of accounts an action tool works on", async () => {
+    const flagged = builtInAudits
+      .map((audit) => auditDefinition(audit))
+      .filter((definition) => definition.handoff)
+      .map((definition) => definition.id)
+      .sort();
+    expect(flagged).toEqual(
+      [
+        "accounts.inactive",
+        "guests.review",
+        "identity.risky-users",
+        "licenses.reclaim",
+        "mfa.registration",
+        "usage.m365-apps",
+      ].sort(),
+    );
+    for (const id of [
+      "devices.managed",
+      "apps.consents",
+      "identity.conditional-access",
+      "licenses.capacity",
+    ])
+      expect(
+        builtInAudits.find((audit) => audit.definition.id === id),
+        id,
+      ).toBeDefined();
+    // Every audit that offers it lists accounts.
+    for (const audit of builtInAudits) {
+      const definition = auditDefinition(audit);
+      if (definition.handoff)
+        expect(
+          definition.columns.some((column) => column.kind === "person"),
+          definition.id,
+        ).toBe(true);
+    }
   });
 
   it("stores nothing and sends nothing when the ledger cannot record the export", async () => {
@@ -370,14 +504,21 @@ describe("handoff export", () => {
     expect(await count("prism365_handoff")).toBe(stored);
   });
 
-  it("is refused for unknown and failed runs, audits without accounts, and bad parameters", async () => {
-    for (const runId of [randomUUID(), failedRun, capacityRun]) {
+  it("is refused for unknown and failed runs, audits not of accounts, and bad parameters", async () => {
+    for (const runId of [randomUUID(), failedRun, capacityRun, devicesRun, usageRun]) {
       const response = await get(`/v1/audit-runs/${runId}/handoff.json`);
       expect(response.statusCode, runId).toBe(404);
     }
-    expect((await get(`/v1/audit-runs/${capacityRun}/handoff.json`)).json().error).toBe(
-      "no_accounts",
-    );
+    // Device owners are people, but a device is not an account to act on.
+    for (const runId of [capacityRun, devicesRun])
+      expect((await get(`/v1/audit-runs/${runId}/handoff.json`)).json().error).toBe(
+        "not_handed_off",
+      );
+    // A usage run names accounts only by sign-in name: nothing to hand off by id.
+    expect((await get(`/v1/audit-runs/${usageRun}/handoff.json`)).json()).toMatchObject({
+      error: "no_accounts",
+      message: "This run names no accounts by their directory id, so it has nothing to hand off.",
+    });
     for (const query of ["columns=person;drop", `search=${"x".repeat(201)}`, "view=a&view=b"])
       expect((await get(`/v1/audit-runs/${inactiveRun}/handoff.json?${query}`)).statusCode).toBe(
         400,
@@ -441,17 +582,21 @@ describe("receipt import", () => {
     const foreign = randomUUID();
     await database.tenant(otherTenant, (sql) =>
       sql.query(
-        `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, items,
-           generated_at, generated_by) VALUES ($1,$2,'accounts.inactive','Inactive accounts',$3,0,now(),$4)`,
+        `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, complete,
+           items, generated_at, generated_by)
+         VALUES ($1,$2,'accounts.inactive','Inactive accounts',$3,true,0,now(),$4)`,
         [otherTenant, foreign, randomUUID(), actorId],
       ),
     );
     for (const handoffId of [randomUUID(), foreign]) {
       const before = await count("prism365_receipt");
+      const ledgered = ledger("receipt.imported").length;
       const response = await importReceipt(receipt(randomUUID(), [item()], { handoffId }));
       expect(response.statusCode).toBe(400);
       expect(response.json().error).toBe("unknown_handoff");
       expect(await count("prism365_receipt")).toBe(before);
+      // Refused by the check before the ledger, not by the foreign key after it.
+      expect(ledger("receipt.imported")).toHaveLength(ledgered);
     }
   });
 
@@ -467,16 +612,48 @@ describe("receipt import", () => {
         receipt(randomUUID(), [item()], { performedAt: "9999-12-31T23:59:59-14:00" }),
         "between the years 2000 and 2099",
       ],
+      // An offset PostgreSQL refuses would fail only once stored, on every retry.
+      [
+        receipt(randomUUID(), [item()], { performedAt: "2026-10-22T14:30:00+16:00" }),
+        "time zone offset beyond 15:59",
+      ],
+      [
+        receipt(randomUUID(), [item()], { performedAt: "2026-10-22T14:30:00-23:59" }),
+        "time zone offset beyond 15:59",
+      ],
+      // Dated ahead of the clock, it would sort first for as long as it is kept.
+      [
+        receipt(randomUUID(), [item()], {
+          performedAt: new Date(Date.now() + 2 * 86_400_000).toISOString(),
+        }),
+        "more than a day in the future",
+      ],
+      [
+        receipt(randomUUID(), [item()], { tool: { name: "Prism365", version: "1" } }),
+        "cannot be Prism365",
+      ],
+      [receipt(randomUUID(), [item({ action: "prism365.audit.done" })]), "kept for Prism365"],
       ["not json", "not valid JSON"],
       ["", "not valid JSON"],
     ];
+    const ledgered = ledger("receipt.imported").length;
     for (const [payload, message] of cases) {
       const response = await importReceipt(payload);
-      expect(response.statusCode, String(payload).slice(0, 60)).toBe(400);
+      expect(response.statusCode, JSON.stringify(payload).slice(0, 120)).toBe(400);
       expect(response.json().error).toBe("invalid_receipt");
       expect(response.json().message).toContain(message);
     }
     expect(await count("prism365_receipt")).toBe(before);
+    expect(ledger("receipt.imported")).toHaveLength(ledgered);
+  });
+
+  it("keeps the time it was performed in UTC, as one point in time", async () => {
+    const id = randomUUID();
+    const response = await importReceipt(
+      receipt(id, [item()], { performedAt: "2026-10-22T14:30:00+15:59" }),
+    );
+    expect(response.statusCode).toBe(201);
+    expect(response.json().receipt.performedAt).toBe("2026-10-21T22:31:00.000Z");
   });
 
   it("reads at most 4 MB, and only for a signed-in administrator", async () => {
@@ -503,14 +680,70 @@ describe("receipt import", () => {
   it("stores the strings it was sent cleaned", async () => {
     const id = randomUUID();
     const response = await importReceipt(
-      receipt(id, [item({ detail: "Blocked\u0000 by policy\uD800" })], {
-        tool: { name: "Example\u0000 action tool", version: "1.0.0" },
+      receipt(id, [item({ detail: "Blocked\u0000 by \u202Epolicy\u202C\uD800" })], {
+        tool: { name: "Example\u0000 action \u2066tool\u2069", version: "1.0.0" },
       }),
     );
     expect(response.statusCode).toBe(201);
     expect(response.json().receipt.tool.name).toBe("Example action tool");
     const page = await get(`/v1/receipts/${id}`);
-    expect(page.json().items[0].detail).toBe("Blocked by policy�");
+    expect(page.json().items[0].detail).toBe("Blocked by policy\uFFFD");
+  });
+
+  it("digests the receipt as received, so a change in cleaning never refuses a true retry", async () => {
+    const id = randomUUID();
+    // Two bodies that clean to the same receipt are still two receipts.
+    expect((await importReceipt(receipt(id, [item({ detail: "a\u0000b" })]))).statusCode).toBe(201);
+    expect((await importReceipt(receipt(id, [item({ detail: "ab" })]))).statusCode).toBe(409);
+    const stored = await database.tenant(tenantId, (sql) =>
+      sql.query<{ digest: string; digest_version: number }>(
+        "SELECT digest, digest_version FROM prism365_receipt WHERE id=$1",
+        [id],
+      ),
+    );
+    const { createHash } = await import("node:crypto");
+    expect(stored.rows[0]).toEqual({
+      digest: createHash("sha256")
+        .update(canonicalJson(receipt(id, [item({ detail: "a\u0000b" })])))
+        .digest("hex"),
+      digest_version: 1,
+    });
+  });
+
+  it("answers a receipt kept under another digest version as kept, never as a conflict", async () => {
+    const id = randomUUID();
+    expect((await importReceipt(receipt(id, [item()]))).statusCode).toBe(201);
+    // As a later Prism365 would have stored it, with a digest this one cannot compare.
+    await database.tenant(tenantId, (sql) =>
+      sql.query("UPDATE prism365_receipt SET digest=$2, digest_version=2 WHERE id=$1", [
+        id,
+        "f".repeat(64),
+      ]),
+    );
+    const again = await importReceipt(receipt(id, [item()]));
+    expect(again.statusCode).toBe(200);
+    expect(again.json().imported).toBe(false);
+  });
+
+  it("answers an import that lost the race for its id from what the winner kept", async () => {
+    const id = randomUUID();
+    expect((await importReceipt(receipt(id, [item()]))).statusCode).toBe(201);
+    const ledgered = ledger("receipt.imported").length;
+    // The check finds nothing, as if the winner stored the id a moment later: the insert is
+    // then the one that finds it.
+    hideStoredReceiptOnce = true;
+    const same = await importReceipt(receipt(id, [item()]));
+    expect(same.statusCode).toBe(200);
+    expect(same.json().imported).toBe(false);
+    hideStoredReceiptOnce = true;
+    const different = await importReceipt(receipt(id, [item({ status: "failed" })]));
+    expect(different.statusCode).toBe(409);
+    hideStoredReceiptOnce = false;
+    // Both went past the check, so both were recorded before the insert found the winner.
+    expect(ledger("receipt.imported")).toHaveLength(ledgered + 2);
+    expect(await count("prism365_receipt_item")).toBeGreaterThan(0);
+    const kept = await get(`/v1/receipts/${id}`);
+    expect(kept.json().items.map((entry: { status: string }) => entry.status)).toEqual(["done"]);
   });
 
   it("records the import first, and keeps nothing when the ledger fails", async () => {
@@ -527,13 +760,19 @@ describe("receipt import", () => {
     }
     expect(await count("prism365_receipt")).toBe(before);
     expect((await importReceipt(receipt(id, [item(), item()]))).statusCode).toBe(201);
-    expect(ledger("receipt.imported").at(-1)?.event).toMatchObject({
+    // Ids and counts only: nothing the tool wrote in its own words.
+    const entry = ledger("receipt.imported").at(-1)?.event;
+    expect(entry).toEqual({
       type: "receipt.imported",
       receiptId: id,
       handoffId: null,
       items: 2,
-      tool: "Example action tool",
+      done: 2,
+      failed: 0,
+      skipped: 0,
+      occurredAt: entry?.occurredAt,
     });
+    expect(JSON.stringify(entry)).not.toContain("Example action tool");
   });
 
   it("keeps nothing of a receipt when one of its items fails to store", async () => {
@@ -638,6 +877,85 @@ describe("receipt reads", () => {
     expect((await get("/v1/people/has%20space/receipts")).statusCode).toBe(400);
   });
 
+  it("records each read of the lists before it reads them", async () => {
+    for (const [url, type] of [
+      ["/v1/handoffs", "handoffs.viewed"],
+      ["/v1/people/0000000d-dddd-4ddd-8ddd-00000000000d/receipts", "person.receipts.viewed"],
+    ] as const) {
+      const before = handoffReads;
+      let readsAtLedger = -1;
+      const append = store.appendAudit.bind(store);
+      store.appendAudit = async (...args) => {
+        readsAtLedger = handoffReads;
+        return append(...args);
+      };
+      try {
+        expect((await get(url)).statusCode, url).toBe(200);
+      } finally {
+        store.appendAudit = append;
+      }
+      expect(readsAtLedger, url).toBe(before);
+      expect(handoffReads, url).toBeGreaterThan(before);
+      expect(ledger(type).at(-1)?.event, url).toMatchObject({ type });
+      // Without its ledger entry, nothing is read or sent.
+      const reads = handoffReads;
+      store.appendAudit = async () => {
+        throw new Error("Synthetic ledger failure.");
+      };
+      try {
+        const refused = await get(url);
+        expect(refused.statusCode, url).toBe(500);
+        expect(refused.body, url).not.toContain("items");
+      } finally {
+        store.appendAudit = append;
+      }
+      expect(handoffReads, url).toBe(reads);
+    }
+  });
+
+  it("finds a person's receipts whatever the case of the id in the address", async () => {
+    const userId = "0000000e-eeee-4eee-8eee-00000000000e";
+    const id = randomUUID();
+    expect(
+      (await importReceipt(receipt(id, [item({ userId, userPrincipalName: null })]))).statusCode,
+    ).toBe(201);
+    const upper = (await get(`/v1/people/${userId.toUpperCase()}/receipts`)).json();
+    expect(upper.items.map((entry: { receiptId: string }) => entry.receiptId)).toEqual([id]);
+  });
+
+  it("shows the newest 100 and says there were more", async () => {
+    const userId = "0000000f-ffff-4fff-8fff-00000000000f";
+    const items = Array.from({ length: 101 }, (_, index) =>
+      item({ userId, userPrincipalName: null, detail: `Step ${index}` }),
+    );
+    expect((await importReceipt(receipt(randomUUID(), items))).statusCode).toBe(201);
+    const listed = (await get(`/v1/people/${userId}/receipts`)).json();
+    expect(listed.items).toHaveLength(100);
+    expect(listed.truncated).toBe(true);
+    expect(listed.items[0].detail).toBe("Step 0");
+  });
+
+  it("matches principal names by their normalised form, not the database's lower()", async () => {
+    const userId = "00000010-1010-4010-8010-000000000010";
+    const id = randomUUID();
+    // The Kelvin sign: NFKC makes it K, and lower case k.
+    expect(
+      (
+        await importReceipt(
+          receipt(id, [item({ userId: null, userPrincipalName: "\u212Aelvin@example.invalid" })]),
+        )
+      ).statusCode,
+    ).toBe(201);
+    const found = (
+      await get(
+        `/v1/people/${userId}/receipts?principal=${encodeURIComponent("kelvin@example.invalid")}`,
+      )
+    ).json();
+    expect(found.items.map((entry: { receiptId: string }) => entry.receiptId)).toEqual([id]);
+    // Kept as the tool wrote it.
+    expect(found.items[0].userPrincipalName).toBe("\u212Aelvin@example.invalid");
+  });
+
   it("never shows another tenant's receipts", async () => {
     const userId = "0000000c-cccc-4ccc-8ccc-00000000000c";
     const foreign = receiptSchema.parse(
@@ -648,6 +966,7 @@ describe("receipt reads", () => {
     await database.tenant(otherTenant, (sql) =>
       insertReceipt(sql, otherTenant, foreign, {
         digest: "0".repeat(64),
+        digestVersion: 1,
         importedAt: new Date(),
         importedBy: actorId,
       }),
@@ -665,5 +984,82 @@ describe("receipt reads", () => {
     expect(await count("prism365_receipt_item", otherTenant)).toBe(1);
     // The same receipt id is free in this tenant: ids are keyed by tenant.
     expect((await importReceipt(receipt(foreign.id, [item()]))).statusCode).toBe(201);
+  });
+});
+
+describe("retention", () => {
+  const years = (count: number) => new Date(Date.now() - count * 365 * 86_400_000).toISOString();
+
+  it("deletes handoffs and receipts past their retention when the next one is stored", async () => {
+    const oldHandoff = randomUUID();
+    const answered = randomUUID();
+    const oldReceipt = randomUUID();
+    const recentReceipt = randomUUID();
+    await database.tenant(tenantId, async (sql) => {
+      for (const id of [oldHandoff, answered])
+        await sql.query(
+          `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, complete,
+             items, generated_at, generated_by)
+           VALUES ($1,$2,'accounts.inactive','Inactive accounts',$3,true,1,$4,$5)`,
+          [tenantId, id, randomUUID(), years(4), actorId],
+        );
+      for (const [id, handoffId, at] of [
+        [oldReceipt, null, years(4)],
+        // A recent receipt answering an old handoff keeps that handoff.
+        [recentReceipt, answered, years(1)],
+      ] as const) {
+        await sql.query(
+          `INSERT INTO prism365_receipt (tenant_id, id, handoff_id, tool_name, tool_version,
+             performed_at, performed_by, items, done_count, failed_count, skipped_count,
+             imported_at, imported_by, digest, digest_version)
+           VALUES ($1,$2,$3,'Example action tool','1',$4,'Operator',1,1,0,0,$4,$5,$6,1)`,
+          [tenantId, id, handoffId, at, actorId, "a".repeat(64)],
+        );
+        await sql.query(
+          `INSERT INTO prism365_receipt_item (tenant_id, receipt_id, position, user_id, action,
+             status, detail) VALUES ($1,$2,0,'user-old','account.disabled','done','')`,
+          [tenantId, id],
+        );
+      }
+    });
+    const ids = async (table: string, column = "id") =>
+      (
+        await database.tenant(tenantId, (sql) =>
+          sql.query<{ id: string }>(`SELECT ${column} AS id FROM ${table}`),
+        )
+      ).rows.map((row) => row.id);
+    expect(await ids("prism365_receipt")).toContain(oldReceipt);
+    expect((await importReceipt(receipt(randomUUID(), [item()]))).statusCode).toBe(201);
+    expect(await ids("prism365_receipt")).not.toContain(oldReceipt);
+    expect(await ids("prism365_receipt")).toContain(recentReceipt);
+    expect(await ids("prism365_receipt_item", "receipt_id")).not.toContain(oldReceipt);
+    expect(await ids("prism365_handoff")).not.toContain(oldHandoff);
+    expect(await ids("prism365_handoff")).toContain(answered);
+    // An export cleans up too.
+    await database.tenant(tenantId, (sql) =>
+      sql.query(
+        `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, complete,
+           items, generated_at, generated_by)
+         VALUES ($1,$2,'accounts.inactive','Inactive accounts',$3,true,1,$4,$5)`,
+        [tenantId, oldHandoff, randomUUID(), years(4), actorId],
+      ),
+    );
+    expect((await get(`/v1/audit-runs/${inactiveRun}/handoff.json`)).statusCode).toBe(200);
+    expect(await ids("prism365_handoff")).not.toContain(oldHandoff);
+  });
+
+  it("is three years unless HANDOFF_RETENTION_DAYS says otherwise, from 30 days to 10 years", async () => {
+    const live = { DATA_MODE: "live" };
+    expect((await loadConfig(live)).handoffRetentionDays).toBeUndefined();
+    expect((await loadConfig({ ...live, HANDOFF_RETENTION_DAYS: "30" })).handoffRetentionDays).toBe(
+      30,
+    );
+    expect(
+      (await loadConfig({ ...live, HANDOFF_RETENTION_DAYS: "3650" })).handoffRetentionDays,
+    ).toBe(3650);
+    for (const value of ["29", "3651", "0", "-5", "90.5", "1e3", "a year"])
+      await expect(loadConfig({ ...live, HANDOFF_RETENTION_DAYS: value }), value).rejects.toThrow(
+        "HANDOFF_RETENTION_DAYS",
+      );
   });
 });

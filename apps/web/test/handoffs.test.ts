@@ -50,6 +50,8 @@ const list: HandoffList = {
       runId: "66666666-6666-4666-8666-666666666666",
       view: { id: "d90", label: "90+ days" },
       filtered: true,
+      scope: null,
+      complete: true,
       items: 12,
       generatedAt: "2026-10-21T10:00:00.000Z",
       generatedBy: { id: "22222222-2222-4222-8222-222222222222", name: "Synthetic admin" },
@@ -106,6 +108,21 @@ describe("Handoffs page", () => {
     expect(html).toContain("Inactive accounts, exported");
     expect(html).toContain("Show items");
     expect(answers({ ...receiptSummary, handoff: null }, list.handoffs)).toBe("No handoff");
+  });
+
+  it("says which handoffs came from a limited or partial run", () => {
+    const [record] = list.handoffs;
+    if (!record) throw new Error("expected a handoff");
+    const plain = view(list);
+    expect(plain).not.toContain("Limited to");
+    expect(plain).not.toContain("Partial result");
+    const limited = view({
+      ...list,
+      handoffs: [{ ...record, scope: ["a.example", "b.example"], complete: false }],
+    });
+    expect(limited).toContain("Limited to 2 domains");
+    expect(limited).toContain('title="a.example, b.example"');
+    expect(limited).toContain("Partial result");
   });
 
   it("says what an import did, or why it failed", () => {
@@ -260,6 +277,7 @@ describe("Export for action", () => {
     permissions: [],
     optionalPermissions: [],
     requirements: [],
+    handoff: true,
   });
   const row: AuditRow = {
     key: "user-1",
@@ -284,9 +302,9 @@ describe("Export for action", () => {
     domains: [],
     rows: [row],
   } as AuditRunDetail;
-  const table = (value = definition) =>
+  const table = (value = definition, detail = run) =>
     renderToStaticMarkup(
-      createElement(ResultTable, { definition: value, run, onOpenPerson: () => {} }),
+      createElement(ResultTable, { definition: value, run: detail, onOpenPerson: () => {} }),
     );
 
   it("is offered next to Export CSV for audits that list accounts", () => {
@@ -301,6 +319,14 @@ describe("Export for action", () => {
       defaultSort: { column: "product", direction: "asc" },
     });
     expect(table(products)).not.toContain("Export for action");
+    // A person column alone is not enough: device owners are people, devices are not accounts.
+    expect(table(auditDefinitionSchema.parse({ ...definition, handoff: false }))).not.toContain(
+      "Export for action",
+    );
+    // Nor is a run whose rows name no account by its directory id.
+    expect(table(definition, { ...run, rows: [{ ...row, personId: null }] })).not.toContain(
+      "Export for action",
+    );
   });
 
   it("asks for the same rows as the CSV export, with the columns shown", () => {

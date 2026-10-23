@@ -131,6 +131,9 @@ An audit is one object implementing `Audit` in `packages/audits/src/definition.t
 - `scoped`: true when the audit covers only the account domains the administrator chose (section
   9). A scoped audit keeps only the accounts `inAuditScope` accepts before it computes rows,
   tiles and notes, starts its notes with `scopeNote`, and has the shared `domainColumn`.
+- `handoff` (in the definition): true only when the rows are accounts an action tool could act
+  on, which offers Export for action on the results ([Handoffs](handoff.md)). A person column
+  alone is not enough: a device's owner is a person, the device is not an account.
 - `forbidden`: what to tell the administrator when Microsoft returns 403.
 - `run(context)`: read, then return rows (each with tags), summary tiles, notes, and whether the
   read was complete. Parse provider records leniently and count what could not be read; never

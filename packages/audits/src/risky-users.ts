@@ -133,6 +133,8 @@ export function createRiskyUsersAudit(options: RiskyUsersOptions = {}): Audit {
   return {
     definition: {
       id: "identity.risky-users",
+      // Accounts an action tool could act on (docs/handoff.md).
+      handoff: true,
       version: 1,
       title: "Risky users",
       description:

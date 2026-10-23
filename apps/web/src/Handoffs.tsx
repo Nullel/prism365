@@ -83,6 +83,28 @@ function viewText(handoff: HandoffRecord): string {
   return handoff.filtered ? `${view}, filtered` : view;
 }
 
+// What a handoff did not cover: the domains its run was limited to, and a partial run.
+export function HandoffLimits({ handoff }: { handoff: HandoffRecord }) {
+  const scope = handoff.scope ?? [];
+  return (
+    <>
+      {scope.length > 0 ? (
+        <span className="person-tag handoff-match" title={scope.join(", ")}>
+          Limited to {number.format(scope.length)} {scope.length === 1 ? "domain" : "domains"}
+        </span>
+      ) : null}
+      {handoff.complete ? null : (
+        <span
+          className="person-tag person-tag--alert handoff-match"
+          title="Microsoft returned less than everything to this run, so the list may miss accounts."
+        >
+          Partial result
+        </span>
+      )}
+    </>
+  );
+}
+
 // The handoff a receipt answers, by its audit and when it was exported.
 export function answers(receipt: ReceiptSummary, handoffs: readonly HandoffRecord[]): string {
   if (!receipt.handoff) return "No handoff";
@@ -117,7 +139,10 @@ function HandoffTable({ handoffs }: { handoffs: readonly HandoffRecord[] }) {
             <th scope="row" className="nowrap">
               {when(handoff.generatedAt)}
             </th>
-            <td className="person-text">{handoff.auditTitle}</td>
+            <td className="person-text">
+              {handoff.auditTitle}
+              <HandoffLimits handoff={handoff} />
+            </td>
             <td className="person-text">{viewText(handoff)}</td>
             <td className="num">{number.format(handoff.items)}</td>
             <td className="person-text">{handoff.generatedBy.name ?? "Unknown"}</td>

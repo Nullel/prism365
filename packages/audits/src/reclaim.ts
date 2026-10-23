@@ -45,6 +45,8 @@ function assignment(user: DirectoryUser): { label: string; byGroup: boolean } {
 export const licenseReclaimAudit: Audit = {
   definition: {
     id: "licenses.reclaim",
+    // Accounts an action tool could act on (docs/handoff.md).
+    handoff: true,
     version: 3,
     title: "Licenses to reclaim",
     description:

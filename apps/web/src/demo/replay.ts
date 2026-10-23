@@ -23,6 +23,7 @@ import {
   type HandoffList,
   type HandoffRecord,
   handoffFileName,
+  handoffView,
   hasPersonColumn,
   queryAuditRows,
   type ReceiptSummary,
@@ -48,6 +49,9 @@ export interface Fixtures {
   // When the recording finished. Every timestamp in `responses` is at or before it.
   recordedAt: string;
   responses: Record<string, RecordedResponse>;
+  // The receipts the recording imported, by id, as their bodies were sent in canonical JSON, so
+  // an import of the same id here can be told the same or different, as the server does.
+  receipts?: Record<string, string>;
 }
 
 export interface DemoResponse {
@@ -154,8 +158,8 @@ export function shiftTimestamps<T>(value: T, days: number): T {
 // State
 // ---------------------------------------------------------------------------------------------
 
-// A receipt imported in this page: its summary, its items, and its canonical form, which tells
-// the same receipt sent again from a different one.
+// A receipt imported in this page: its summary, its items, and its body as received in canonical
+// JSON, which tells the same receipt sent again from a different one.
 interface SimulatedReceipt {
   summary: ReceiptSummary;
   items: StoredReceiptItem[];
@@ -180,6 +184,7 @@ export interface DemoState {
   auditSettings: AuditSettings | null;
   collection: CollectionStatus | null;
   runs: SimulatedRun[];
+  recordedReceipts: Record<string, string>;
   // Handoffs exported and receipts imported in this page, newest first.
   handoffs: HandoffRecord[];
   receipts: SimulatedReceipt[];
@@ -221,6 +226,7 @@ export function createDemoState(fixtures: Fixtures, now: () => Date = () => new 
     auditSettings: bodyOf<AuditSettings>(responses, "GET /api/v1/settings/audits"),
     collection: modules ? { ...modules.collection } : null,
     runs: [],
+    recordedReceipts: { ...(fixtures.receipts ?? {}) },
     handoffs: [],
     receipts: [],
   };
@@ -601,32 +607,44 @@ function recordedHandoff(state: DemoState): Handoff | null {
   return null;
 }
 
-function handoffList(state: DemoState): HandoffList {
+// Every handoff and receipt the page knows, newest first: those made in this page, then the
+// recorded ones.
+function knownHandoffs(state: DemoState): HandoffList {
   const base = bodyOf<HandoffList>(state.responses, `GET ${API}/handoffs`);
   return {
-    handoffs: [...state.handoffs, ...(base?.handoffs ?? [])].slice(0, 100),
-    receipts: [
-      ...state.receipts.map((receipt) => receipt.summary),
-      ...(base?.receipts ?? []),
-    ].slice(0, 100),
+    handoffs: [...state.handoffs, ...(base?.handoffs ?? [])],
+    receipts: [...state.receipts.map((receipt) => receipt.summary), ...(base?.receipts ?? [])],
   };
 }
 
+// The list the server answers: the newest 100 of each.
+function handoffList(state: DemoState): HandoffList {
+  const known = knownHandoffs(state);
+  return { handoffs: known.handoffs.slice(0, 100), receipts: known.receipts.slice(0, 100) };
+}
+
 // The document the server would send for the same query, built from the recorded rows with the
-// shared builder, and listed on the Handoffs page like a real export.
+// shared builder and refused where the server refuses it, and listed like a real export.
 function exportHandoff(state: DemoState, id: string, url: URL): DemoResponse {
   const detail = runDetail(state, id);
   const definition = runDefinition(state, detail);
   if (!detail || !definition || detail.status !== "succeeded")
     return json(404, { error: "run_not_found", message: "That run has no results." });
-  if (!hasPersonColumn(definition))
+  if (!definition.handoff || !hasPersonColumn(definition))
+    return json(404, {
+      error: "not_handed_off",
+      message: "This audit's rows are not accounts for an action tool, so it has no handoff.",
+    });
+  if (!detail.rows.some((row) => row.personId))
     return json(404, {
       error: "no_accounts",
-      message: "This audit lists no accounts, so it has nothing to hand off.",
+      message: "This run names no accounts by their directory id, so it has nothing to hand off.",
     });
+  const query = exportQuery(url);
+  if (!handoffView(definition, query.view ?? null))
+    return json(400, { error: "unknown_view", message: "This audit has no view with that name." });
   const recorded = recordedHandoff(state);
   if (!recorded) return unavailable();
-  const query = exportQuery(url);
   const columns = url.searchParams.get("columns");
   const handoff = buildHandoff({
     id: newId(),
@@ -647,6 +665,8 @@ function exportHandoff(state: DemoState, id: string, url: URL): DemoResponse {
     runId: source.runId,
     view: source.view,
     filtered: source.search !== "" || Object.keys(source.facets).length > 0,
+    scope: source.scope,
+    complete: source.complete,
     items: handoff.items.length,
     generatedAt: handoff.generatedAt,
     generatedBy: { id: recorded.generatedBy.actorId, name: recorded.generatedBy.name },
@@ -656,31 +676,41 @@ function exportHandoff(state: DemoState, id: string, url: URL): DemoResponse {
     contentType: "application/json; charset=utf-8",
     body: `${JSON.stringify(handoff, null, 2)}\n`,
     headers: {
-      "Content-Disposition": `attachment; filename="${handoffFileName(detail.auditId, detail.startedAt)}"`,
+      "Content-Disposition": `attachment; filename="${handoffFileName(detail.auditId, detail.startedAt, detail.scope)}"`,
     },
   };
 }
 
-// An import checked as the server checks it and kept for this page: the same receipt again is
-// answered as before, a different one under the same id is refused.
+const receiptConflict = {
+  error: "receipt_conflict",
+  message:
+    "A different receipt with this id was already imported. A kept receipt is never changed: the tool should send a correction as a new receipt with its own id.",
+};
+
+// An import checked as the server checks it and kept for this page. As on the server, two
+// receipts are the same when their bodies as received are, in canonical JSON: the same receipt
+// again is answered as before, and a different one under a kept id, recorded or imported here,
+// is refused. A recorded receipt whose body the recording did not keep cannot be compared, so it
+// is never taken for the same.
 function importReceipt(state: DemoState, body: unknown): DemoResponse {
   const parsed = receiptSchema.safeParse(body);
   if (!parsed.success)
     return json(400, { error: "invalid_receipt", message: receiptProblem(body, parsed.error) });
   const receipt = parsed.data;
-  const canonical = canonicalJson(receipt);
-  const list = handoffList(state);
+  const canonical = canonicalJson(body);
+  const known = knownHandoffs(state);
   const kept = state.receipts.find((item) => item.summary.id === receipt.id);
-  if (kept && kept.canonical !== canonical)
-    return json(409, {
-      error: "receipt_conflict",
-      message:
-        "A different receipt with this id was already imported. A kept receipt is never changed: the tool should send a correction as a new receipt with its own id.",
-    });
-  const recorded = list.receipts.find((item) => item.id === receipt.id);
-  if (recorded) return json(200, { receipt: clone(recorded), imported: false });
+  if (kept)
+    return kept.canonical === canonical
+      ? json(200, { receipt: clone(kept.summary), imported: false })
+      : json(409, receiptConflict);
+  const recorded = known.receipts.find((item) => item.id === receipt.id);
+  if (recorded)
+    return state.recordedReceipts[receipt.id] === canonical
+      ? json(200, { receipt: clone(recorded), imported: false })
+      : json(409, receiptConflict);
   const handoff = receipt.handoffId
-    ? list.handoffs.find((item) => item.id === receipt.handoffId)
+    ? known.handoffs.find((item) => item.id === receipt.handoffId)
     : null;
   if (handoff === undefined)
     return json(400, {
@@ -700,7 +730,7 @@ function importReceipt(state: DemoState, body: unknown): DemoResponse {
         }
       : null,
     tool: receipt.tool,
-    performedAt: new Date(receipt.performedAt).toISOString(),
+    performedAt: receipt.performedAt,
     performedBy: receipt.performedBy,
     importedAt: state.now().toISOString(),
     items: receipt.items.length,

@@ -1,24 +1,64 @@
-import type {
-  HandoffRecord,
-  PersonReceiptItem,
-  Receipt,
-  ReceiptStatus,
-  ReceiptSummary,
-  StoredReceiptItem,
+import {
+  type HandoffRecord,
+  type PersonReceiptItem,
+  principalKey,
+  type Receipt,
+  type ReceiptStatus,
+  type ReceiptSummary,
+  type StoredReceiptItem,
 } from "@prism365/contracts";
 import type { SqlClient } from "@prism365/storage";
 
 // Handoffs and receipts in prism365_handoff, prism365_receipt and prism365_receipt_item
 // (migration 006-handoffs.sql). Every query is tenant-scoped twice: by the transaction's
-// row-security setting and by the tenant_id predicate. Nothing here updates or deletes a row: a
-// receipt stays exactly as the tool reported it.
+// row-security setting and by the tenant_id predicate. Nothing here updates a row: a receipt
+// stays as the tool reported it until its retention period ends.
 
 export const LIST_LIMIT = 100;
-// Items per INSERT. Eight values a row keeps each statement well under the SQL guard's size
+// Items per INSERT. Seven values a row keeps each statement well under the SQL guard's size
 // budget (20,000 characters), so a 20,000-item receipt is 80 statements in one transaction.
 const ITEM_BATCH = 250;
 
 const iso = (value: Date | string) => new Date(value).toISOString();
+const json = (value: unknown): unknown =>
+  typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+
+function scopeOf(value: unknown): string[] | null {
+  const parsed = json(value);
+  if (!Array.isArray(parsed)) return null;
+  const domains = parsed.filter((item): item is string => typeof item === "string");
+  return domains.length > 0 ? domains.slice(0, 100) : null;
+}
+
+// Deletes what is older than `before`: the items of old receipts, the receipts, then the old
+// handoffs no kept receipt answers (a receipt arrives after its handoff, so a handoff stays as
+// long as any receipt that answers it). It runs in the transaction that stores a new handoff or
+// receipt, after the insert, as pruneRuns does for audit runs, so retention needs no schedule.
+export async function pruneHandoffs(
+  sql: SqlClient,
+  tenantId: string,
+  before: Date,
+): Promise<{ handoffs: number; receipts: number }> {
+  const at = before.toISOString();
+  await sql.query(
+    `DELETE FROM prism365_receipt_item
+      WHERE tenant_id=$1
+        AND receipt_id IN (SELECT id FROM prism365_receipt WHERE tenant_id=$1 AND imported_at < $2)`,
+    [tenantId, at],
+  );
+  const receipts = await sql.query(
+    "DELETE FROM prism365_receipt WHERE tenant_id=$1 AND imported_at < $2",
+    [tenantId, at],
+  );
+  const handoffs = await sql.query(
+    `DELETE FROM prism365_handoff h
+      WHERE h.tenant_id=$1 AND h.generated_at < $2
+        AND NOT EXISTS (SELECT 1 FROM prism365_receipt r
+                         WHERE r.tenant_id = h.tenant_id AND r.handoff_id = h.id)`,
+    [tenantId, at],
+  );
+  return { handoffs: handoffs.rowCount, receipts: receipts.rowCount };
+}
 
 interface HandoffRow {
   id: string;
@@ -28,6 +68,8 @@ interface HandoffRow {
   view_id: string | null;
   view_label: string | null;
   filtered: boolean;
+  run_scope: unknown;
+  complete: boolean;
   items: number;
   generated_at: Date | string;
   generated_by: string;
@@ -41,8 +83,9 @@ export async function insertHandoff(
 ): Promise<void> {
   await sql.query(
     `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, view_id,
-       view_label, filtered, items, generated_at, generated_by, generated_by_name)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+       view_label, filtered, run_scope, complete, items, generated_at, generated_by,
+       generated_by_name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)`,
     [
       tenantId,
       handoff.id,
@@ -52,6 +95,8 @@ export async function insertHandoff(
       handoff.view?.id ?? null,
       handoff.view?.label ?? null,
       handoff.filtered,
+      handoff.scope ? JSON.stringify(handoff.scope) : null,
+      handoff.complete,
       handoff.items,
       handoff.generatedAt,
       handoff.generatedBy.id,
@@ -66,8 +111,8 @@ export async function listHandoffs(
   limit = LIST_LIMIT,
 ): Promise<HandoffRecord[]> {
   const result = await sql.query<HandoffRow>(
-    `SELECT id, audit_id, audit_title, run_id, view_id, view_label, filtered, items,
-            generated_at, generated_by, generated_by_name
+    `SELECT id, audit_id, audit_title, run_id, view_id, view_label, filtered, run_scope,
+            complete, items, generated_at, generated_by, generated_by_name
        FROM prism365_handoff
       WHERE tenant_id=$1
       ORDER BY generated_at DESC, id DESC
@@ -81,6 +126,8 @@ export async function listHandoffs(
     runId: row.run_id,
     view: row.view_id === null ? null : { id: row.view_id, label: row.view_label ?? row.view_id },
     filtered: row.filtered,
+    scope: scopeOf(row.run_scope),
+    complete: row.complete,
     items: row.items,
     generatedAt: iso(row.generated_at),
     generatedBy: { id: row.generated_by, name: row.generated_by_name },
@@ -108,6 +155,7 @@ interface ReceiptRow {
   skipped_count: number;
   imported_at: Date | string;
   digest: string;
+  digest_version: number;
   handoff_audit_id: string | null;
   handoff_generated_at: Date | string | null;
   handoff_items: number | null;
@@ -115,7 +163,8 @@ interface ReceiptRow {
 
 const receiptColumns = `r.id, r.handoff_id, r.tool_name, r.tool_version, r.performed_at,
   r.performed_by, r.items, r.done_count, r.failed_count, r.skipped_count, r.imported_at, r.digest,
-  h.audit_id AS handoff_audit_id, h.generated_at AS handoff_generated_at, h.items AS handoff_items`;
+  r.digest_version, h.audit_id AS handoff_audit_id, h.generated_at AS handoff_generated_at,
+  h.items AS handoff_items`;
 // The handoff a receipt answers, for the list. The foreign key guarantees it exists.
 const receiptSource = `prism365_receipt r
   LEFT JOIN prism365_handoff h ON h.tenant_id = r.tenant_id AND h.id = r.handoff_id`;
@@ -146,6 +195,8 @@ function toSummary(row: ReceiptRow): ReceiptSummary {
 export interface StoredReceipt {
   summary: ReceiptSummary;
   digest: string;
+  // How the digest was taken (see the import route). Only digests of one version compare.
+  digestVersion: number;
 }
 
 export async function findReceipt(
@@ -158,7 +209,9 @@ export async function findReceipt(
     [tenantId, id],
   );
   const row = result.rows[0];
-  return row ? { summary: toSummary(row), digest: row.digest } : null;
+  return row
+    ? { summary: toSummary(row), digest: row.digest, digestVersion: row.digest_version }
+    : null;
 }
 
 export async function listReceipts(
@@ -190,14 +243,14 @@ export async function insertReceipt(
   sql: SqlClient,
   tenantId: string,
   receipt: Receipt,
-  meta: { digest: string; importedAt: Date; importedBy: string },
+  meta: { digest: string; digestVersion: number; importedAt: Date; importedBy: string },
 ): Promise<({ inserted: true } | { inserted: false }) & StoredReceipt> {
   const counts = statusCounts(receipt);
   const inserted = await sql.query(
     `INSERT INTO prism365_receipt (tenant_id, id, handoff_id, tool_name, tool_version,
        performed_at, performed_by, items, done_count, failed_count, skipped_count, imported_at,
-       imported_by, digest)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       imported_by, digest, digest_version)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (tenant_id, id) DO NOTHING
      RETURNING id`,
     [
@@ -215,6 +268,7 @@ export async function insertReceipt(
       meta.importedAt.toISOString(),
       meta.importedBy,
       meta.digest,
+      meta.digestVersion,
     ],
   );
   if (inserted.rows.length === 0) {
@@ -231,15 +285,17 @@ export async function insertReceipt(
         start + offset,
         item.userId,
         item.userPrincipalName,
+        item.userPrincipalName === null ? null : principalKey(item.userPrincipalName),
         item.action,
         item.status,
         item.detail,
       );
-      return `($1,$2,$${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6})`;
+      const values = Array.from({ length: 7 }, (_, index) => `$${base + index + 1}`);
+      return `($1,$2,${values.join(",")})`;
     });
     await sql.query(
       `INSERT INTO prism365_receipt_item (tenant_id, receipt_id, position, user_id,
-         user_principal_name, action, status, detail)
+         user_principal_name, user_principal_key, action, status, detail)
        VALUES ${rows.join(",")}`,
       params,
     );
@@ -299,8 +355,9 @@ interface PersonItemRow extends ItemRow {
 }
 
 // What receipts report about one account, newest first: items that name its id, and items that
-// name only a principal name equal to `principal` in any letter case. An item that names another
-// account's id never matches by principal name, even when the names agree.
+// name only a principal name with the same key as `principal` (principalKey: NFKC, lower case).
+// An item that names another account's id never matches by principal name, even when the names
+// agree.
 export async function personReceiptItems(
   sql: SqlClient,
   tenantId: string,
@@ -315,11 +372,10 @@ export async function personReceiptItems(
        JOIN prism365_receipt r ON r.tenant_id = i.tenant_id AND r.id = i.receipt_id
       WHERE i.tenant_id=$1
         AND (i.user_id = $2
-             OR ($3::text IS NOT NULL AND i.user_id IS NULL
-                 AND lower(i.user_principal_name) = lower($3::text)))
+             OR ($3::text IS NOT NULL AND i.user_id IS NULL AND i.user_principal_key = $3::text))
       ORDER BY r.performed_at DESC, r.imported_at DESC, i.receipt_id, i.position
       LIMIT $4`,
-    [tenantId, userId, principal, limit + 1],
+    [tenantId, userId, principal === null ? null : principalKey(principal), limit + 1],
   );
   return {
     items: result.rows.slice(0, limit).map((row) => ({

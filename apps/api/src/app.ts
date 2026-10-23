@@ -58,6 +58,7 @@ import {
   personRecordSchema,
   personSigninPageSchema,
   queryAuditRows,
+  scopeFileSuffix,
   type SystemAlert,
   serviceHealthStatusSchema,
   sessionSchema,
@@ -110,7 +111,12 @@ import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { auditExportParamsSchema, auditExportQuery } from "./audit-export.ts";
 import { AuditRunner } from "./audits.ts";
-import { type AppConfig, type SupportedReadFeature, supportedReadFeatures } from "./config.ts";
+import {
+  type AppConfig,
+  DEFAULT_HANDOFF_RETENTION_DAYS,
+  type SupportedReadFeature,
+  supportedReadFeatures,
+} from "./config.ts";
 import { demoDashboard } from "./demo-data.ts";
 import {
   digest,
@@ -1361,7 +1367,7 @@ export function createApp(options: AppOptions = {}) {
         "Content-Disposition",
         // A limited result says so in its name, so a file passed on is never mistaken for the
         // whole tenant.
-        `attachment; filename="prism365-${run.auditId}-${day}${run.scope && run.scope.length > 0 ? `-limited-to-${run.scope.length}-domain${run.scope.length === 1 ? "" : "s"}` : ""}.csv"`,
+        `attachment; filename="prism365-${run.auditId}-${day}${scopeFileSuffix(run.scope)}.csv"`,
       )
       .send(auditCsv(definition, rows));
   });
@@ -1433,6 +1439,7 @@ export function createApp(options: AppOptions = {}) {
           : "secret",
       certificate: config.certificate ? { ...config.certificate } : null,
       durableStorage: Boolean(config.databaseUrl || config.moduleDataDir),
+      handoffRetentionDays: config.handoffRetentionDays ?? DEFAULT_HANDOFF_RETENTION_DAYS,
     },
     store,
     modules: modules

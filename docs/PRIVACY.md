@@ -75,6 +75,22 @@ audit are kept and older ones deleted. Starting a run, opening a result and expo
 entry that names the audit and the run, not an account. A downloaded CSV is outside Prism365's
 retention and should be handled like the directory export it is.
 
+## Handoffs and receipts
+
+A handoff (`docs/handoff.md`) is a file an administrator exports from an audit for another tool to
+act on: account ids, names, sign-in names, the reasons and the columns the page showed. Prism365
+keeps only a record of each export (the audit, view, count, when and by whom), never its
+accounts; the downloaded file is outside Prism365's retention and should be handled like the CSV
+export. A receipt is that tool's report of what it did, imported as it was sent: account ids or
+sign-in names, the actions, their outcomes, the operator's name as the tool gives it, and free
+text. Receipts are shown as the tool's claims, never checked against the tenant.
+
+Handoff records and receipts are kept 3 years by default, configurable with
+`HANDOFF_RETENTION_DAYS` from 30 to 3650 days. Older ones are deleted, receipt items included,
+whenever a new handoff or receipt is stored; a handoff stays while a kept receipt answers it.
+Exporting, importing and reading them each write an access-ledger entry with ids and counts, not
+names or the tool's text.
+
 ## Retention defaults
 
 Final durations will be configured during the storage milestone. The design baseline is:

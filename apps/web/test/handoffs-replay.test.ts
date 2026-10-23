@@ -1,6 +1,7 @@
 import {
   type AuditRow,
   auditDefinitionSchema,
+  canonicalJson,
   handoffSchema,
   queryAuditRows,
 } from "@prism365/contracts";
@@ -35,9 +36,11 @@ const definition = auditDefinitionSchema.parse({
   permissions: ["User.Read.All"],
   optionalPermissions: [],
   requirements: [],
+  handoff: true,
 });
 const products = auditDefinitionSchema.parse({
   ...definition,
+  handoff: false,
   id: "licenses.capacity",
   columns: [{ key: "product", label: "Product", kind: "text" }],
   defaultSort: { column: "product", direction: "asc" },
@@ -95,8 +98,13 @@ const recordedReceipt = {
   skipped: 0,
 };
 
-const fixtures = (withHandoff = true): Fixtures => ({
+// The recorded receipt's body as the recording sent it, in canonical JSON.
+const recordedBody = (performedBy = "Jordan Vale") =>
+  receipt(recordedReceipt.id, { performedBy, handoffId: recordedHandoffId });
+
+const fixtures = (withHandoff = true, withBodies = true): Fixtures => ({
   recordedAt,
+  ...(withBodies ? { receipts: { [recordedReceipt.id]: canonicalJson(recordedBody()) } } : {}),
   responses: {
     "GET /api/v1/audits": {
       status: 200,
@@ -143,6 +151,8 @@ const fixtures = (withHandoff = true): Fixtures => ({
             runId,
             view: { id: "d30", label: "30+ days" },
             filtered: false,
+            scope: null,
+            complete: true,
             items: 2,
             generatedAt: recordedAt,
             generatedBy: { id: actorId, name: "Demo administrator" },
@@ -154,8 +164,8 @@ const fixtures = (withHandoff = true): Fixtures => ({
   },
 });
 
-function start(withHandoff = true) {
-  const state = createDemoState(fixtures(withHandoff), () => new Date(recordedAt));
+function start(withHandoff = true, withBodies = true) {
+  const state = createDemoState(fixtures(withHandoff, withBodies), () => new Date(recordedAt));
   return (method: string, url: string, body?: unknown) =>
     handleRequest(state, { method, url, body });
 }
@@ -221,6 +231,10 @@ describe("demo handoffs", () => {
       request("GET", "/api/v1/audit-runs/ffffffff-ffff-4fff-8fff-ffffffffffff/handoff.json").status,
     ).toBe(404);
     expect(start(false)("GET", `/api/v1/audit-runs/${runId}/handoff.json`).status).toBe(404);
+    // A view the audit does not have would select every row: refused, as on the server.
+    const unknown = request("GET", `/api/v1/audit-runs/${runId}/handoff.json?view=no-such-view`);
+    expect(unknown.status).toBe(400);
+    expect(unknown.body).toMatchObject({ error: "unknown_view" });
   });
 
   it("imports a receipt for the page: once, as reported, and listed first", () => {
@@ -246,10 +260,38 @@ describe("demo handoffs", () => {
     };
     expect(page.items.map((item) => item.position)).toEqual([0]);
     expect(page.next).toBe(0);
-    // A receipt the recording already holds is answered as kept.
-    expect(request("POST", "/api/v1/receipts", receipt(recordedReceipt.id)).body).toMatchObject({
-      imported: false,
-    });
+  });
+
+  it("tells a recorded receipt sent again from a different one under its id", () => {
+    const request = start();
+    const same = request("POST", "/api/v1/receipts", recordedBody());
+    expect(same.status).toBe(200);
+    expect(same.body).toMatchObject({ imported: false, receipt: { id: recordedReceipt.id } });
+    expect(request("POST", "/api/v1/receipts", recordedBody("Someone else")).status).toBe(409);
+    // Without the recorded body there is nothing to compare: never taken for the same.
+    expect(start(true, false)("POST", "/api/v1/receipts", recordedBody()).status).toBe(409);
+  });
+
+  it("looks at every kept receipt and handoff, not only the newest 100", () => {
+    const request = start();
+    for (let index = 0; index < 101; index += 1) {
+      const id = `${String(index).padStart(8, "0")}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`;
+      expect(request("POST", "/api/v1/receipts", receipt(id, { handoffId: null })).status).toBe(
+        201,
+      );
+      expect(request("GET", `/api/v1/audit-runs/${runId}/handoff.json?view=d30`).status).toBe(200);
+    }
+    const list = request("GET", "/api/v1/handoffs").body as {
+      handoffs: { id: string }[];
+      receipts: { id: string }[];
+    };
+    expect(list.receipts.map((item) => item.id)).not.toContain(recordedReceipt.id);
+    expect(list.handoffs.map((item) => item.id)).not.toContain(recordedHandoffId);
+    // Both recorded ones are past the newest 100 and still known.
+    expect(request("POST", "/api/v1/receipts", recordedBody("Someone else")).status).toBe(409);
+    expect(
+      request("POST", "/api/v1/receipts", receipt("99999999-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).status,
+    ).toBe(201);
   });
 
   it("refuses what the server refuses, in the same words", () => {

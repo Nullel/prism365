@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { canonicalJson } from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
 import {
   MODULE_ID as SIGNINS,
@@ -439,7 +440,12 @@ async function main() {
   log(`Recorded ${Object.keys(responses).length} responses for ${accounts.length} accounts.`);
 
   // 6. Check, write and format.
-  const fixtures: Fixtures = { recordedAt: new Date().toISOString(), responses };
+  // The receipt's body as sent, so the replay can tell the same receipt from a different one.
+  const fixtures: Fixtures = {
+    recordedAt: new Date().toISOString(),
+    responses,
+    receipts: { [receipt.id]: canonicalJson(receipt) },
+  };
   const text = JSON.stringify(fixtures);
   assertSynthetic(text, tenant.addresses);
   await mkdir(dirname(output), { recursive: true });

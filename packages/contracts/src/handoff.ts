@@ -77,9 +77,13 @@ export const handoffSourceSchema = z.strictObject({
   auditVersion: z.number().int().positive(),
   runId: z.uuid(),
   runFinishedAt: time,
-  // The view the rows were taken from; null when the export named a view the audit does not
-  // have, which selects every row.
-  view: z.strictObject({ id: viewId, label }).nullable(),
+  // The account domains the run was limited to, as the audit scope said when it ran; null when
+  // it covered every domain. A limited list is not the whole tenant.
+  scope: z.array(z.string().min(1).max(253)).min(1).max(100).nullable(),
+  // false when Microsoft returned less than everything to the run: the list may miss accounts.
+  complete: z.boolean(),
+  // The view the rows were taken from.
+  view: z.strictObject({ id: viewId, label }),
   search: z.string().max(200),
   facets: z
     .record(columnKey, z.string().min(1).max(200))
@@ -121,8 +125,8 @@ export function handoffSelection(
   definition: AuditDefinition,
   query: AuditQuery,
 ): Pick<HandoffSource, "view" | "search" | "facets" | "sort"> {
-  const view =
-    definition.views.find((item) => item.id === (query.view ?? definition.defaultView)) ?? null;
+  const view = handoffView(definition, query.view ?? null);
+  if (!view) throw new RangeError("The audit has no such view.");
   const facets = Object.fromEntries(
     Object.entries(query.facets ?? {}).filter(
       ([key, value]) =>
@@ -131,13 +135,23 @@ export function handoffSelection(
   );
   const sort = query.sort ?? definition.defaultSort;
   return {
-    view: view ? { id: view.id, label: view.label } : null,
+    view: { id: view.id, label: view.label },
     search: (query.search ?? "").trim(),
     facets,
     sort: definition.columns.some((column) => column.key === sort.column)
       ? { column: sort.column, direction: sort.direction }
       : null,
   };
+}
+
+// The view an export names, or the audit's default view when it names none; null for a view the
+// audit does not have. queryAuditRows selects every row for an unknown view, so an export must
+// refuse one rather than hand off accounts nobody chose.
+export function handoffView(
+  definition: AuditDefinition,
+  view: string | null,
+): AuditDefinition["views"][number] | null {
+  return definition.views.find((item) => item.id === (view ?? definition.defaultView)) ?? null;
 }
 
 // The columns whose values go into each item's evidence: the ones named (the columns the page
@@ -223,7 +237,14 @@ export function buildHandoff(input: {
   tenantId: string;
   generatedBy: { actorId: string; name: string | null };
   definition: AuditDefinition;
-  run: { id: string; auditVersion: number; startedAt: string; finishedAt: string | null };
+  run: {
+    id: string;
+    auditVersion: number;
+    startedAt: string;
+    finishedAt: string | null;
+    complete: boolean;
+    scope?: readonly string[] | null;
+  };
   query: AuditQuery;
   rows: readonly AuditRow[];
   // Column keys the page shows; null for the audit's default columns.
@@ -247,48 +268,110 @@ export function buildHandoff(input: {
       auditVersion: run.auditVersion,
       runId: run.id,
       runFinishedAt: run.finishedAt ?? run.startedAt,
+      scope: run.scope && run.scope.length > 0 ? [...run.scope] : null,
+      complete: run.complete,
       ...handoffSelection(definition, input.query),
     },
     items: handoffItems(definition, input.rows, input.columns),
   });
 }
 
+// "-limited-to-2-domains": a file of a run limited to some account domains says so in its name,
+// so a file passed on is never mistaken for the whole tenant. The CSV export uses it too.
+export function scopeFileSuffix(scope: readonly string[] | null | undefined): string {
+  if (!scope || scope.length === 0) return "";
+  return `-limited-to-${scope.length}-domain${scope.length === 1 ? "" : "s"}`;
+}
+
 // "prism365-handoff-accounts.inactive-2026-10-22.json": the audit and the day of its run, as the
-// CSV export names its file.
-export function handoffFileName(auditId: string, runStartedAt: string): string {
-  return `prism365-handoff-${auditId}-${runStartedAt.slice(0, 10)}.json`;
+// CSV export names its file, and the same suffix for a limited run.
+export function handoffFileName(
+  auditId: string,
+  runStartedAt: string,
+  scope: readonly string[] | null = null,
+): string {
+  return `prism365-handoff-${auditId}-${runStartedAt.slice(0, 10)}${scopeFileSuffix(scope)}.json`;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Receipt v1: written by the action tool
 // ---------------------------------------------------------------------------------------------
 
+// Characters that reorder how the text around them is displayed. In a tool's name or a detail
+// they could make one thing read as another, and plain text never needs them.
+const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F]/g;
+
+// Text from the tool as it is kept: NUL removed and broken UTF-16 replaced (cleanText), and
+// direction controls removed.
+export function cleanReceiptText(value: string): string {
+  return cleanText(value).replace(BIDI_CONTROLS, "");
+}
+
 // Text from the tool: trimmed, bounded, then cleaned. The bound is checked on the text as sent,
 // never cut, so nothing the tool wrote is silently shortened.
 const receiptText = (min: number, max: number) =>
-  z.string().trim().max(max).transform(cleanText).pipe(z.string().min(min));
+  z
+    .string()
+    .trim()
+    .max(max)
+    .transform((value) => cleanReceiptText(value).trim())
+    .pipe(z.string().min(min));
 
-// When the tool did the work. Bounded to plausible years: PostgreSQL refuses some dates the
-// format allows (year 0) and moves others past year 9999, which no ISO timestamp can show.
-const performedAt = time.refine(
-  (value) => {
-    const at = Date.parse(value);
-    return at >= Date.UTC(2000, 0, 1) && at < Date.UTC(2100, 0, 1);
-  },
-  { message: "is not between the years 2000 and 2099" },
-);
+// A principal name as Prism365 matches it: compatibility-normalised (NFKC) and in lower case, in
+// JavaScript, so "K" and the Kelvin sign are one letter whatever the database's locale.
+export function principalKey(value: string): string {
+  return value.normalize("NFKC").toLowerCase();
+}
 
-export const receiptActionSchema = z.string().regex(/^[a-z][a-z0-9.-]{1,79}$/);
+const reserved = (value: string) => value.normalize("NFKC").toLowerCase();
+
+// The day a receipt may be ahead of the server's clock: two clocks never agree exactly, but a
+// receipt dated further ahead would sort first on every page for as long as it is kept.
+export const RECEIPT_CLOCK_SKEW_MS = 86_400_000;
+
+// When the tool did the work, kept as UTC. PostgreSQL refuses time zone offsets beyond 15:59
+// (the format allows 23:59) and some dates the format allows (year 0), and it moves others past
+// year 9999, which no ISO timestamp can show; each would fail only once stored.
+const performedAt = time
+  .refine(
+    (value) => {
+      const offset = /([+-])(\d{2}):(\d{2})$/.exec(value);
+      return !offset || Number(offset[2]) <= 15;
+    },
+    { message: "has a time zone offset beyond 15:59, which no time zone uses" },
+  )
+  .refine(
+    (value) => {
+      const at = Date.parse(value);
+      return at >= Date.UTC(2000, 0, 1) && at < Date.UTC(2100, 0, 1);
+    },
+    { message: "is not between the years 2000 and 2099" },
+  )
+  .refine((value) => Date.parse(value) <= Date.now() + RECEIPT_CLOCK_SKEW_MS, {
+    message: "is more than a day in the future. Check the clock of the computer the tool ran on",
+  })
+  .transform((value) => new Date(value).toISOString());
+
+export const receiptActionSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9.-]{1,79}$/)
+  .refine((value) => !value.startsWith("prism365."), {
+    message: "starts with prism365., which is kept for Prism365's own names",
+  });
 export const receiptStatusSchema = z.enum(["done", "failed", "skipped"]);
 export type ReceiptStatus = z.infer<typeof receiptStatusSchema>;
 
 export const receiptItemSchema = z
   .strictObject({
     userId: personIdSchema.transform(normalizeUserId).nullable(),
-    userPrincipalName: receiptText(1, 500).nullable(),
+    userPrincipalName: receiptText(1, 500)
+      .refine((value) => principalKey(value).length <= 2_000, {
+        message: "is not a principal name",
+      })
+      .nullable(),
     action: receiptActionSchema,
     status: receiptStatusSchema,
-    detail: z.string().max(500).transform(cleanText),
+    detail: z.string().max(500).transform(cleanReceiptText),
   })
   .refine((item) => item.userId !== null || item.userPrincipalName !== null, {
     message: "needs a userId or a userPrincipalName",
@@ -303,7 +386,13 @@ export const receiptSchema = z.strictObject({
   id: guid,
   // The handoff this receipt answers, or null for actions taken without one.
   handoffId: guid.nullable(),
-  tool: z.strictObject({ name: receiptText(1, 80), version: receiptText(1, 40) }),
+  tool: z.strictObject({
+    // Another tool's report can never pass for Prism365's own.
+    name: receiptText(1, 80).refine((value) => reserved(value) !== "prism365", {
+      message: "cannot be Prism365: a receipt reports what another tool did",
+    }),
+    version: receiptText(1, 40),
+  }),
   performedAt,
   // The operator, as the tool names them.
   performedBy: receiptText(1, 200),
@@ -391,7 +480,8 @@ export function receiptProblem(input: unknown, error: z.ZodError): string {
   }
   if (issue.code === "custom" && field === "userId")
     return `${pathText(path.slice(0, -1))} needs a userId or a userPrincipalName.`;
-  if (issue.code === "custom" && field === "performedAt") return `${where} ${issue.message}.`;
+  // The schema's own refinements are written to follow the field's name.
+  if (issue.code === "custom") return `${where} ${issue.message}.`;
   return `${where} is not valid.`;
 }
 
@@ -413,6 +503,10 @@ export const handoffRecordSchema = z.object({
   view: z.object({ id: z.string().max(40), label: z.string().max(500) }).nullable(),
   // A search or a filter narrowed the view.
   filtered: z.boolean(),
+  // The run was limited to these account domains; null when it covered every one.
+  scope: z.array(z.string().max(253)).max(100).nullable(),
+  // false when the run was partial.
+  complete: z.boolean(),
   items: count,
   generatedAt: time,
   generatedBy: z.object({ id: z.uuid(), name: z.string().max(500).nullable() }),
