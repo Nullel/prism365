@@ -42,6 +42,8 @@ const MAX_PAGES = 100;
 // A minimum-size window that cannot be read is retried on this many runs, then recorded as a gap.
 const TIMEOUT_STRIKES = 3;
 const DETECTION_BATCH = 500;
+// Window size of the best-effort re-read of recent records that have not settled yet.
+const FRESH_WINDOW_MS = 30 * MINUTE;
 
 const iso = (value: Date | number) => new Date(value).toISOString();
 
@@ -68,11 +70,13 @@ interface Run {
   complete: boolean;
 }
 
-interface Position {
-  phase: "history" | "live";
-  start: number;
-  through: number;
+// One lane's reading position and window state (see cursor.ts).
+interface Lane {
+  at: number;
   span: number;
+  // Windows stay at `span` until the lane passes this time: the end of a window that was too
+  // busy or too slow, so the next window does not grow straight back into it.
+  hold: number | null;
   trying: number | null;
   strikes: { at: string; count: number } | undefined;
 }
@@ -322,173 +326,263 @@ export function gapFinding(
   };
 }
 
+// The next window at this place is half of one that could not be read whole, and windows stay
+// that small until the lane is past it.
+function shrink(lane: Lane, from: number, end: number): void {
+  lane.span = Math.max(MIN_SPAN_MS, Math.floor((end - from) / 2));
+  lane.hold = end;
+}
+
 // A window that timed out or that a run could not finish: a larger one is halved for the next
 // try; a minimum-size one is retried a few runs, then given up, so one stretch cannot stall
 // collection.
-function windowFailed(position: Position, from: number, end: number): "retry" | "give_up" {
+function windowFailed(lane: Lane, from: number, end: number): "retry" | "give_up" {
   if (end - from > MIN_SPAN_MS) {
-    position.span = Math.max(MIN_SPAN_MS, Math.floor((end - from) / 2));
+    shrink(lane, from, end);
     return "retry";
   }
-  const count = position.strikes?.at === iso(from) ? position.strikes.count + 1 : 1;
+  const count = lane.strikes?.at === iso(from) ? lane.strikes.count + 1 : 1;
   if (count < TIMEOUT_STRIKES) {
-    position.strikes = { at: iso(from), count };
+    lane.strikes = { at: iso(from), count };
     return "retry";
   }
-  position.strikes = undefined;
+  lane.strikes = undefined;
   return "give_up";
 }
 
-function toCursor(position: Position): DirectoryChangesCursor {
+type LaneState = Omit<DirectoryChangesCursor["settle"], "at">;
+
+function toLane(at: string, state: LaneState): Lane {
   return {
-    v: 1,
-    phase: position.phase,
-    start: iso(position.start),
-    through: iso(position.through),
-    ...(position.span < MAX_SPAN_MS ? { span: position.span } : {}),
-    ...(position.trying !== null ? { trying: iso(position.trying) } : {}),
-    ...(position.strikes ? { strikes: position.strikes } : {}),
+    at: Date.parse(at),
+    span: state.span ?? MAX_SPAN_MS,
+    hold: state.hold ? Date.parse(state.hold) : null,
+    trying: state.trying ? Date.parse(state.trying) : null,
+    strikes: state.strikes,
   };
 }
+
+function laneState(lane: Lane): LaneState {
+  return {
+    ...(lane.span < MAX_SPAN_MS ? { span: lane.span } : {}),
+    ...(lane.hold !== null ? { hold: iso(lane.hold) } : {}),
+    ...(lane.trying !== null ? { trying: iso(lane.trying) } : {}),
+    ...(lane.strikes ? { strikes: lane.strikes } : {}),
+  };
+}
+
+const freshLane = (at: number): Lane => ({
+  at,
+  span: MAX_SPAN_MS,
+  hold: null,
+  trying: null,
+  strikes: undefined,
+});
 
 const isTimeout = (error: unknown) =>
   error instanceof GraphBoundaryError && error.reason === "timeout";
 
 // One collector run. The first loads history, oldest first, from 30 days back (Microsoft's
 // longest retention), asking to run again within seconds while history remains. Later runs read
-// from where the last one stopped, less the late-arrival margin, up to now; records already
-// stored change nothing. The position moves only past windows read completely, and is saved
-// after each one, so a slow or stopped run leaves a backlog for the next, never a hole.
+// new records on the main lane, then re-read behind it on the settle lane once records are the
+// late-arrival margin old, so records Microsoft publishes late are collected; records already
+// stored change nothing. A lane moves only past windows read completely, or past a window
+// recorded as a gap, and saves its place after each, so a slow or stopped run leaves a backlog
+// for the next, never a silent hole.
 export async function collectDirectoryChanges(
   context: CollectorContext,
   config: DirectoryChangesConfig,
   options: CollectorOptions = {},
 ): Promise<CollectorResult> {
   const clock = options.clock ?? Date.now;
+  const began = clock();
+  const budget = config.runBudgetSeconds * 1_000;
   const run: Run = {
     context,
     config,
     clock,
     sleep:
       options.sleep ?? ((milliseconds) => new Promise((done) => setTimeout(done, milliseconds))),
-    deadline: clock() + config.runBudgetSeconds * 1_000,
+    deadline: began + budget,
     lastRequest: null,
     size: PAGE_SIZES[0],
     complete: true,
   };
   const now = context.now.getTime();
   const oldest = now - HISTORY_DAYS * DAY;
+  // Everything before this has been published for at least the late-arrival margin.
+  const settledBy = now - config.lateArrivalMinutes * MINUTE;
 
   // Changes a previous run stored but did not get to judge.
   await judgePending(context);
 
   const saved = parseCursor(await context.cursor.get());
-  const position: Position = saved
-    ? {
-        phase: saved.phase,
-        start: Date.parse(saved.start),
-        // A position in the future (a clock that ran ahead) is brought back to now.
-        through: Math.min(Date.parse(saved.through), now),
-        span: saved.span ?? MAX_SPAN_MS,
-        trying: saved.trying ? Date.parse(saved.trying) : null,
-        strikes: saved.strikes,
-      }
-    : {
-        phase: "history",
-        start: oldest,
-        through: oldest,
-        span: MAX_SPAN_MS,
-        trying: null,
-        strikes: undefined,
-      };
-  position.start = Math.min(position.start, position.through);
-  const persist = () => context.cursor.set(JSON.stringify(toCursor(position)));
-  const advance = (end: number) => {
-    position.through = Math.max(position.through, end);
-    if (position.phase === "history" && position.through >= now) position.phase = "live";
-    if (position.strikes && Date.parse(position.strikes.at) < end) position.strikes = undefined;
-  };
+  let phase = saved?.phase ?? "history";
+  let start = saved ? Date.parse(saved.start) : oldest;
+  const main = saved ? toLane(saved.through, saved) : freshLane(oldest);
+  const settle = saved ? toLane(saved.settle.at, saved.settle) : freshLane(oldest);
+  // A position in the future (a clock that ran ahead) is brought back to now.
+  main.at = Math.min(main.at, now);
+  settle.at = Math.min(settle.at, main.at);
+  const persist = () =>
+    context.cursor.set(
+      JSON.stringify({
+        v: 1,
+        phase,
+        start: iso(start),
+        through: iso(main.at),
+        ...laneState(main),
+        settle: { at: iso(settle.at), ...laneState(settle) },
+      } satisfies DirectoryChangesCursor),
+    );
 
   // Collection was off for longer than Microsoft keeps the log: what fell out of it is gone.
-  if (position.through < oldest) {
-    await upsertSafely(context, gapFinding("missed", position.through, oldest));
+  if (main.at < oldest) {
+    await upsertSafely(context, gapFinding("missed", main.at, oldest));
     run.complete = false;
-    position.through = oldest;
+    main.at = oldest;
   }
+  // Nothing older than Microsoft's retention can be read again, late or not.
+  settle.at = Math.max(settle.at, Math.min(oldest, main.at));
+  start = Math.min(start, settle.at);
 
-  // The last run was stopped while reading a window: that window failed.
-  if (position.trying !== null) {
-    const from = position.trying;
-    const end = windowEnd(from, position.span, now);
-    position.trying = null;
-    if (from < now && windowFailed(position, from, end) === "give_up") {
+  const advance = (lane: Lane, end: number) => {
+    lane.at = Math.max(lane.at, end);
+    if (lane.strikes && Date.parse(lane.strikes.at) < end) lane.strikes = undefined;
+    if (lane.hold !== null && end >= lane.hold) lane.hold = null;
+    if (phase === "history" && main.at >= now) phase = "live";
+  };
+
+  // A lane still marked as reading a window was stopped there by the last run: that window failed.
+  for (const lane of [main, settle]) {
+    if (lane.trying === null) continue;
+    const from = lane.trying;
+    const end = windowEnd(from, lane.span, now);
+    lane.trying = null;
+    if (from < now && windowFailed(lane, from, end) === "give_up") {
       await upsertSafely(context, gapFinding("unanswered", from, end));
       run.complete = false;
-      advance(end);
+      if (from <= lane.at) advance(lane, end);
     }
+  }
+  settle.at = Math.min(settle.at, main.at);
+  await persist();
+  // Where the main lane stood when this run began: earlier runs read everything before it.
+  const savedThrough = main.at;
+
+  // Reads one lane forward to `until`, one window at a time, saving its place after each.
+  // Returns false when the run's time ran out first.
+  const walk = async (
+    lane: Lane,
+    until: number,
+    deadline: number,
+    afterRead?: (from: number, end: number) => void,
+  ): Promise<boolean> => {
+    run.deadline = deadline;
+    while (lane.at < until) {
+      const from = lane.at;
+      const end = windowEnd(from, lane.span, until);
+      // A window that had less than half the run's budget and still could not be finished
+      // proves nothing about its size; only one that had the time counts as failed.
+      const hadTime = deadline - clock() >= budget / 2;
+      // Saved before reading, so a run stopped mid-window is visible to the next one.
+      lane.trying = from;
+      await persist();
+      let outcome: { status: WindowStatus | "given_up"; read: number };
+      try {
+        outcome = await readWindow(run, from, end);
+      } catch (error) {
+        lane.trying = null;
+        if (!isTimeout(error) || windowFailed(lane, from, end) === "retry") {
+          await persist();
+          throw error;
+        }
+        await upsertSafely(context, gapFinding("unanswered", from, end));
+        run.complete = false;
+        outcome = { status: "given_up", read: 0 };
+      }
+      lane.trying = null;
+
+      if (outcome.status === "stopped") {
+        // The time ran out inside this window. When the window had the time to itself, it
+        // cannot be read in one run at this size, so the next run tries a smaller one.
+        if (!hadTime || windowFailed(lane, from, end) === "retry") {
+          await persist();
+          return false;
+        }
+        await upsertSafely(context, gapFinding("unanswered", from, end));
+        run.complete = false;
+      } else if (outcome.status === "overflow") {
+        if (end - from > MIN_SPAN_MS) {
+          // Too many records for one window: read the same place again in a smaller one.
+          shrink(lane, from, end);
+          await persist();
+          continue;
+        }
+        await upsertSafely(
+          context,
+          gapFinding("overflow", from, end, {
+            read: outcome.read,
+            limit: config.windowRecordLimit,
+          }),
+        );
+        run.complete = false;
+      } else if (outcome.status === "complete") {
+        afterRead?.(from, end);
+        // Past the busy stretch and quiet again: grow back toward full-size windows.
+        if (lane.hold === null && outcome.read * 2 < config.windowRecordLimit)
+          lane.span = Math.min(MAX_SPAN_MS, lane.span * 2);
+      }
+      advance(lane, end);
+      await persist();
+      await judgePending(context);
+    }
+    return true;
+  };
+
+  // A window the main lane read once it was already old enough is settled by that read: the
+  // settle lane does not read it again when it is contiguous with what is already settled.
+  const settleBehind = (from: number, end: number) => {
+    if (settle.at >= from) settle.at = Math.max(settle.at, Math.min(end, settledBy));
+  };
+  const backlog = () => Math.min(main.at, settledBy) - settle.at;
+
+  // New records first. When the settle lane is behind, the main lane leaves it a third of the
+  // run.
+  const mainDeadline =
+    phase === "live" && backlog() > 0 ? began + Math.floor((budget * 2) / 3) : began + budget;
+  const caughtUp = await walk(main, now, mainDeadline, settleBehind);
+  await persist();
+  if (phase === "history") return { complete: run.complete, more: !caughtUp };
+
+  // Whether the settle lane ran out of time with more to read now.
+  let settleMore = false;
+  try {
+    settleMore = !(await walk(settle, Math.min(main.at, settledBy), began + budget));
+  } catch (error) {
+    // A slow re-read is already recorded on the lane (a smaller window, or a strike) and is tried
+    // again on the next scheduled run; the new records this run read are kept and the run stays
+    // a success.
+    if (!isTimeout(error)) throw error;
   }
   await persist();
 
-  let place =
-    position.phase === "history"
-      ? position.through
-      : Math.max(position.through - config.lateArrivalMinutes * MINUTE, oldest);
-  let first = true;
-  while (place < now) {
-    const from = place;
-    const end = windowEnd(from, position.span, now);
-    // Saved before reading, so a run stopped mid-window is visible to the next one.
-    position.trying = from;
-    await persist();
-    let outcome: { status: WindowStatus | "given_up"; read: number };
+  // Best effort, newest first: what earlier runs read that has not settled yet is read again
+  // with the time left, so a record Microsoft published a few minutes late shows up now rather
+  // than when it settles. It saves no position; the settle lane is what guarantees every such
+  // record is read once it is the margin old.
+  run.deadline = began + budget;
+  const floor = Math.max(settle.at, oldest);
+  for (let to = savedThrough; to > floor && clock() <= run.deadline; ) {
+    const from = Math.max(floor, to - FRESH_WINDOW_MS);
     try {
-      outcome = await readWindow(run, from, end);
+      if ((await readWindow(run, from, to)).status === "stopped") break;
     } catch (error) {
-      position.trying = null;
-      if (!isTimeout(error) || windowFailed(position, from, end) === "retry") {
-        await persist();
-        throw error;
-      }
-      await upsertSafely(context, gapFinding("unanswered", from, end));
-      run.complete = false;
-      outcome = { status: "given_up", read: 0 };
+      if (isTimeout(error)) break;
+      throw error;
     }
-    position.trying = null;
-
-    if (outcome.status === "stopped") {
-      // The run's budget ran out inside this window. When it was the run's first window, the
-      // window cannot be read in one run at this size, so the next run tries a smaller one.
-      if (!first || windowFailed(position, from, end) === "retry") {
-        await persist();
-        await judgePending(context);
-        return { complete: run.complete, more: true };
-      }
-      await upsertSafely(context, gapFinding("unanswered", from, end));
-      run.complete = false;
-    } else if (outcome.status === "overflow") {
-      if (end - from > MIN_SPAN_MS) {
-        // Too many records for one window: read the same place again in a smaller one.
-        position.span = Math.max(MIN_SPAN_MS, Math.floor((end - from) / 2));
-        await persist();
-        continue;
-      }
-      await upsertSafely(
-        context,
-        gapFinding("overflow", from, end, { read: outcome.read, limit: config.windowRecordLimit }),
-      );
-      run.complete = false;
-    } else if (outcome.status === "complete" && outcome.read * 2 < config.windowRecordLimit) {
-      // A quiet window: grow back toward full-size windows.
-      position.span = Math.min(MAX_SPAN_MS, position.span * 2);
-    }
-
-    place = end;
-    first = false;
-    advance(end);
-    await persist();
-    await judgePending(context);
+    to = from;
   }
-  advance(now);
-  await persist();
-  return { complete: run.complete, more: false };
+  await judgePending(context);
+  return { complete: run.complete, more: !caughtUp || settleMore };
 }

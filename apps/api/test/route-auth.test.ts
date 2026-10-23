@@ -58,6 +58,8 @@ describe("route authorization", () => {
       "/v1/automation/packages",
       "/v1/investigations/user?email=alex@example.invalid",
       "/v1/ai/status",
+      "/v1/changes?days=30",
+      "/v1/people/44444444-4444-4444-8444-444444444444/changes",
     ])
       for (const url of [path, encode(path), `/api${encode(path)}`]) {
         const response = await app.inject({ method: "GET", url });

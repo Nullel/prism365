@@ -51,6 +51,8 @@ let graphStatus: number | null;
 let serverPageSize: number;
 let maxTop: number | null;
 let onRequest: ((url: URL) => void) | null;
+// A moment Microsoft never answers for in time, at any window size.
+let slowAt: number | null;
 let database: PGliteModuleDatabase;
 let scheduler: ModuleScheduler;
 
@@ -119,9 +121,13 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
   if (!match?.[1] || !match[2]) return new Response("{}", { status: 400 });
   const from = ticks(match[1]);
   const to = ticks(match[2]);
+  if (slowAt !== null && Number(from / 10_000n) <= slowAt && Number(to / 10_000n) >= slowAt)
+    await new Promise((resolve) => setTimeout(resolve, 300));
   const value = records
     .filter((record) => {
-      if (typeof record.activityDateTime !== "string") return true;
+      // A record with no readable time matches every window, as nothing can place it.
+      if (typeof record.activityDateTime !== "string" || !/Z$/.test(record.activityDateTime))
+        return true;
       const at = ticks(record.activityDateTime);
       const published =
         Date.parse(record.activityDateTime) + (record.publishDelay ?? 0) <= clock.getTime();
@@ -140,7 +146,10 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
   });
 }
 
-async function setup(overrides: Partial<DirectoryChangesConfig> = {}) {
+async function setup(
+  overrides: Partial<DirectoryChangesConfig> = {},
+  graphOptions: { requestTimeoutMilliseconds?: number } = {},
+) {
   const config = { ...defaultDirectoryChangesConfig, ...overrides };
   const registry = new ModuleRegistry().register(
     createDirectoryChangesModule(config, {
@@ -153,6 +162,7 @@ async function setup(overrides: Partial<DirectoryChangesConfig> = {}) {
   );
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   scheduler = new ModuleScheduler({
+    enabledPacks: ["audit.directory.read"],
     registry,
     database,
     now: () => clock,
@@ -161,6 +171,7 @@ async function setup(overrides: Partial<DirectoryChangesConfig> = {}) {
         getAccessToken,
         fetchImplementation: fakeFetch,
         sleep: async () => {},
+        ...graphOptions,
       }),
   });
   const credential: CollectionCredential = {
@@ -174,6 +185,16 @@ async function setup(overrides: Partial<DirectoryChangesConfig> = {}) {
 }
 
 const runs = () => database.tenant(tenantId, (sql) => latestRuns(sql, tenantId));
+// Every run's status, oldest first.
+const statuses = async () =>
+  (
+    await database.tenant(tenantId, (sql) =>
+      sql.query<{ status: string }>(
+        "SELECT status FROM prism365_module_run WHERE tenant_id = $1 ORDER BY started_at, id",
+        [tenantId],
+      ),
+    )
+  ).rows.map((row) => row.status);
 const findings = () =>
   database.tenant(tenantId, (sql) => listFindings(sql, tenantId, { module: "directory.changes" }));
 interface StoredCursor {
@@ -217,10 +238,14 @@ async function loadHistory() {
   throw new Error("History never finished loading.");
 }
 
-// One scheduled run, ten minutes after the last.
+// The scheduled run ten minutes after the last, and any runs it asks for to catch up.
 async function poll() {
   clock = new Date(clock.getTime() + 10 * MINUTE);
-  await scheduler.tick();
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await scheduler.tick();
+    if ((await cursor()).through === clock.toISOString()) return;
+  }
+  throw new Error("Collection never caught up.");
 }
 
 beforeEach(() => {
@@ -234,6 +259,7 @@ beforeEach(() => {
   serverPageSize = 1_000;
   maxTop = null;
   onRequest = null;
+  slowAt = null;
 });
 
 afterEach(async () => {
@@ -271,17 +297,18 @@ describe("directory change collector", () => {
   });
 
   it("starts requests at least two seconds apart", async () => {
-    await setup();
+    // A budget long enough to load the whole history in one run.
+    await setup({ runBudgetSeconds: 100 });
     await loadHistory();
     expect(requests.length).toBeGreaterThan(5);
     for (let index = 1; index < requestTimes.length; index += 1)
-      expect(
-        (requestTimes[index] ?? 0) - (requestTimes[index - 1] ?? 0),
-      ).toBeGreaterThanOrEqual(PAGE_INTERVAL_MS);
+      expect((requestTimes[index] ?? 0) - (requestTimes[index - 1] ?? 0)).toBeGreaterThanOrEqual(
+        PAGE_INTERVAL_MS,
+      );
     expect(sleeps.length).toBeGreaterThanOrEqual(requests.length - 1);
   });
 
-  it("picks up records Microsoft publishes late, within the margin, and stores repeats once", async () => {
+  it("picks up records Microsoft publishes late, and stores repeats once", async () => {
     records.push(audit(ago(2 * HOUR)));
     await setup();
     await loadHistory();
@@ -307,23 +334,26 @@ describe("directory change collector", () => {
   });
 
   it("does not move past unread time when the budget runs out mid-window", async () => {
-    // Ten records in one hour, two to a page: one window needs five pages.
+    // Ten records in one hour, two to a page: the day they are in needs five pages.
+    const busy = new Date(start.getTime() - 5 * DAY);
+    const midnight = `${busy.toISOString().slice(0, 10)}T00:00:00.000Z`;
     for (let index = 0; index < 10; index += 1)
-      records.push(audit(new Date(start.getTime() - 5 * DAY + index * 5 * MINUTE)));
+      records.push(audit(new Date(busy.getTime() + index * 5 * MINUTE)));
     serverPageSize = 2;
-    await setup();
-    // The budget runs out after the second page of that window.
+    // Budget enough to reach that day in the first run.
+    await setup({ runBudgetSeconds: 100 });
+    // The budget runs out while the second page of that day is read.
     let pages = 0;
     onRequest = (url) => {
-      const filter = url.searchParams.get("$filter") ?? "";
-      if (!filter.includes(new Date(start.getTime() - 5 * DAY).toISOString().slice(0, 10)))
+      if (!(url.searchParams.get("$filter") ?? "").startsWith(`activityDateTime ge ${midnight}`))
         return;
       pages += 1;
       if (pages === 2) elapsed += 60_000;
     };
-    await scheduler.tick();
+    for (let attempt = 0; attempt < 10 && pages < 2; attempt += 1) await scheduler.tick();
+    expect(pages).toBe(2);
     const stopped = await cursor();
-    expect(Date.parse(stopped.through ?? "")).toBeLessThanOrEqual(start.getTime() - 5 * DAY);
+    expect(Date.parse(stopped.through ?? "")).toBeLessThanOrEqual(Date.parse(midnight));
     expect(stopped.phase).toBe("history");
     // What was read before the budget ran out is kept.
     expect(await count()).toBe(4);
@@ -345,17 +375,18 @@ describe("directory change collector", () => {
     // The busy day was read in smaller windows than a day.
     const filters = requests.map((url) => url.searchParams.get("$filter") ?? "");
     const spans = filters.map((filter) => {
-      const [, from = "", to = ""] =
-        /ge (\S+) and activityDateTime le (\S+)/.exec(filter) ?? [];
+      const [, from = "", to = ""] = /ge (\S+) and activityDateTime le (\S+)/.exec(filter) ?? [];
       return Date.parse(to) - Date.parse(from);
     });
     expect(Math.min(...spans)).toBeLessThan(MAX_SPAN_MS / 4);
   });
 
   it("records a gap when a minute holds more records than one window may read", async () => {
-    const burst = new Date(start.getTime() - 2 * DAY + 30 * 1_000);
+    // Seven changes within one second, 30 minutes ago: inside the late-arrival margin, so later
+    // runs read that minute again.
+    const minute = Math.floor((start.getTime() - 30 * MINUTE) / MINUTE) * MINUTE;
     for (let index = 0; index < 7; index += 1)
-      records.push(audit(new Date(burst.getTime() + index * 100)));
+      records.push(audit(new Date(minute + 20_000 + index * 100)));
     records.push(audit(new Date(start.getTime() - DAY)));
     serverPageSize = 2;
     await setup({ windowRecordLimit: 4 });
@@ -372,11 +403,13 @@ describe("directory change collector", () => {
     // What was read is kept, and collection carried on past the gap.
     expect(await count()).toBe(5);
     expect(await cursor()).toMatchObject({ phase: "live" });
-    expect((await runs())[0]?.status).toBe("partial");
+    expect(await statuses()).toContain("partial");
 
-    // Re-reading the same busy minute later does not add a second gap finding.
-    await poll();
-    expect((await findings()).length).toBe(1);
+    // The settle lane reads that minute again once it is two hours old: still one gap finding.
+    for (let index = 0; index < 10; index += 1) await poll();
+    const again = await findings();
+    expect(again).toHaveLength(1);
+    expect(again[0]?.occurrences).toBeGreaterThan(1);
   });
 
   it("leaves out unreadable records, counts them, and keeps collecting", async () => {
@@ -440,10 +473,11 @@ describe("directory change collector", () => {
     await setup();
     await loadHistory();
     const live = await cursor();
-    // A run stopped while reading a full window: the next one tries it at half the size.
+    // A run stopped while reading a window: the next one tries a smaller one, without a gap.
     await setCursor(JSON.stringify({ ...live, trying: live.through }));
     await poll();
-    expect((await cursor()).span).toBe(MAX_SPAN_MS / 2);
+    expect((await cursor()).span).toBeLessThan(MAX_SPAN_MS);
+    expect(await findings()).toEqual([]);
 
     // A minimum-size window that has failed twice before is given up and recorded.
     const at = new Date(Math.floor(clock.getTime() / MINUTE) * MINUTE - 10 * MINUTE);
@@ -485,6 +519,8 @@ describe("directory change collector", () => {
       ],
     });
     records.push(assignment);
+    // Inside the late-arrival margin, so every poll reads it again.
+    assignment.activityDateTime = ago(50 * MINUTE).toISOString();
     await setup();
     await loadHistory();
     await poll();
@@ -508,7 +544,13 @@ describe("directory change collector", () => {
           tenantId,
           ago(HOUR).toISOString(),
           JSON.stringify([
-            { id: "policy-1", name: "Require MFA", type: "Policy", principal: null, properties: [] },
+            {
+              id: "policy-1",
+              name: "Require MFA",
+              type: "Policy",
+              principal: null,
+              properties: [],
+            },
           ]),
         ],
       ),
@@ -524,10 +566,83 @@ describe("directory change collector", () => {
     await loadHistory();
     clock = new Date(clock.getTime() + 45 * DAY);
     records.push(audit(ago(DAY)));
-    await loadHistory().catch(() => {});
-    await scheduler.tick();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await scheduler.tick();
+      if ((await cursor()).through === clock.toISOString()) break;
+    }
+    expect((await cursor()).through).toBe(clock.toISOString());
     const [missed] = await findings();
     expect(missed?.title).toBe("Directory changes were missed while collection was off");
     expect(await count()).toBe(1);
+  });
+
+  it("collects a late record on the settle lane even with no time to re-read", async () => {
+    records.push(audit(ago(5 * HOUR)));
+    // Three seconds: the main and settle lanes get one request each, the best-effort re-read none.
+    await setup({ runBudgetSeconds: 3 });
+    for (let attempt = 0; attempt < 40 && (await cursor()).phase !== "live"; attempt += 1)
+      await scheduler.tick();
+    expect((await cursor()).phase).toBe("live");
+    // Happened 40 minutes ago, published 45 minutes after it happened.
+    const late = audit(ago(40 * MINUTE), { publishDelay: 45 * MINUTE });
+    records.push(late);
+    await poll();
+    // Visible now, but not yet two hours old: no lane has read it again yet.
+    expect(await count()).toBe(1);
+    for (let index = 0; index < 9; index += 1) await poll();
+    expect(await count("event", `id = '${String(late.id)}'`)).toBe(1);
+    const settled = await cursor();
+    expect(Date.parse((settled as { settle?: { at: string } }).settle?.at ?? "")).toBe(
+      clock.getTime() - 120 * MINUTE,
+    );
+  });
+
+  it("makes a window Microsoft never answers smaller, then records it as a gap and moves on", async () => {
+    slowAt = start.getTime() - 3 * DAY + 90 * 1_000;
+    records.push(audit(new Date(start.getTime() - 5 * DAY)));
+    records.push(audit(new Date(start.getTime() - DAY)));
+    await setup({}, { requestTimeoutMilliseconds: 100 });
+    for (let attempt = 0; attempt < 40 && (await cursor()).phase !== "live"; attempt += 1) {
+      await scheduler.tick();
+      clock = new Date(clock.getTime() + 10 * MINUTE);
+    }
+    expect((await cursor()).phase).toBe("live");
+    expect(await count()).toBe(2);
+    const [gap] = await findings();
+    expect(gap?.summary).toContain("did not answer in time");
+    // The window given up is at most a minute long and holds the moment that never answers.
+    const from = Date.parse(gap?.windowStart ?? "");
+    const to = Date.parse(gap?.windowEnd ?? "");
+    expect(from).toBeLessThanOrEqual(slowAt);
+    expect(to).toBeGreaterThanOrEqual(slowAt);
+    expect(to - from).toBeLessThanOrEqual(MINUTE);
+    expect(await statuses()).toContain("failed");
+  });
+
+  it("records a finding without names when a directory name trips the language policy", async () => {
+    records.push(
+      audit(ago(3 * HOUR), {
+        activityDisplayName: "Delete Conditional Access policy",
+        category: "Policy",
+        targetResources: [
+          {
+            id: "policy-7",
+            displayName: "Productivity apps",
+            type: "Policy",
+            modifiedProperties: [],
+          },
+        ],
+      }),
+    );
+    await setup();
+    await loadHistory();
+    const [finding] = await findings();
+    expect(finding).toMatchObject({
+      ruleId: "policy.conditional-access-changed",
+      severity: "high",
+      subject: { kind: "resource", id: "policy-7", label: null },
+    });
+    expect(finding?.summary).toContain("Names were left out");
+    expect(JSON.stringify(finding)).not.toContain("Productivity");
   });
 });
