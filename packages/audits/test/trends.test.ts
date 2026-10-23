@@ -17,6 +17,7 @@ import {
   listRuns,
   pruneRuns,
   readAuditSchedule,
+  readStoredAuditSchedule,
   readTrendPoints,
   type StoredTrendPoint,
   scheduledAuditCount,
@@ -27,6 +28,7 @@ import {
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const otherTenantId = "99999999-9999-4999-8999-999999999999";
 const actor = { id: "22222222-2222-4222-8222-222222222222", name: "Synthetic admin" };
+const otherActor = "44444444-4444-4444-8444-444444444444";
 const at = (day: number, hour = 9) => new Date(Date.UTC(2026, 9, day, hour));
 const epoch = new Date(0);
 
@@ -386,7 +388,7 @@ describe("audit schedules", () => {
     expect(Object.values(schedule).every((frequency) => frequency === "off")).toBe(true);
   });
 
-  it("saves the whole schedule, drops unknown audits and keeps tenants apart", async () => {
+  it("saves the audits named, drops unknown ones from a request and keeps tenants apart", async () => {
     const saved = await database.tenant(tenantId, (sql) =>
       writeAuditSchedule(
         sql,
@@ -417,8 +419,8 @@ describe("audit schedules", () => {
       readAuditSchedule(sql, otherTenantId, builtInAudits),
     );
     expect(scheduledAuditCount(other)).toBe(0);
-    // Saving again replaces it: an audit left out is off.
-    const replaced = await database.tenant(tenantId, (sql) =>
+    // Saving again changes only what it names: an audit left out keeps its schedule.
+    const next = await database.tenant(tenantId, (sql) =>
       writeAuditSchedule(
         sql,
         tenantId,
@@ -427,7 +429,54 @@ describe("audit schedules", () => {
         builtInAudits,
       ),
     );
-    expect(replaced).toMatchObject({ "accounts.inactive": "off", "guests.review": "daily" });
+    expect(next).toMatchObject({ "accounts.inactive": "daily", "guests.review": "daily" });
+    const stored = await database.tenant(tenantId, (sql) => readStoredAuditSchedule(sql, tenantId));
+    expect(stored.scheduledBy).toEqual({
+      "accounts.inactive": actor.id,
+      "guests.review": actor.id,
+    });
+  });
+
+  it("keeps the entries a newer build saved for audits this build does not know", async () => {
+    const tenant = randomUUID();
+    await database.tenant(tenant, (sql) =>
+      sql.query(
+        `INSERT INTO prism365_preference (tenant_id, key, value, updated_at, updated_by)
+         VALUES ($1,'audits.schedule',$2::jsonb,now(),$3)`,
+        [
+          tenant,
+          JSON.stringify({
+            audits: { "devices.compliance": "daily", "accounts.inactive": "weekly" },
+            scheduledBy: { "devices.compliance": actor.id, "accounts.inactive": actor.id },
+          }),
+          actor.id,
+        ],
+      ),
+    );
+    const saved = await database.tenant(tenant, (sql) =>
+      writeAuditSchedule(
+        sql,
+        tenant,
+        { audits: { "mfa.registration": "daily" } },
+        otherActor,
+        builtInAudits,
+      ),
+    );
+    // This build neither shows nor runs it, but it is still there for the build that knows it.
+    expect(saved).not.toHaveProperty("devices.compliance");
+    const stored = await database.tenant(tenant, (sql) => readStoredAuditSchedule(sql, tenant));
+    expect(stored).toEqual({
+      audits: {
+        "accounts.inactive": "weekly",
+        "mfa.registration": "daily",
+        "devices.compliance": "daily",
+      },
+      scheduledBy: {
+        "accounts.inactive": actor.id,
+        "mfa.registration": otherActor,
+        "devices.compliance": actor.id,
+      },
+    });
   });
 
   it("reads a damaged value, or an audit that no longer exists, as off", async () => {

@@ -88,11 +88,31 @@ export type AuditTrend = z.infer<typeof auditTrendSchema>;
 export const auditScheduleFrequencySchema = z.enum(["off", "daily", "weekly"]);
 export type AuditScheduleFrequency = z.infer<typeof auditScheduleFrequencySchema>;
 
+// How long after its newest run started an audit is due again.
+export const AUDIT_SCHEDULE_PERIOD_MILLISECONDS: Record<
+  Exclude<AuditScheduleFrequency, "off">,
+  number
+> = {
+  daily: 24 * 60 * 60_000,
+  weekly: 7 * 24 * 60 * 60_000,
+};
+
+// When a scheduled audit is next due, counted from its newest start; null when it is off or has
+// never run (then it is due now).
+export function nextScheduledRun(
+  frequency: AuditScheduleFrequency,
+  lastStart: string | null,
+): string | null {
+  const started = lastStart === null ? Number.NaN : Date.parse(lastStart);
+  if (frequency === "off" || Number.isNaN(started)) return null;
+  return new Date(started + AUDIT_SCHEDULE_PERIOD_MILLISECONDS[frequency]).toISOString();
+}
+
 // Far more than there are audits; it only bounds what one request can make the server check.
 export const MAX_AUDIT_SCHEDULE_ENTRIES = 100;
 
-// The saved schedule (prism365_preference, key audits.schedule) and the body that saves it. An
-// audit missing from the list does not run on its own.
+// The saved schedule (prism365_preference, key audits.schedule) and the body that saves it. A
+// save changes only the audits it names.
 export const auditScheduleSchema = z.object({
   audits: z
     .record(auditIdSchema, auditScheduleFrequencySchema)

@@ -109,7 +109,7 @@ import { MemoryStateStore, type SqlClient, type StateStore } from "@prism365/sto
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AuditScheduler, type AuditSchedulerOptions } from "./audit-schedule.ts";
-import { AuditRunner } from "./audits.ts";
+import { AuditRunner, auditUnavailableMessage } from "./audits.ts";
 import { type AppConfig, type SupportedReadFeature, supportedReadFeatures } from "./config.ts";
 import { demoDashboard } from "./demo-data.ts";
 import {
@@ -1211,9 +1211,12 @@ export function createApp(options: AppOptions = {}) {
       : null;
   if (auditSchedule && modules) {
     auditSchedule.start();
-    // Once shortly after collection starts, so a due audit does not wait a whole tick.
+    // Once shortly after collection starts, so a due audit does not wait a whole tick. When
+    // collection stops or passes to another administrator, a scheduled run reading on the old
+    // sign-in stops at once.
     modules.scheduler.subscribe((event) => {
       if (event.type === "collection.bound") auditSchedule.soon();
+      if (event.type === "collection.unbound") auditSchedule.collectionEnded();
     });
   }
   const auditsUnavailable = {
@@ -1267,10 +1270,7 @@ export function createApp(options: AppOptions = {}) {
     if (availability.state !== "available")
       return reply.status(403).send({
         error: availability.state === "not_enabled" ? "feature_not_enabled" : "missing_consent",
-        message:
-          availability.state === "not_enabled"
-            ? `This installation has not enabled ${availability.enable.join(", ") || availability.missing.join(", ")}. Add it to ENABLED_READ_FEATURES and restart.`
-            : `Your session has not granted ${availability.missing.join(", ")}. Grant access and run it again.`,
+        message: auditUnavailableMessage(availability),
         availability,
       });
     const id = audit.definition.id;

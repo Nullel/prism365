@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { finishRun, inactiveAccountsAudit, insertRun } from "@prism365/audits";
 import { auditScheduleSettingsSchema, auditTrendSchema } from "@prism365/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { type AuditHarness, actorId, auditHarness, tenantId } from "./audit-harness.ts";
+import {
+  type AuditHarness,
+  actorId,
+  auditHarness,
+  otherActorId,
+  tenantId,
+} from "./audit-harness.ts";
 
 // Audit trend and schedule routes. Synthetic tenant only.
 
@@ -190,11 +196,11 @@ describe("audit schedule settings", () => {
     expect(Object.values((await settings()).audits).every((value) => value === "off")).toBe(true);
   });
 
-  it("saves the schedule, drops unknown audits, and records only a count first", async () => {
+  it("saves the audits named, drops unknown ones, and records the changes first", async () => {
     const response = await h.post("/v1/settings/audit-schedule", {
       audits: {
         "accounts.inactive": "daily",
-        "mfa.registration": "weekly",
+        "guests.review": "weekly",
         "licenses.reclaim": "off",
         "retired.audit": "daily",
       },
@@ -203,18 +209,46 @@ describe("audit schedule settings", () => {
     const saved = auditScheduleSettingsSchema.parse(response.json());
     expect(saved.audits).toMatchObject({
       "accounts.inactive": "daily",
-      "mfa.registration": "weekly",
+      "guests.review": "weekly",
       "licenses.reclaim": "off",
-      "guests.review": "off",
+      "mfa.registration": "off",
     });
     expect(saved.audits).not.toHaveProperty("retired.audit");
     expect(await settings()).toEqual(saved);
     expect(changes()).toHaveLength(1);
+    // Which audits changed and to what, never anything about the tenant; reclaim was already
+    // off, so it is not a change.
     expect(changes()[0]).toEqual({
       tenantId,
       actorId,
-      event: { type: "audits.schedule.changed", scheduled: 2, occurredAt: expect.any(String) },
+      event: {
+        type: "audits.schedule.changed",
+        changes: [
+          { auditId: "accounts.inactive", frequency: "daily" },
+          { auditId: "guests.review", frequency: "weekly" },
+        ],
+        scheduled: 2,
+        occurredAt: expect.any(String),
+      },
     });
+  });
+
+  it("changes only the audits a save names, so two pages never undo each other", async () => {
+    // Another page, loaded before the save above, changes one other audit.
+    const response = await h.post("/v1/settings/audit-schedule", {
+      audits: { "licenses.reclaim": "daily" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(auditScheduleSettingsSchema.parse(response.json()).audits).toMatchObject({
+      "accounts.inactive": "daily",
+      "guests.review": "weekly",
+      "licenses.reclaim": "daily",
+    });
+    expect(changes().at(-1)?.event).toMatchObject({
+      changes: [{ auditId: "licenses.reclaim", frequency: "daily" }],
+      scheduled: 3,
+    });
+    await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "off" } });
   });
 
   it("does not change the schedule when the change cannot be recorded", async () => {
@@ -224,7 +258,9 @@ describe("audit schedule settings", () => {
       if (event.type === "audits.schedule.changed") throw new Error("ledger unavailable");
       return append(tenant, actor, event);
     };
-    const failed = await h.post("/v1/settings/audit-schedule", { audits: {} });
+    const failed = await h.post("/v1/settings/audit-schedule", {
+      audits: { "accounts.inactive": "off", "licenses.reclaim": "weekly" },
+    });
     h.store.appendAudit = append;
     expect(failed.statusCode).toBe(500);
     expect(await settings()).toEqual(before);
@@ -242,6 +278,108 @@ describe("audit schedule settings", () => {
     const id = await h.finish("licenses.reclaim");
     const runs = (await h.get("/v1/audits/licenses.reclaim/runs")).json().runs;
     expect(runs.find((run: { id: string }) => run.id === id)?.trigger).toBe("manual");
+  });
+});
+
+describe("who may schedule an audit", () => {
+  let h: AuditHarness;
+  let other: Awaited<ReturnType<AuditHarness["signIn"]>>;
+  beforeAll(async () => {
+    // The other administrator's sign-in has not granted AuditLog.Read.All.
+    h = await auditHarness({ otherScopes: ["User.Read", "User.Read.All"] });
+    other = await h.signIn(otherActorId);
+  }, 60_000);
+  afterAll(async () => {
+    await h?.app.close();
+  });
+  const stored = async () =>
+    (
+      await h.database.tenant(tenantId, (sql) =>
+        sql.query<{
+          value: { audits: Record<string, string>; scheduledBy: Record<string, string> };
+        }>("SELECT value FROM prism365_preference WHERE tenant_id=$1 AND key='audits.schedule'", [
+          tenantId,
+        ]),
+      )
+    ).rows[0]?.value;
+  const changes = () =>
+    h.store.audit.filter((entry) => entry.event.type === "audits.schedule.changed");
+
+  it("refuses to turn on an audit the administrator could not run themselves", async () => {
+    const manual = await h.post("/v1/audits/accounts.inactive/runs", undefined, other);
+    expect(manual.statusCode).toBe(403);
+    const response = await h.post(
+      "/v1/settings/audit-schedule",
+      { audits: { "accounts.inactive": "daily", "guests.review": "daily" } },
+      other,
+    );
+    expect(response.statusCode).toBe(403);
+    // The Run button's words, for the audit that cannot run.
+    expect(response.json()).toMatchObject({
+      error: "missing_consent",
+      message: manual.json().message,
+      auditId: "accounts.inactive",
+    });
+    expect(manual.json().message).toBe(
+      "Your session has not granted AuditLog.Read.All. Grant access and run it again.",
+    );
+    // Nothing saved, nothing recorded: not even the audit that could have been scheduled.
+    expect(await stored()).toBeUndefined();
+    expect(changes()).toEqual([]);
+  });
+
+  it("refuses an audit whose read pack this installation has not enabled", async () => {
+    const response = await h.post("/v1/settings/audit-schedule", {
+      audits: { "licenses.capacity": "weekly" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      error: "feature_not_enabled",
+      message:
+        "This installation has not enabled tenant.licenses.read. Add it to ENABLED_READ_FEATURES and restart.",
+    });
+  });
+
+  it("stores who scheduled each audit, and lets anyone turn one off", async () => {
+    const scheduled = await h.post("/v1/settings/audit-schedule", {
+      audits: { "accounts.inactive": "daily", "guests.review": "weekly" },
+    });
+    expect(scheduled.statusCode).toBe(200);
+    expect((await stored())?.scheduledBy).toEqual({
+      "accounts.inactive": actorId,
+      "guests.review": actorId,
+    });
+    // The other administrator turns one off (always allowed) and moves the other to daily,
+    // which they may run themselves: they become the one who scheduled it.
+    const changed = await h.post(
+      "/v1/settings/audit-schedule",
+      { audits: { "accounts.inactive": "off", "guests.review": "daily" } },
+      other,
+    );
+    expect(changed.statusCode).toBe(200);
+    expect(await stored()).toMatchObject({
+      audits: { "accounts.inactive": "off", "guests.review": "daily" },
+      scheduledBy: { "guests.review": otherActorId },
+    });
+    expect((await stored())?.scheduledBy).not.toHaveProperty("accounts.inactive");
+    expect(changes().at(-1)).toMatchObject({
+      actorId: otherActorId,
+      event: {
+        changes: [
+          { auditId: "accounts.inactive", frequency: "off" },
+          { auditId: "guests.review", frequency: "daily" },
+        ],
+        scheduled: 1,
+      },
+    });
+    // Saving a value that is already saved is no change, so it needs no access check either.
+    const same = await h.post(
+      "/v1/settings/audit-schedule",
+      { audits: { "guests.review": "daily" } },
+      other,
+    );
+    expect(same.statusCode).toBe(200);
+    expect(changes().at(-1)?.event).toMatchObject({ changes: [] });
   });
 });
 

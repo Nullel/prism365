@@ -14,6 +14,8 @@ import { createModuleRegistry } from "../src/modules.ts";
 
 export const tenantId = "11111111-1111-4111-8111-111111111111";
 export const actorId = "22222222-2222-4222-8222-222222222222";
+// A second administrator, for the tests where two of them share the installation.
+export const otherActorId = "44444444-4444-4444-8444-444444444444";
 export const origin = "http://localhost:5173";
 const features = ["directory.users.read", "audit.signins.read"] as const;
 const identityConfig: IdentityConfig = {
@@ -21,7 +23,7 @@ const identityConfig: IdentityConfig = {
   clientId: "33333333-3333-4333-8333-333333333333",
   origin,
   redirectUri: `${origin}/api/v1/auth/callback`,
-  allowedActorIds: [actorId],
+  allowedActorIds: [actorId, otherActorId],
   enabledFeatures: [...features],
   credential: { clientSecret: "synthetic-only" },
 };
@@ -103,20 +105,31 @@ export interface Session {
 }
 
 export async function auditHarness(
-  options: { withModules?: boolean; scopes?: string[]; now?: () => Date } = {},
+  options: {
+    withModules?: boolean;
+    scopes?: string[];
+    // Scopes for the second administrator; the first one's by default.
+    otherScopes?: string[];
+    now?: () => Date;
+  } = {},
 ) {
   const scopes = options.scopes ?? ["User.Read", "User.Read.All", "AuditLog.Read.All"];
+  const scopesOf = (actor: string) =>
+    actor === otherActorId ? (options.otherScopes ?? scopes) : scopes;
   // Set to make Microsoft refuse every token from now on, as a sign-in frequency policy does.
   let refuseTokens = false;
+  let signingIn = actorId;
+  // Every token Microsoft gave out, by administrator.
+  const tokens: string[] = [];
   const provider: MicrosoftIdentityProvider = {
     authorizationUrl: async () => "https://login.microsoftonline.com/synthetic",
     redeem: async () => ({
       tenantId,
-      actorId,
-      displayName: "Synthetic admin",
-      accountId: "synthetic-account",
+      actorId: signingIn,
+      displayName: signingIn === otherActorId ? "Other admin" : "Synthetic admin",
+      accountId: `synthetic-account-${signingIn}`,
       cache: "synthetic-cache",
-      scopes: [...scopes],
+      scopes: [...scopesOf(signingIn)],
     }),
     token: async (session) => {
       if (refuseTokens) {
@@ -124,25 +137,41 @@ export async function auditHarness(
         error.name = "InteractionRequiredAuthError";
         throw error;
       }
+      tokens.push(session.actorId);
       return { accessToken: "synthetic", cache: "c", scopes: session.scopes };
     },
   };
   const store = new MemoryStateStore();
   // Each Graph read, with how many audit.run.started ledger entries existed when it was made.
   const reads: { path: string; ledgerStarts: number }[] = [];
+  // While held, the first page of users waits, and then points to a second page.
+  let held: { release: () => void; waiting: boolean } | null = null;
   const graphFetch = (async (input: RequestInfo | URL) => {
     const url = new URL(String(input));
     reads.push({
-      path: url.pathname,
+      path: `${url.pathname}${url.searchParams.has("$skiptoken") ? "?page=2" : ""}`,
       ledgerStarts: store.audit.filter((entry) => entry.event.type === "audit.run.started").length,
     });
+    if (url.pathname === "/v1.0/users" && held && !url.searchParams.has("$skiptoken")) {
+      const gate = held;
+      await new Promise<void>((resolve) => {
+        gate.release = resolve;
+        gate.waiting = true;
+      });
+      const next = new URL(url);
+      next.searchParams.set("$skiptoken", "page-2");
+      return Response.json({ value: users.slice(0, 1), "@odata.nextLink": next.href });
+    }
+    if (url.pathname === "/v1.0/users" && url.searchParams.has("$skiptoken"))
+      return Response.json({ value: users.slice(1) });
     if (url.pathname === "/v1.0/users") return Response.json({ value: users });
     if (url.pathname === "/v1.0/reports/authenticationMethods/userRegistrationDetails")
       return Response.json({ value: registrations });
     return new Response("{}", { status: 404 });
   }) as typeof fetch;
   const identity = new IdentityService(identityConfig, store, provider);
-  const signIn = async (): Promise<Session> => {
+  const signIn = async (actor = actorId): Promise<Session> => {
+    signingIn = actor;
     const login = await identity.startLogin("directory.users.read");
     const loggedIn = await identity.finishLogin("synthetic-code", login.state, login.state);
     return {
@@ -208,6 +237,7 @@ export async function auditHarness(
     timers,
     logs,
     reads,
+    tokens,
     who,
     signIn,
     get,
@@ -215,6 +245,18 @@ export async function auditHarness(
     finish,
     refuseTokens: (value: boolean) => {
       refuseTokens = value;
+    },
+    // Holds the first page of users until released; waiting() says a read is held there.
+    holdUsers: () => {
+      const gate = { release: () => {}, waiting: false };
+      held = gate;
+      return {
+        waiting: () => gate.waiting,
+        release: () => {
+          held = null;
+          gate.release();
+        },
+      };
     },
   };
 }

@@ -112,7 +112,7 @@ All routes need a signed-in administrator; the POST also needs the CSRF header.
 
 | `GET /v1/audits/{auditId}/trend?days=365` | The audit's trend points in the last 1 to 3,650 days (default 365), oldest first (section 11) |
 | `GET /v1/settings/audit-schedule` | Every audit with `off`, `daily` or `weekly`, and whether collection is on (section 12) |
-| `POST /v1/settings/audit-schedule` | Saves `{ "audits": { "<auditId>": "daily" } }` and returns what the GET returns; 400 unless every value is `off`, `daily` or `weekly` |
+| `POST /v1/settings/audit-schedule` | Saves `{ "audits": { "<auditId>": "daily" } }` for the audits named and returns what the GET returns; 400 unless every value is `off`, `daily` or `weekly`; 403 when an audit turned on is one the saving administrator could not run |
 
 CSV is RFC 4180 with a byte-order mark. Text that a spreadsheet would treat as a formula
 (starting with `=`, `+`, `-`, `@`, a tab or a carriage return) gets a leading apostrophe.
@@ -361,11 +361,21 @@ held more.
 
 An audit can run on its own, daily or weekly. Run automatically on the audit's page has Off, Daily
 and Weekly and saves at once; the catalog tags a scheduled audit Daily or Weekly, and the run
-history marks scheduled runs. The schedule is one setting per tenant under the key
-`audits.schedule` in `prism365_preference`, `{ "audits": { "<auditId>": "off" | "daily" | "weekly" } }`.
-Saving replaces the whole schedule: an audit the request leaves out is off. An id that is not a
-known audit is dropped when the schedule is saved and when it is read, and a value that is not a
-frequency reads as off, so a damaged setting can only stop audits from running.
+history marks scheduled runs.
+
+You can schedule an audit only if you could run it yourself: turning an audit on (or moving it to
+another cadence) needs every read pack it requires enabled in `ENABLED_READ_FEATURES` and granted
+by your own sign-in, by the Run button's rule, and is refused with the Run button's message
+otherwise. Turning a schedule off is always allowed. Scheduled runs then read with the collecting
+administrator's sign-in, not yours.
+
+The schedule is one setting per tenant under the key `audits.schedule` in `prism365_preference`:
+`{ "audits": { "<auditId>": "off" | "daily" | "weekly" }, "scheduledBy": { "<auditId>": "<actor id>" } }`,
+where `scheduledBy` is the administrator who last set each scheduled audit to its cadence. A save
+changes only the audits it names, so two pages changing different audits never undo each other.
+An id that is not a known audit is dropped from a save and ignored when running, but an entry a
+newer build saved for an audit this build does not know is kept when this build saves. A value
+that is not a frequency reads as off, so a damaged setting can only stop audits from running.
 
 Scheduled audits run only while collection is on, with the sign-in collection uses: the
 administrator who started collecting. The API checks every 5 minutes, and once 30 seconds after
@@ -373,23 +383,34 @@ collection starts. An audit is due when its newest run of any outcome, manual or
 started more than a day (daily) or a week (weekly) ago, or when it has never run. Counting from the
 last start means a manual run counts as this period's run, and a scheduled run that failed waits
 for its next turn instead of retrying every few minutes. A start in the future, after the clock was
-turned back, is not due until a full period after it.
+turned back, is not due until a full period after it; the audit's page then says "Next run waits
+for <date>: the last run is dated in the future."
 
 Due audits run one at a time, in the catalog's order, through the same runner as a manual run.
 Before each one the scheduler reads the schedule and the last start again, so a schedule turned off
-or a manual run started meanwhile is respected, and it asks for the collecting sign-in again, so
-nothing starts after collection stops. An audit is skipped when any of its read packs is not
-enabled in `ENABLED_READ_FEATURES` or not granted by the collecting sign-in, by the same rule as the
-Run button; the server log names the audit and the reason, nothing more, and the audit stays due.
-A run reads its own packs and the optional packs the operator enabled, with the permissions the
-collecting sign-in granted for them (`auditReadScope`), exactly as a manual run does.
+or a manual run started meanwhile is respected, and it checks the collecting sign-in again just
+before starting, so nothing starts after collection stops. An audit is skipped when any of its
+read packs is not enabled or not granted by the collecting sign-in, by the same rule as the Run
+button; the server log names the audit and the reason once, and again only when the reason
+changes, and the audit stays due. A run reads its own packs and the optional packs the operator
+enabled, with the permissions the collecting sign-in granted for them (`auditReadScope`), exactly
+as a manual run does.
+
+A scheduled run reads only while its sign-in is still the one collecting. Every token it asks for
+is refused once collection has stopped or passed to another administrator, and the run in
+progress is stopped the moment that happens, its request in flight included. It closes as failed
+with "Collection stopped while this scheduled run was reading." Manual runs are never stopped this
+way. A sign-in that stops working while a scheduled run reads (signed out, expired, or refused by
+Microsoft) fails that run as a session failure, the way a manual run fails, and ends the round: the
+remaining due audits are neither started nor recorded until the next check.
 
 A scheduled run is stored with trigger `schedule` and the collecting administrator as the one who
 started it. Its access-ledger entry is the manual run's, `audit.run.started` with the run and the
-permissions it reads, plus `"trigger": "schedule"`, written under the collecting administrator
-before anything is read. A sign-in that stops working while a scheduled run reads (signed out,
-expired, or refused by Microsoft) fails that run as a session failure, the way a manual run fails.
-Scheduled runs raise no notifications: the results are on the audit's page.
+permissions it reads, plus `"trigger": "schedule"` and `"scheduledBy"`, the administrator who
+scheduled it. The entry is written under the collecting administrator, whose sign-in the run reads
+with, before anything is read. Scheduled runs raise no notifications: the results are on the
+audit's page.
 
-Saving the schedule writes `audits.schedule.changed` with how many audits run on their own, before
-the schedule is saved. It does not name them.
+Saving the schedule writes `audits.schedule.changed` before the schedule is saved, with the audits
+the save changed and their new cadence (`"changes": [{ "auditId", "frequency" }]`) and how many
+audits run on their own after it. It holds audit ids and cadences only.

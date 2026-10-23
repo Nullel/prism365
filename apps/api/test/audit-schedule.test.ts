@@ -10,26 +10,40 @@ import {
 } from "@prism365/audits";
 import { type AuditAvailability, type AuditSchedule, auditTrendSchema } from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
+import { CredentialUnavailableError } from "@prism365/modules";
 import { PGliteModuleDatabase } from "@prism365/storage";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AuditScheduler, type ScheduleCredential } from "../src/audit-schedule.ts";
 import type { AuditRunner } from "../src/audits.ts";
-import { actorId, auditHarness, manualTimers, tenantId } from "./audit-harness.ts";
+import { actorId, auditHarness, manualTimers, otherActorId, tenantId } from "./audit-harness.ts";
 
 // Scheduled audits: the scheduler on a fake clock with a fake runner, then wired into the app with
-// the real runner. Synthetic tenant and administrator only.
+// the real runner. Synthetic tenant and administrators only.
 
 const HOUR = 3_600_000;
 type StartInput = Parameters<AuditRunner["start"]>[0];
+type Outcome = "succeeded" | "failed" | "hold";
 
 // Records each start, stores the run as the real runner would (so the next due check sees it),
-// and finishes it on its own or when the test says.
-function fakeRunner(database: PGliteModuleDatabase, clock: () => Date) {
+// and finishes it on its own or when the test says. With `read`, a run asks for a token first, as
+// a real run does before its first Graph request, and fails as a session failure if refused.
+function fakeRunner(
+  database: PGliteModuleDatabase,
+  clock: () => Date,
+  token: () => () => Promise<string>,
+) {
   const starts: StartInput[] = [];
+  const stopped: string[] = [];
   const running = new Map<string, string>();
-  const waiting: (() => Promise<void>)[] = [];
-  let outcome: "succeeded" | "failed" | "hold" = "succeeded";
-  const finish = async (input: StartInput, id: string, status: "succeeded" | "failed") => {
+  const held = new Map<string, (status: "succeeded" | "failed", code?: string) => Promise<void>>();
+  let outcome: Outcome = "succeeded";
+  let read = false;
+  const finish = async (
+    input: StartInput,
+    id: string,
+    status: "succeeded" | "failed",
+    code = "throttled",
+  ) => {
     await database.tenant(input.tenantId, (sql) =>
       finishRun(
         sql,
@@ -38,13 +52,20 @@ function fakeRunner(database: PGliteModuleDatabase, clock: () => Date) {
         clock(),
         status === "succeeded"
           ? { status, complete: true, summary: [], notes: [], rows: [] }
-          : { status, code: "throttled", message: "Microsoft is limiting requests right now." },
+          : { status, code, message: "Synthetic failure." },
       ),
     );
     running.delete(`${input.tenantId}:${input.audit.definition.id}`);
   };
-  const runner: Pick<AuditRunner, "start" | "runningId"> = {
+  const runner: Pick<AuditRunner, "start" | "runningId" | "stopRun"> = {
     runningId: (tenant, auditId) => running.get(`${tenant}:${auditId}`) ?? null,
+    stopRun: (runId) => {
+      stopped.push(runId);
+      const stop = held.get(runId);
+      if (!stop) return false;
+      void stop("failed", "collection_stopped");
+      return true;
+    },
     async start(input) {
       const id = randomUUID();
       const run = await database.tenant(input.tenantId, (sql) =>
@@ -60,11 +81,20 @@ function fakeRunner(database: PGliteModuleDatabase, clock: () => Date) {
       starts.push(input);
       running.set(`${input.tenantId}:${input.audit.definition.id}`, id);
       await input.beforeRead?.(run);
+      if (read) {
+        const refused = await token()().then(
+          () => false,
+          () => true,
+        );
+        if (refused)
+          return { runId: id, started: true, run, done: finish(input, id, "failed", "session") };
+      }
       let done: Promise<void>;
       if (outcome === "hold")
         done = new Promise<void>((resolve) => {
-          waiting.push(async () => {
-            await finish(input, id, "succeeded");
+          held.set(id, async (status, code) => {
+            held.delete(id);
+            await finish(input, id, status, code);
             resolve();
           });
         });
@@ -75,14 +105,19 @@ function fakeRunner(database: PGliteModuleDatabase, clock: () => Date) {
   return {
     runner,
     starts,
+    stopped,
     running,
     started: () => starts.map((input) => input.audit.definition.id),
-    finishWith: (value: typeof outcome) => {
+    finishWith: (value: Outcome) => {
       outcome = value;
+    },
+    reading: (value: boolean) => {
+      read = value;
     },
     // Lets the oldest held run finish.
     release: async () => {
-      await waiting.shift()?.();
+      const [first] = held.values();
+      await first?.("succeeded");
     },
   };
 }
@@ -116,15 +151,19 @@ async function setup(schedule: AuditSchedule["audits"], enabledPacks = somePacks
   const tenantId = randomUUID();
   let now = new Date("2026-10-22T12:00:00Z");
   const clock = () => now;
-  const fake = fakeRunner(database, clock);
+  // The token functions the scheduler handed to each run's Graph client, newest last.
+  const tokens: (() => Promise<string>)[] = [];
+  const fake = fakeRunner(database, clock, () => tokens.at(-1) ?? (async () => "none"));
   let granted = ["User.Read", "User.Read.All", "AuditLog.Read.All"];
-  let credential: ScheduleCredential | null = {
+  const credentialFor = (overrides: Partial<ScheduleCredential> = {}): ScheduleCredential => ({
     tenantId,
     actorId,
     displayName: "Synthetic admin",
     grantedPermissions: async () => granted,
     accessToken: async () => "synthetic",
-  };
+    ...overrides,
+  });
+  let credential: ScheduleCredential | null = credentialFor();
   const ledger: { tenantId: string; actorId: string; event: Record<string, unknown> }[] = [];
   const logs: string[] = [];
   const timers = manualTimers();
@@ -135,7 +174,10 @@ async function setup(schedule: AuditSchedule["audits"], enabledPacks = somePacks
     credential: () => credential,
     enabledPacks,
     availability: availability(enabledPacks),
-    graphClient: (getAccessToken) => new GraphHttpClient({ getAccessToken }),
+    graphClient: (getAccessToken) => {
+      tokens.push(getAccessToken);
+      return new GraphHttpClient({ getAccessToken });
+    },
     ledger: async (tenant, actor, event) => {
       ledger.push({ tenantId: tenant, actorId: actor, event });
     },
@@ -143,9 +185,10 @@ async function setup(schedule: AuditSchedule["audits"], enabledPacks = somePacks
     timers: timers.timers,
     log: (message) => logs.push(message),
   });
+  // The other administrator saves the schedule; the first one collects.
   const save = (audits: AuditSchedule["audits"]) =>
     database.tenant(tenantId, (sql) =>
-      writeAuditSchedule(sql, tenantId, { audits }, actorId, builtInAudits),
+      writeAuditSchedule(sql, tenantId, { audits }, otherActorId, builtInAudits),
     );
   await save(schedule);
   return {
@@ -156,7 +199,9 @@ async function setup(schedule: AuditSchedule["audits"], enabledPacks = somePacks
     ledger,
     logs,
     timers,
+    tokens,
     save,
+    credentialFor,
     advance: (milliseconds: number) => {
       now = new Date(now.getTime() + milliseconds);
     },
@@ -264,6 +309,29 @@ describe("audit scheduler", () => {
     expect(logged).not.toContain("Synthetic admin");
   });
 
+  it("logs an audit that stays unavailable once, and again only when the reason changes", async () => {
+    const s = await setup({ "mfa.registration": "daily", "accounts.inactive": "daily" });
+    s.grant(["User.Read", "User.Read.All"]);
+    for (let tick = 0; tick < 3; tick += 1) await s.scheduler.tick();
+    const skips = () => s.logs.filter((line) => line.includes("skipped"));
+    expect(skips()).toEqual([
+      "Prism365 scheduled audit accounts.inactive skipped (missing_permission).",
+      "Prism365 scheduled audit mfa.registration skipped (not_enabled).",
+    ]);
+    // Granted, it runs; withdrawn again a day later, it is logged again.
+    s.grant(["User.Read", "User.Read.All", "AuditLog.Read.All"]);
+    await s.scheduler.tick();
+    expect(s.fake.started()).toEqual(["accounts.inactive"]);
+    s.advance(25 * HOUR);
+    s.grant(["User.Read", "User.Read.All"]);
+    await s.scheduler.tick();
+    await s.scheduler.tick();
+    expect(skips()).toHaveLength(3);
+    expect(skips().at(-1)).toBe(
+      "Prism365 scheduled audit accounts.inactive skipped (missing_permission).",
+    );
+  });
+
   it("runs one audit at a time, waiting for each to be recorded", async () => {
     const s = await setup({ "accounts.inactive": "daily", "licenses.reclaim": "daily" });
     s.fake.finishWith("hold");
@@ -280,7 +348,7 @@ describe("audit scheduler", () => {
     await pass;
   });
 
-  it("stops the pass when collection stops, or a schedule is turned off, during a run", async () => {
+  it("stops the run in progress and the pass when collection stops, and respects a schedule turned off", async () => {
     const s = await setup(
       {
         "accounts.inactive": "daily",
@@ -293,20 +361,96 @@ describe("audit scheduler", () => {
     s.fake.finishWith("hold");
     const pass = s.scheduler.tick();
     await vi.waitFor(() => expect(s.fake.starts).toHaveLength(1));
-    await s.save({
-      "accounts.inactive": "daily",
-      "mfa.registration": "daily",
-      "guests.review": "daily",
-    });
+    await s.save({ "licenses.reclaim": "off" });
     await s.fake.release();
     // Reclaim was turned off while inactive accounts ran: MFA is next.
     await vi.waitFor(() => expect(s.fake.starts).toHaveLength(2));
     expect(s.fake.started()).toEqual(["accounts.inactive", "mfa.registration"]);
-    // Collection stops while MFA runs: guests does not start.
+    // Collection stops while MFA runs: the app tells the scheduler, which stops that run at once.
     s.setCredential(null);
-    await s.fake.release();
+    s.scheduler.collectionEnded();
     await pass;
+    const mfa = await s.database.tenant(s.tenantId, (sql) =>
+      listRuns(sql, s.tenantId, "mfa.registration"),
+    );
+    expect(s.fake.stopped).toEqual([mfa[0]?.id]);
+    expect(mfa.map((run) => [run.status, run.error?.code])).toEqual([
+      ["failed", "collection_stopped"],
+    ]);
+    // And guests does not start.
     expect(s.fake.started()).toEqual(["accounts.inactive", "mfa.registration"]);
+    // Only runs the scheduler started are ever stopped this way.
+    s.scheduler.collectionEnded();
+    expect(s.fake.stopped).toHaveLength(1);
+  });
+
+  it("refuses a token once its credential no longer collects, or the scheduler stopped", async () => {
+    const s = await setup({ "accounts.inactive": "daily" });
+    s.fake.finishWith("hold");
+    const pass = s.scheduler.tick();
+    await vi.waitFor(() => expect(s.fake.starts).toHaveLength(1));
+    const token = s.tokens.at(-1);
+    if (!token) throw new Error("The run got no Graph client.");
+    await expect(token()).resolves.toBe("synthetic");
+    // Another administrator's credential now collects: the old one gets no token.
+    s.setCredential(s.credentialFor({ actorId: otherActorId }));
+    await expect(token()).rejects.toBeInstanceOf(CredentialUnavailableError);
+    s.setCredential(null);
+    await expect(token()).rejects.toBeInstanceOf(CredentialUnavailableError);
+    s.scheduler.collectionEnded();
+    await pass;
+    // Stopped, the scheduler hands out nothing even for the credential that collects.
+    const t = await setup({ "accounts.inactive": "daily" });
+    t.fake.finishWith("hold");
+    const second = t.scheduler.tick();
+    await vi.waitFor(() => expect(t.fake.starts).toHaveLength(1));
+    t.scheduler.stop();
+    await expect(t.tokens.at(-1)?.()).rejects.toBeInstanceOf(CredentialUnavailableError);
+    t.scheduler.collectionEnded();
+    await second;
+  });
+
+  it("starts nothing when collection stops while the audit is being checked", async () => {
+    const s = await setup({ "accounts.inactive": "daily" });
+    // Collection stops while the scheduler asks the sign-in what it may read.
+    s.setCredential(
+      s.credentialFor({
+        grantedPermissions: async () => {
+          s.setCredential(null);
+          return ["User.Read", "User.Read.All", "AuditLog.Read.All"];
+        },
+      }),
+    );
+    await s.scheduler.tick();
+    expect(s.fake.starts).toEqual([]);
+    expect(s.ledger).toEqual([]);
+  });
+
+  it("ends the pass when Microsoft refuses the sign-in, without starting the other audits", async () => {
+    const s = await setup({
+      "accounts.inactive": "daily",
+      "licenses.reclaim": "daily",
+      "guests.review": "daily",
+    });
+    s.fake.reading(true);
+    const refusing = s.credentialFor({
+      accessToken: async () => {
+        throw new CredentialUnavailableError();
+      },
+    });
+    s.setCredential(refusing);
+    await s.scheduler.tick();
+    expect(s.fake.started()).toEqual(["accounts.inactive"]);
+    expect(s.ledger).toHaveLength(1);
+    expect(s.logs.at(-1)).toBe(
+      "Prism365 scheduled audits paused: the collecting sign-in is not available.",
+    );
+    // A credential already marked refused starts nothing at all.
+    const t = await setup({ "accounts.inactive": "daily" });
+    t.setCredential(t.credentialFor({ refused: true }));
+    await t.scheduler.tick();
+    expect(t.fake.starts).toEqual([]);
+    expect(t.ledger).toEqual([]);
   });
 
   it("leaves an audit alone while a run of it is in progress", async () => {
@@ -316,7 +460,7 @@ describe("audit scheduler", () => {
     expect(s.fake.starts).toEqual([]);
   });
 
-  it("runs as the collecting administrator and writes the ledger entry before reading", async () => {
+  it("runs as the collecting administrator and names who scheduled it, before reading", async () => {
     const s = await setup({ "guests.review": "daily" });
     await s.scheduler.tick();
     const [input] = s.fake.starts;
@@ -335,6 +479,7 @@ describe("audit scheduler", () => {
     expect(s.ledger).toEqual([
       {
         tenantId: s.tenantId,
+        // Whose sign-in the run reads with.
         actorId,
         event: {
           type: "audit.run.started",
@@ -343,6 +488,7 @@ describe("audit scheduler", () => {
           // Required, then the optional ones this sign-in granted.
           datasets: ["User.Read.All", "AuditLog.Read.All"],
           trigger: "schedule",
+          scheduledBy: otherActorId,
           occurredAt: "2026-10-22T12:00:00.000Z",
         },
       },
@@ -351,15 +497,14 @@ describe("audit scheduler", () => {
 
   it("pauses the pass when the collecting sign-in is gone", async () => {
     const s = await setup({ "accounts.inactive": "daily" });
-    s.setCredential({
-      tenantId: s.tenantId,
-      actorId,
-      displayName: null,
-      grantedPermissions: async () => {
-        throw new Error("The collection credential is no longer available.");
-      },
-      accessToken: async () => "synthetic",
-    });
+    s.setCredential(
+      s.credentialFor({
+        displayName: null,
+        grantedPermissions: async () => {
+          throw new Error("The collection credential is no longer available.");
+        },
+      }),
+    );
     await s.scheduler.tick();
     expect(s.fake.starts).toEqual([]);
     expect(s.logs).toEqual([
@@ -390,6 +535,19 @@ describe("audit scheduler", () => {
   });
 });
 
+const runsOf = async (h: Awaited<ReturnType<typeof auditHarness>>, auditId: string) =>
+  (await h.get(`/v1/audits/${auditId}/runs`)).json().runs as {
+    id: string;
+    status: string;
+    trigger: string;
+    error: { code: string; message: string } | null;
+    startedBy: { id: string; name: string | null };
+  }[];
+const settle = async (h: Awaited<ReturnType<typeof auditHarness>>) => {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await h.runner.idle();
+};
+
 describe("scheduled audits in the app", () => {
   it("clear their timers when the app closes", async () => {
     const h = await auditHarness();
@@ -400,32 +558,78 @@ describe("scheduled audits in the app", () => {
     expect(h.timers.active()).toEqual([]);
   }, 60_000);
 
-  it("never run while collection is off", async () => {
+  it("never run while collection is off, including after it was stopped", async () => {
     const h = await auditHarness();
     try {
       await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
       h.timers.fire("every");
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      await h.runner.idle();
-      expect((await h.get("/v1/audits/licenses.reclaim/runs")).json().runs).toEqual([]);
-      expect(h.reads).toEqual([]);
+      await settle(h);
+      expect(await runsOf(h, "licenses.reclaim")).toEqual([]);
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "off" } });
+      // Collection runs and the scheduler checks once, with nothing due, so it has seen the
+      // collecting sign-in. Then collection stops, and only then is an audit scheduled.
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      h.timers.fire("after");
+      await settle(h);
+      await h.post("/v1/collection/stop");
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      h.timers.fire("every");
+      await settle(h);
+      // The stopped sign-in is never used for a scheduled run.
+      expect(await runsOf(h, "licenses.reclaim")).toEqual([]);
+      expect(h.reads.filter((read) => read.path.startsWith("/v1.0/users"))).toEqual([]);
     } finally {
       await h.app.close();
     }
   }, 60_000);
 
-  it("run a due audit on the collecting sign-in, shortly after collection starts", async () => {
+  it("skip an audit the collecting sign-in has not granted, whoever scheduled it", async () => {
+    // The other administrator may run the inactive accounts audit and schedules it; the one who
+    // collects has not granted AuditLog.Read.All.
+    const h = await auditHarness({
+      scopes: ["User.Read", "User.Read.All"],
+      otherScopes: ["User.Read", "User.Read.All", "AuditLog.Read.All"],
+    });
+    try {
+      const other = await h.signIn(otherActorId);
+      const saved = await h.post(
+        "/v1/settings/audit-schedule",
+        { audits: { "accounts.inactive": "daily" } },
+        other,
+      );
+      expect(saved.statusCode).toBe(200);
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      h.timers.fire("after");
+      await settle(h);
+      expect(await runsOf(h, "accounts.inactive")).toEqual([]);
+      expect(h.logs).toContain(
+        "Prism365 scheduled audit accounts.inactive skipped (missing_permission).",
+      );
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("run a due audit on the collecting sign-in, naming who scheduled it", async () => {
     const h = await auditHarness();
     try {
-      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      const other = await h.signIn(otherActorId);
+      await h.post(
+        "/v1/settings/audit-schedule",
+        { audits: { "licenses.reclaim": "daily" } },
+        other,
+      );
       await h.post("/v1/collection/start");
       await h.scheduler.tick();
       h.timers.fire("after");
       await vi.waitFor(async () => {
-        const runs = (await h.get("/v1/audits/licenses.reclaim/runs")).json().runs;
-        expect(runs.map((run: { status: string }) => run.status)).toEqual(["succeeded"]);
+        expect((await runsOf(h, "licenses.reclaim")).map((run) => run.status)).toEqual([
+          "succeeded",
+        ]);
       });
-      const [run] = (await h.get("/v1/audits/licenses.reclaim/runs")).json().runs;
+      const [run] = await runsOf(h, "licenses.reclaim");
       expect(run).toMatchObject({
         trigger: "schedule",
         startedBy: { id: actorId, name: "Synthetic admin" },
@@ -438,9 +642,10 @@ describe("scheduled audits in the app", () => {
           event: {
             type: "audit.run.started",
             auditId: "licenses.reclaim",
-            runId: run.id,
+            runId: run?.id,
             datasets: ["User.Read.All", "AuditLog.Read.All"],
             trigger: "schedule",
+            scheduledBy: otherActorId,
             occurredAt: expect.any(String),
           },
         },
@@ -453,13 +658,78 @@ describe("scheduled audits in the app", () => {
         (await h.get("/v1/audits/licenses.reclaim/trend")).json(),
       );
       expect(trend.points.map((point) => [point.runId, point.trigger])).toEqual([
-        [run.id, "schedule"],
+        [run?.id, "schedule"],
       ]);
       // Not due again until a day after it started.
       h.timers.fire("every");
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      await h.runner.idle();
-      expect((await h.get("/v1/audits/licenses.reclaim/runs")).json().runs).toHaveLength(1);
+      await settle(h);
+      expect(await runsOf(h, "licenses.reclaim")).toHaveLength(1);
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("stop reading the moment collection is stopped", async () => {
+    const h = await auditHarness();
+    try {
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      const hold = h.holdUsers();
+      h.timers.fire("after");
+      await vi.waitFor(() => expect(hold.waiting()).toBe(true));
+      const stop = await h.post("/v1/collection/stop");
+      expect(stop.json()).toMatchObject({ state: "stopped" });
+      const reads = h.reads.length;
+      const tokens = h.tokens.length;
+      hold.release();
+      await settle(h);
+      // Nothing more was read, and no token was asked for, after Stop.
+      expect(h.reads.slice(reads)).toEqual([]);
+      expect(h.tokens.slice(tokens)).toEqual([]);
+      const [run] = await runsOf(h, "licenses.reclaim");
+      expect(run).toMatchObject({
+        status: "failed",
+        trigger: "schedule",
+        error: {
+          code: "collection_stopped",
+          message: "Collection stopped while this scheduled run was reading.",
+        },
+      });
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("stop reading on the old sign-in when another administrator starts collecting", async () => {
+    const h = await auditHarness();
+    try {
+      const other = await h.signIn(otherActorId);
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      const hold = h.holdUsers();
+      h.timers.fire("after");
+      await vi.waitFor(() => expect(hold.waiting()).toBe(true));
+      const takeover = await h.post("/v1/collection/start", undefined, other);
+      expect(takeover.statusCode).toBe(200);
+      const reads = h.reads.length;
+      const tokens = h.tokens.length;
+      hold.release();
+      await settle(h);
+      await h.scheduler.tick();
+      // The run on the first administrator's sign-in read nothing more; collection itself now
+      // reads with the other administrator's.
+      expect(h.reads.slice(reads).filter((read) => read.path.startsWith("/v1.0/users"))).toEqual(
+        [],
+      );
+      expect(h.tokens.slice(tokens).filter((actor) => actor === actorId)).toEqual([]);
+      const [run] = await runsOf(h, "licenses.reclaim");
+      expect(run).toMatchObject({
+        status: "failed",
+        startedBy: { id: actorId },
+        error: { code: "collection_stopped" },
+      });
     } finally {
       await h.app.close();
     }
@@ -468,18 +738,28 @@ describe("scheduled audits in the app", () => {
   it("fail a run whose sign-in Microsoft stops accepting, the way a manual run fails", async () => {
     const h = await auditHarness();
     try {
-      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      await h.post("/v1/settings/audit-schedule", {
+        audits: { "licenses.reclaim": "daily", "guests.review": "daily" },
+      });
       await h.post("/v1/collection/start");
       await h.scheduler.tick();
       h.refuseTokens(true);
       h.timers.fire("after");
       await vi.waitFor(async () => {
-        const runs = (await h.get("/v1/audits/licenses.reclaim/runs")).json().runs;
-        expect(runs.map((run: { status: string }) => run.status)).toEqual(["failed"]);
+        expect((await runsOf(h, "licenses.reclaim")).map((run) => run.status)).toEqual(["failed"]);
       });
-      const [run] = (await h.get("/v1/audits/licenses.reclaim/runs")).json().runs;
+      await settle(h);
+      const [run] = await runsOf(h, "licenses.reclaim");
       expect(run).toMatchObject({ trigger: "schedule", error: { code: "session" } });
-      expect(h.reads.filter((read) => read.path === "/v1.0/users")).toEqual([]);
+      expect(h.reads.filter((read) => read.path.startsWith("/v1.0/users"))).toEqual([]);
+      // The refusal ends the pass: the next scheduled audit is neither started nor ledgered.
+      expect(await runsOf(h, "guests.review")).toEqual([]);
+      expect(
+        h.store.audit.filter(
+          (entry) =>
+            entry.event.type === "audit.run.started" && entry.event.auditId === "guests.review",
+        ),
+      ).toEqual([]);
     } finally {
       await h.app.close();
     }

@@ -88,14 +88,18 @@ describe("audit schedules in the demo", () => {
     expect(auditScheduleSettingsSchema.parse(answer.body)).toEqual(schedule);
   });
 
-  it("saves a change for the page, replacing the schedule and dropping unknown audits", () => {
+  it("saves a change for the page, changing only the audits named and dropping unknown ones", () => {
     const { request } = start();
     const saved = request("POST", "/api/v1/settings/audit-schedule", {
       audits: { "guests.review": "daily", "retired.audit": "weekly" },
     });
     expect(saved.status).toBe(200);
     expect(saved.body).toEqual({
-      audits: { "accounts.inactive": "off", "mfa.registration": "off", "guests.review": "daily" },
+      audits: {
+        "accounts.inactive": "weekly",
+        "mfa.registration": "daily",
+        "guests.review": "daily",
+      },
       collecting: true,
     });
     expect(request("GET", "/api/v1/settings/audit-schedule").body).toEqual(saved.body);

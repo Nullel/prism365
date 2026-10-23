@@ -15,6 +15,7 @@ import {
   AuditTrendPanel,
   AuditTrendView,
   defaultTrendTile,
+  futureRunNote,
   runLabel,
   scheduleTag,
   trendGeometry,
@@ -233,6 +234,36 @@ describe("audit schedule control", () => {
       "Collection is off, so this audit will not run on its own until someone starts it.",
     );
     expect(control({ frequency: "off", collecting: false })).not.toContain("Collection is off");
+  });
+
+  it("says you can schedule only what you could run yourself", () => {
+    expect(control()).toContain("You can schedule an audit only if you could run it yourself.");
+  });
+
+  it("says when the next run waits because the last one is dated in the future", () => {
+    const now = Date.parse("2026-10-22T12:00:00.000Z");
+    const future = "2026-11-01T09:00:00.000Z";
+    const note = futureRunNote("daily", future, now);
+    expect(note).toMatch(/^Next run waits for .+: the last run is dated in the future\.$/);
+    expect(note).toContain(
+      new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+        new Date("2026-11-02T09:00:00.000Z"),
+      ),
+    );
+    expect(futureRunNote("weekly", future, now)).toContain(
+      new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+        new Date("2026-11-08T09:00:00.000Z"),
+      ),
+    );
+    // A start in the past, no start, or no schedule: nothing to say.
+    expect(futureRunNote("daily", "2026-10-21T09:00:00.000Z", now)).toBeNull();
+    expect(futureRunNote("daily", null, now)).toBeNull();
+    expect(futureRunNote("off", future, now)).toBeNull();
+    const html = control({ frequency: "daily", lastStart: "2999-01-01T00:00:00.000Z" });
+    expect(html).toContain("the last run is dated in the future.");
+    expect(control({ frequency: "daily", lastStart: "2026-10-21T09:00:00.000Z" })).not.toContain(
+      "dated in the future",
+    );
   });
 
   it("holds still while saving and shows a save error", () => {

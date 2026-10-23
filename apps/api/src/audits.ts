@@ -11,6 +11,7 @@ import {
   readAuditScope,
 } from "@prism365/audits";
 import {
+  type AuditAvailability,
   type AuditRun,
   type AuditRunTrigger,
   auditRowSchema,
@@ -58,13 +59,30 @@ function cleaned(value: unknown): unknown {
   return value;
 }
 
+// Why a run was stopped before it finished: its time limit, the process stopping, or (for a
+// scheduled run only) collection stopping or passing to another administrator.
+type StopReason = "timeout" | "shutdown" | "collection";
+
 class AuditStoppedError extends Error {
-  readonly reason: "timeout" | "shutdown";
-  constructor(reason: "timeout" | "shutdown") {
-    super(reason === "timeout" ? "The audit exceeded its time limit." : "Prism365 is stopping.");
+  readonly reason: StopReason;
+  constructor(reason: StopReason) {
+    super(
+      reason === "timeout"
+        ? "The audit exceeded its time limit."
+        : reason === "collection"
+          ? "Collection stopped."
+          : "Prism365 is stopping.",
+    );
     this.name = "AuditStoppedError";
     this.reason = reason;
   }
+}
+
+// What the Run route says, and the schedule route says, when an audit cannot run on a session.
+export function auditUnavailableMessage(availability: AuditAvailability): string {
+  return availability.state === "not_enabled"
+    ? `This installation has not enabled ${availability.enable.join(", ") || availability.missing.join(", ")}. Add it to ENABLED_READ_FEATURES and restart.`
+    : `Your session has not granted ${availability.missing.join(", ")}. Grant access and run it again.`;
 }
 
 // What the administrator is told. Fixed text per category: provider messages and tenant values
@@ -81,10 +99,15 @@ export function describeAuditFailure(
           code: "timeout",
           message: `The audit took longer than ${Math.round(timeoutMilliseconds / 60_000)} minutes and was stopped.`,
         }
-      : {
-          code: "interrupted",
-          message: "Prism365 stopped while this audit was running. Run it again.",
-        };
+      : error.reason === "collection"
+        ? {
+            code: "collection_stopped",
+            message: "Collection stopped while this scheduled run was reading.",
+          }
+        : {
+            code: "interrupted",
+            message: "Prism365 stopped while this audit was running. Run it again.",
+          };
   const reference = (requestId: string | undefined) =>
     requestId ? ` Microsoft request ID: ${requestId}.` : "";
   if (error instanceof GraphRetryDeferredError)
@@ -370,6 +393,19 @@ export class AuditRunner {
           "The result could not be saved. Run the audit again; if it repeats, the server log has the category.",
       })
     );
+  }
+
+  // Stops one scheduled run because collection stopped or passed to another administrator: the
+  // cancel reaches the request in flight and the run closes as failed. Only the audit scheduler
+  // calls this, with ids of runs it started itself, so a manual run is never stopped this way.
+  // false when the run is no longer in progress.
+  stopRun(runId: string): boolean {
+    for (const entry of this.#running.values())
+      if (entry.runId === runId) {
+        entry.controller.abort(new AuditStoppedError("collection"));
+        return true;
+      }
+    return false;
   }
 
   // Stops every run and waits for each to record that it was interrupted.

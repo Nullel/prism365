@@ -674,15 +674,16 @@ function handlePost(state: DemoState, path: string, body: unknown): DemoResponse
         error: "invalid_request",
         message: "Choose off, daily or weekly for each audit.",
       });
-    // The whole schedule is replaced, and audits the recording does not know are dropped, as
-    // the server does.
+    // Only the audits named change, and audits the recording does not know are dropped, as the
+    // server does. The demo's administrator may run every audit, so none is refused.
     const saved = parsed.data.audits;
+    const current = state.auditSchedule.audits;
     state.auditSchedule = {
       ...state.auditSchedule,
       audits: Object.fromEntries(
-        Object.keys(state.auditSchedule.audits).map((id) => [
+        Object.keys(current).map((id) => [
           id,
-          Object.hasOwn(saved, id) ? (saved[id] ?? "off") : "off",
+          Object.hasOwn(saved, id) ? (saved[id] ?? "off") : (current[id] ?? "off"),
         ]),
       ),
     };

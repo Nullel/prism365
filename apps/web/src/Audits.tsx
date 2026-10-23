@@ -24,6 +24,7 @@ import {
   auditStartSchema,
   auditTrendSchema,
   MAX_AUDIT_SCOPE_DOMAINS,
+  nextScheduledRun,
   type PrismSession,
   queryAuditRows,
 } from "@prism365/contracts";
@@ -868,11 +869,25 @@ export function scheduleTag(frequency: AuditScheduleFrequency | undefined): stri
   return frequency && frequency !== "off" ? frequencyLabels[frequency] : null;
 }
 
+// Said when a scheduled audit's newest run is dated in the future (the clock was turned back):
+// the schedule counts from that start, so nothing runs until a full period after it. null when
+// the next run is not held back that way.
+export function futureRunNote(
+  frequency: AuditScheduleFrequency,
+  lastStart: string | null,
+  now = Date.now(),
+): string | null {
+  if (lastStart === null || Date.parse(lastStart) <= now) return null;
+  const next = nextScheduledRun(frequency, lastStart);
+  return next ? `Next run waits for ${when(next)}: the last run is dated in the future.` : null;
+}
+
 export function AuditScheduleControl({
   frequency,
   collecting,
   saving,
   error,
+  lastStart = null,
   disabled = false,
   onChange,
 }: {
@@ -880,10 +895,13 @@ export function AuditScheduleControl({
   collecting: boolean;
   saving: boolean;
   error: string;
+  // When the audit's newest run of any kind started, which the schedule counts from.
+  lastStart?: string | null;
   disabled?: boolean;
   onChange: (frequency: AuditScheduleFrequency) => void;
 }) {
   const labelId = useId();
+  const held = futureRunNote(frequency, lastStart);
   return (
     <section className="audit-schedule" aria-labelledby={labelId}>
       <div className="audit-schedule__row">
@@ -910,13 +928,15 @@ export function AuditScheduleControl({
         </span>
       </div>
       <p className="muted-label">
-        Runs while collection is on, with the collecting administrator's sign-in.
+        Runs while collection is on, with the collecting administrator's sign-in. You can schedule
+        an audit only if you could run it yourself.
       </p>
       {!collecting && frequency !== "off" ? (
         <p className="audit-schedule__off">
           Collection is off, so this audit will not run on its own until someone starts it.
         </p>
       ) : null}
+      {held ? <p className="audit-schedule__off">{held}</p> : null}
       {error ? (
         <p className="form-error" role="alert">
           {error}
@@ -1383,6 +1403,7 @@ function AuditDetail({
           collecting={schedule.collecting}
           saving={scheduleSaving}
           error={scheduleError}
+          lastStart={history?.[0]?.startedAt ?? entry.lastRun?.startedAt ?? null}
           onChange={(frequency) => void changeSchedule(frequency)}
         />
       ) : null}
@@ -1576,14 +1597,14 @@ export function Audits({
     }
   }
 
-  // Saves the whole schedule with one audit changed, as the server expects.
+  // Saves this one audit's schedule; the server leaves the others as they are, so another page
+  // changing another audit is never undone.
   async function saveSchedule(auditId: string, frequency: AuditScheduleFrequency) {
-    if (!schedule) throw new Error("The schedule has not loaded yet.");
     setSchedule(
       await readJson(
         "/api/v1/settings/audit-schedule",
         auditScheduleSettingsSchema.parse,
-        post(session, { audits: { ...schedule.audits, [auditId]: frequency } }),
+        post(session, { audits: { [auditId]: frequency } }),
       ),
     );
   }

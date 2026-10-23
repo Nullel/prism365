@@ -1,8 +1,8 @@
 import {
+  auditScheduleChanges,
   buildAuditTrend,
   builtInAudits,
   findAudit,
-  knownAuditSchedule,
   readAuditSchedule,
   readTrendPoints,
   scheduledAuditCount,
@@ -17,6 +17,7 @@ import {
 } from "@prism365/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { auditUnavailableMessage } from "../audits.ts";
 import type { RouteContext } from "./context.ts";
 
 // Audit trends and schedules (docs/audits.md, sections 11 and 12). Trends are read from stored
@@ -73,8 +74,11 @@ export function registerAuditInsightRoutes(app: FastifyInstance, context: RouteC
     });
   });
 
-  // Saves the whole schedule: an audit the body leaves out is off, an id that is not a known
-  // audit is dropped. The CSRF check is the global hook's.
+  // Changes the audits the body names and leaves the others as they are, so two pages saving
+  // different audits never undo each other. An id that is not a known audit is dropped. Turning
+  // an audit on needs the saving administrator to be able to run it now, by the Run button's
+  // rule: a schedule is never a way to start reads one could not start oneself. Turning one off
+  // is always allowed. The CSRF check is the global hook's.
   app.post("/v1/settings/audit-schedule", async (request, reply) => {
     const session = await context.sessionFor(request);
     if (!session) return reply.status(401).send({ error: "authentication_required" });
@@ -86,15 +90,44 @@ export function registerAuditInsightRoutes(app: FastifyInstance, context: RouteC
         error: "invalid_request",
         message: "Choose off, daily or weekly for each audit.",
       });
-    // The ledger entry comes first, so no schedule change is ever unrecorded. It holds how many
-    // audits run on their own, never which.
+    const current = await modules.database.tenant(session.tenantId, (sql) =>
+      readAuditSchedule(sql, session.tenantId, builtInAudits),
+    );
+    const changes = auditScheduleChanges(current, body.data);
+    for (const change of changes) {
+      const audit = findAudit(change.auditId);
+      if (!audit || change.frequency === "off") continue;
+      const availability = context.auditAvailability(audit, session);
+      if (availability.state !== "available")
+        return reply.status(403).send({
+          error: availability.state === "not_enabled" ? "feature_not_enabled" : "missing_consent",
+          message: auditUnavailableMessage(availability),
+          auditId: change.auditId,
+          availability,
+        });
+    }
+    // The ledger entry comes first, so no schedule change is ever unrecorded. It names the audits
+    // changed and their cadence, and how many audits run on their own after it.
+    const after = {
+      ...current,
+      ...Object.fromEntries(changes.map((c) => [c.auditId, c.frequency])),
+    };
     await store.appendAudit(session.tenantId, session.actorId, {
       type: "audits.schedule.changed",
-      scheduled: scheduledAuditCount(knownAuditSchedule(body.data, builtInAudits)),
+      changes,
+      scheduled: scheduledAuditCount(after),
       occurredAt: new Date().toISOString(),
     });
+    // Only the changes are written, so an unchanged audit keeps the administrator who scheduled
+    // it.
     const saved = await modules.database.tenant(session.tenantId, (sql) =>
-      writeAuditSchedule(sql, session.tenantId, body.data, session.actorId, builtInAudits),
+      writeAuditSchedule(
+        sql,
+        session.tenantId,
+        { audits: Object.fromEntries(changes.map((change) => [change.auditId, change.frequency])) },
+        session.actorId,
+        builtInAudits,
+      ),
     );
     return auditScheduleSettingsSchema.parse({
       audits: saved,
