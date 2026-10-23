@@ -1193,7 +1193,7 @@ export function createApp(options: AppOptions = {}) {
     const client = auditGraphClient(() => identity.accessToken(handle, scopes));
     return { client, scopes };
   };
-  // Scheduled audits (docs/audits.md, section 11): due audits run one at a time on the sign-in
+  // Scheduled audits (docs/audits.md, section 12): due audits run one at a time on the sign-in
   // collection uses, read from the live credential here, so none runs while collection is off.
   const auditSchedule =
     audits && modules

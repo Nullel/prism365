@@ -19,7 +19,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { RouteContext } from "./context.ts";
 
-// Audit trends and schedules (docs/audits.md, sections 10 and 11). Trends are read from stored
+// Audit trends and schedules (docs/audits.md, sections 11 and 12). Trends are read from stored
 // points, never from Microsoft. Schedules are saved here and run by the audit scheduler
 // (audit-schedule.ts) while collection is on.
 

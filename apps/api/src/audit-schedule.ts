@@ -13,7 +13,7 @@ import type { GraphHttpClient } from "@prism365/graph";
 import type { ModuleDatabase } from "@prism365/storage";
 import type { AuditRunner } from "./audits.ts";
 
-// Scheduled audits (docs/audits.md, section 11). An administrator can set an audit to run daily
+// Scheduled audits (docs/audits.md, section 12). An administrator can set an audit to run daily
 // or weekly; this runs the audits that are due, one at a time, on the sign-in that background
 // collection uses, and only while collection is on. A scheduled run is an ordinary run with
 // trigger "schedule": same runner, same access-ledger entry before anything is read, same
