@@ -360,12 +360,13 @@ services count as important. See `docs/modules/service-health.md` and ADR-0007.
 ## Audits
 
 Audits, in the sidebar under Audit, runs point-in-time checks when you press Run: inactive
-accounts by days since last sign-in, licenses to reclaim, MFA registration, guest accounts and
-license capacity. They use `directory.users.read`, `audit.signins.read`,
-`tenant.licenses.read` and `reports.authentication-methods.read`, all in the setup's default
-list. Inactivity needs Microsoft Entra ID P1 or P2 and a role such as Reports Reader, Security
-Reader or Global Reader. Results are kept (the last 10 successful runs per audit) and can be
-exported as CSV. See `docs/audits.md`.
+accounts by days since last sign-in, licenses to reclaim, MFA registration, guest accounts,
+license capacity, Conditional Access policies and risky users. They use `directory.users.read`,
+`audit.signins.read`, `tenant.licenses.read`, `reports.authentication-methods.read`,
+`identity.conditional-access.read` and `identity.risk.read`, all in the setup's default list.
+Inactivity needs Microsoft Entra ID P1 or P2 and a role such as Reports Reader, Security Reader
+or Global Reader; risky users need Entra ID P2. Results are kept (the last 10 successful runs
+per audit) and can be exported as CSV. See `docs/audits.md`.
 
 ## Breach lookup (Have I Been Pwned)
 
