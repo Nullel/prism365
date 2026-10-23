@@ -143,6 +143,7 @@ let failedRun: string;
 let scopedRun: string;
 let devicesRun: string;
 let usageRun: string;
+let nameOnlyRun: string;
 
 // The API allows 60 requests a minute per session, so each test signs in afresh.
 async function signIn() {
@@ -241,6 +242,14 @@ beforeAll(async () => {
     summary: [],
     notes: [],
     rows: [{ ...account(2, 40, "Enabled", ["idle"]), personId: null }],
+  });
+  // An audit that offers a handoff, with rows that name no account by its directory id.
+  nameOnlyRun = await stored(inactive.id, inactive.version, {
+    status: "succeeded",
+    complete: true,
+    summary: [],
+    notes: [],
+    rows: rows.map((row) => ({ ...row, personId: null })),
   });
 }, 60_000);
 
@@ -464,7 +473,6 @@ describe("handoff export", () => {
         "identity.risky-users",
         "licenses.reclaim",
         "mfa.registration",
-        "usage.m365-apps",
       ].sort(),
     );
     for (const id of [
@@ -472,6 +480,7 @@ describe("handoff export", () => {
       "apps.consents",
       "identity.conditional-access",
       "licenses.capacity",
+      "usage.m365-apps",
     ])
       expect(
         builtInAudits.find((audit) => audit.definition.id === id),
@@ -505,17 +514,18 @@ describe("handoff export", () => {
   });
 
   it("is refused for unknown and failed runs, audits not of accounts, and bad parameters", async () => {
-    for (const runId of [randomUUID(), failedRun, capacityRun, devicesRun, usageRun]) {
+    for (const runId of [randomUUID(), failedRun, capacityRun, devicesRun, usageRun, nameOnlyRun]) {
       const response = await get(`/v1/audit-runs/${runId}/handoff.json`);
       expect(response.statusCode, runId).toBe(404);
     }
-    // Device owners are people, but a device is not an account to act on.
-    for (const runId of [capacityRun, devicesRun])
+    // Device owners are people, but a device is not an account to act on; usage rows name
+    // accounts only by sign-in name.
+    for (const runId of [capacityRun, devicesRun, usageRun])
       expect((await get(`/v1/audit-runs/${runId}/handoff.json`)).json().error).toBe(
         "not_handed_off",
       );
-    // A usage run names accounts only by sign-in name: nothing to hand off by id.
-    expect((await get(`/v1/audit-runs/${usageRun}/handoff.json`)).json()).toMatchObject({
+    // A run of an audit that offers a handoff, whose rows name no account by id.
+    expect((await get(`/v1/audit-runs/${nameOnlyRun}/handoff.json`)).json()).toMatchObject({
       error: "no_accounts",
       message: "This run names no accounts by their directory id, so it has nothing to hand off.",
     });

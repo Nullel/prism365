@@ -19,15 +19,14 @@ its own. The only thing that crosses is the two files, carried by the administra
 
 On an audit's results, **Export for action** sits next to Export CSV. It is offered only by the
 audits whose rows are accounts an action tool could act on, which say so in their definition
-(`handoff: true`): Inactive accounts, Licenses to reclaim, MFA registration, Guest accounts,
-Risky users and Microsoft 365 app usage. A person column alone is not enough: Managed devices
-names each device's owner, but its rows are devices. App consents, Conditional Access policies
-and License capacity have no handoff either.
+(`handoff: true`): Inactive accounts, Licenses to reclaim, MFA registration, Guest accounts and
+Risky users. A person column alone is not enough: Managed devices names each device's owner, but
+its rows are devices. Microsoft 365 app usage names accounts only by sign-in name, so its rows
+carry no directory id to act on. App consents, Conditional Access policies and License capacity
+have no handoff either.
 
 An account is handed off by its directory object id, so a run whose rows carry none has nothing
-to hand off and is refused, and the button is not shown for it. Microsoft's usage report names
-accounts only by sign-in name, so the rows of Microsoft 365 app usage carry no directory id
-today and its export is refused until the audit matches its rows to accounts.
+to hand off and is refused, and the button is not shown for it.
 
 The export holds exactly the accounts the page shows: the same view, filters, search and sort as
 the CSV export, read by the same code on the server, so the CSV and the handoff of one view
