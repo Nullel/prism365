@@ -214,8 +214,7 @@ export class AuditRunner {
     if (this.#closed) throw new AuditStoppedError("shutdown");
     const key = `${input.tenantId}:${input.audit.definition.id}`;
     const existing = this.#running.get(key);
-    if (existing)
-      return { runId: existing.runId, started: false, run: null, done: existing.done };
+    if (existing) return { runId: existing.runId, started: false, run: null, done: existing.done };
     const runId = randomUUID();
     const controller = new AbortController();
     let release: () => void = () => {};

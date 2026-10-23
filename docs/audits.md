@@ -5,7 +5,9 @@ Status: built (TL-025). Packages: `packages/audits` (the audits and their run st
 
 An audit is a check an administrator runs when they need it. It reads Microsoft once, with the
 signed-in administrator's delegated session, and keeps the result so it can be reopened, compared
-with earlier runs and exported. Nothing runs on a schedule, and no audit changes the tenant.
+with earlier runs and exported. An audit can also be set to run daily or weekly while collection
+is on (section 11), and each audit's summary numbers are kept as a trend (section 10). No audit
+changes the tenant.
 
 ## 1. The built-in audits
 
@@ -103,6 +105,10 @@ All routes need a signed-in administrator; the POST also needs the CSRF header.
 | `GET /v1/settings/audits` | The saved scope and the domains to choose from, with how many accounts each holds (section 9) |
 | `POST /v1/settings/audits` | Saves `{ "domains": [...] }` and returns what the GET returns; 400 unless the body is a list of up to 100 domain names |
 
+| `GET /v1/audits/{auditId}/trend?days=365` | The audit's trend points in the last 1 to 3,650 days (default 365), oldest first (section 10) |
+| `GET /v1/settings/audit-schedule` | Every audit with `off`, `daily` or `weekly`, and whether collection is on (section 11) |
+| `POST /v1/settings/audit-schedule` | Saves `{ "audits": { "<auditId>": "daily" } }` and returns what the GET returns; 400 unless every value is `off`, `daily` or `weekly` |
+
 CSV is RFC 4180 with a byte-order mark. Text that a spreadsheet would treat as a formula
 (starting with `=`, `+`, `-`, `@`, a tab or a carriage return) gets a leading apostrophe.
 
@@ -135,6 +141,14 @@ real Graph client and endpoint allowlist, refusals, partial reads and field fall
 `packages/contracts/test/audits.test.ts`: views, filters, search, sorting and CSV. `apps/api/test/audits-api.test.ts`:
 sessions, CSRF, availability, one run at a time, history, export, failures, the time limit,
 recovery of interrupted runs, shutdown and pruning. `apps/api/test/audits-scope-api.test.ts`: the scope settings, their ledger entry and the scope applied to runs. `apps/web/test/audits.test.ts`: the catalog and the scope section.
+
+Trends and schedules: `packages/audits/test/trends.test.ts` (points written with the result, none
+for failed or interrupted runs, kept through pruning, tile ids the same in SQL and TypeScript,
+comparability, the saved schedule and when an audit is due), `packages/storage/test/audit-trend-migration.test.ts`
+(the backfill on PGlite; the same suite runs on PostgreSQL in `postgres.test.ts`),
+`apps/api/test/audit-insights-api.test.ts` (the trend and schedule routes),
+`apps/api/test/audit-schedule.test.ts` (the scheduler on a fake clock, and in the app with the real
+runner) and `apps/web/test/audit-insights.test.ts` (the trend panel and the schedule control).
 
 ## 9. Scope
 
@@ -180,3 +194,76 @@ Saving the scope writes an access-ledger entry, `audits.scope.changed`, with the
 and the time, before the scope is saved. It does not name them. The scope needs no Microsoft
 permission. The run's scope and domain counts are two columns of `prism365_audit_run`, added in
 place by migration 004.
+
+## 10. Trends
+
+Every successful run, complete or partial, leaves a trend point: its summary tiles (inactive
+accounts, admins without MFA, unused licenses and the rest) with their values, the audit's version,
+the scope the run used, whether it was complete, how it was started and when it finished. Points
+live in `prism365_audit_trend` (core migration `005-audit-trends.sql`), a tenant table with forced
+row-level security. They are written in the same transaction as the run's result, so a result that
+could not be stored leaves no point, and a failed or interrupted run never has one. Pruning runs
+never touches points and nothing else deletes them: a point is a few hundred bytes, so a daily
+audit adds well under a megabyte a year. A point holds counts and the labels the audit gave its
+tiles, never an account.
+
+Tiles have no id of their own, so a point keys each one by its label: "Inactive 30+ days" becomes
+`inactive-30-days` (ASCII letters and digits kept, anything else one hyphen, at most 60 characters,
+"tile" when nothing is left; `auditTileId` in `packages/contracts/src/insights.ts`). A label that
+gives the same id as an earlier tile of the same run is dropped from the point.
+
+When migration 005 first runs, the successful runs already stored become the first points, so an
+installation that had runs before trends existed starts with a trend. The backfill derives tile ids
+in SQL exactly as `auditTileId` does and skips runs that already have a point, so it changes
+nothing when the migration runs again on the next start. The migrator connects as a superuser; a
+migration role that only owns the tables sees no rows under the forced tenant policy, and then the
+backfill adds nothing and points start with the next run.
+
+An audit's page shows a Trend panel once the audit has two points in the last year. It draws one
+tile at a time, the first critical or warning tile by default, as a line chart with a title and
+description for screen readers, and Show as table lists the points instead. A point is drawn
+hollow, with a note saying why, when it does not compare directly with the latest run: it was made
+by another version of the audit, it covered another audit scope, or it was a partial result. Every
+point is compared with the newest one, because that is the result the page shows. A run that had
+no value for the chosen tile leaves a gap in the line.
+
+Reading a trend is not an access-ledger event: points are counts, like the run history without its
+rows, and neither reads Microsoft. The route returns at most 1,000 points and says when the range
+held more.
+
+## 11. Schedules
+
+An audit can run on its own, daily or weekly. Run automatically on the audit's page has Off, Daily
+and Weekly and saves at once; the catalog tags a scheduled audit Daily or Weekly, and the run
+history marks scheduled runs. The schedule is one setting per tenant under the key
+`audits.schedule` in `prism365_preference`, `{ "audits": { "<auditId>": "off" | "daily" | "weekly" } }`.
+Saving replaces the whole schedule: an audit the request leaves out is off. An id that is not a
+known audit is dropped when the schedule is saved and when it is read, and a value that is not a
+frequency reads as off, so a damaged setting can only stop audits from running.
+
+Scheduled audits run only while collection is on, with the sign-in collection uses: the
+administrator who started collecting. The API checks every 5 minutes, and once 30 seconds after
+collection starts. An audit is due when its newest run of any outcome, manual or scheduled,
+started more than a day (daily) or a week (weekly) ago, or when it has never run. Counting from the
+last start means a manual run counts as this period's run, and a scheduled run that failed waits
+for its next turn instead of retrying every few minutes. A start in the future, after the clock was
+turned back, is not due until a full period after it.
+
+Due audits run one at a time, in the catalog's order, through the same runner as a manual run.
+Before each one the scheduler reads the schedule and the last start again, so a schedule turned off
+or a manual run started meanwhile is respected, and it asks for the collecting sign-in again, so
+nothing starts after collection stops. An audit is skipped when any of its read packs is not
+enabled in `ENABLED_READ_FEATURES` or not granted by the collecting sign-in, by the same rule as the
+Run button; the server log names the audit and the reason, nothing more, and the audit stays due.
+A run reads its own packs and the optional packs the operator enabled, with the permissions the
+collecting sign-in granted for them (`auditReadScope`), exactly as a manual run does.
+
+A scheduled run is stored with trigger `schedule` and the collecting administrator as the one who
+started it. Its access-ledger entry is the manual run's, `audit.run.started` with the run and the
+permissions it reads, plus `"trigger": "schedule"`, written under the collecting administrator
+before anything is read. A sign-in that stops working while a scheduled run reads (signed out,
+expired, or refused by Microsoft) fails that run as a session failure, the way a manual run fails.
+Scheduled runs raise no notifications: the results are on the audit's page.
+
+Saving the schedule writes `audits.schedule.changed` with how many audits run on their own, before
+the schedule is saved. It does not name them.

@@ -11,7 +11,9 @@ import {
   type PersonRecord,
   type PersonSigninPage,
   type AttentionSettings,
+  type AuditScheduleSettings,
   type AuditSettings,
+  auditScheduleSchema,
   auditScopeSchema,
   attentionPreferencesSchema,
   auditCsv,
@@ -158,6 +160,7 @@ export interface DemoState {
   findings: Finding[];
   settings: AttentionSettings | null;
   auditSettings: AuditSettings | null;
+  auditSchedule: AuditScheduleSettings | null;
   collection: CollectionStatus | null;
   runs: SimulatedRun[];
 }
@@ -196,6 +199,7 @@ export function createDemoState(fixtures: Fixtures, now: () => Date = () => new 
     findings: [...findings.values()],
     settings: bodyOf<AttentionSettings>(responses, "GET /api/v1/settings/attention"),
     auditSettings: bodyOf<AuditSettings>(responses, "GET /api/v1/settings/audits"),
+    auditSchedule: bodyOf<AuditScheduleSettings>(responses, "GET /api/v1/settings/audit-schedule"),
     collection: modules ? { ...modules.collection } : null,
     runs: [],
   };
@@ -554,6 +558,17 @@ function exportCsv(state: DemoState, id: string, url: URL): DemoResponse {
   };
 }
 
+// The saved schedule, saying collection is on or off as the page last left it.
+function scheduleAnswer(state: DemoState): AuditScheduleSettings | null {
+  if (!state.auditSchedule) return null;
+  return {
+    ...clone(state.auditSchedule),
+    collecting: state.collection
+      ? state.collection.state === "collecting"
+      : state.auditSchedule.collecting,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------------------------
@@ -581,6 +596,8 @@ function handleGet(state: DemoState, path: string, url: URL, request: DemoReques
     answer = json(200, clone(state.settings));
   else if (path === "/settings/audits" && state.auditSettings)
     answer = json(200, clone(state.auditSettings));
+  else if (path === "/settings/audit-schedule" && state.auditSchedule)
+    answer = json(200, scheduleAnswer(state));
   else if (path === "/audits") answer = listCatalog(state);
   else if (first === "audits" && second && third === "runs" && segments.length === 3)
     answer = listRuns(state, second);
@@ -648,6 +665,28 @@ function handlePost(state: DemoState, path: string, body: unknown): DemoResponse
       return json(400, { error: "invalid_request", message: "Check the domains." });
     state.auditSettings = { ...state.auditSettings, scope: parsed.data };
     return json(200, clone(state.auditSettings));
+  }
+  if (path === "/settings/audit-schedule" && state.auditSchedule) {
+    // Saved for this page; nothing runs on its own in the demo.
+    const parsed = auditScheduleSchema.safeParse(payload);
+    if (!parsed.success)
+      return json(400, {
+        error: "invalid_request",
+        message: "Choose off, daily or weekly for each audit.",
+      });
+    // The whole schedule is replaced, and audits the recording does not know are dropped, as
+    // the server does.
+    const saved = parsed.data.audits;
+    state.auditSchedule = {
+      ...state.auditSchedule,
+      audits: Object.fromEntries(
+        Object.keys(state.auditSchedule.audits).map((id) => [
+          id,
+          Object.hasOwn(saved, id) ? (saved[id] ?? "off") : "off",
+        ]),
+      ),
+    };
+    return json(200, scheduleAnswer(state));
   }
   if (first === "findings" && second && third === "state" && segments.length === 3) {
     const next = findingStateSchema.safeParse(payload.state);

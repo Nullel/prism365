@@ -91,10 +91,15 @@ const points = (auditId: string) =>
 
 describe("trend points", () => {
   it("writes one point for a succeeded run, with its tiles, scope and trigger", async () => {
-    const id = await run("accounts.inactive", 1, { status: "succeeded", complete: false }, {
-      scope: ["b.example", "a.example"],
-      trigger: "schedule",
-    });
+    const id = await run(
+      "accounts.inactive",
+      1,
+      { status: "succeeded", complete: false },
+      {
+        scope: ["b.example", "a.example"],
+        trigger: "schedule",
+      },
+    );
     const { points: stored, truncated } = await points("accounts.inactive");
     expect(truncated).toBe(false);
     expect(stored).toEqual([
@@ -166,9 +171,7 @@ describe("trend points", () => {
       });
       await interruptRuns(sql, tenantId, [], at(3, 12));
     });
-    const runs = await database.tenant(tenantId, (sql) =>
-      listRuns(sql, tenantId, "guests.review"),
-    );
+    const runs = await database.tenant(tenantId, (sql) => listRuns(sql, tenantId, "guests.review"));
     expect(runs.map((item) => item.status)).toEqual(["failed", "failed"]);
     expect(runs.map((item) => item.trigger)).toEqual(["manual", "manual"]);
     expect((await points("guests.review")).points).toEqual([]);
@@ -254,9 +257,7 @@ describe("trend points", () => {
       labels.map((label, index) => ({ label, value: index, tone: "neutral", view: null })),
     );
     expect(point?.tiles).toEqual(expected);
-    expect(point?.tiles.map((tile) => tile.id)).toEqual(
-      [...new Set(labels.map(auditTileId))],
-    );
+    expect(point?.tiles.map((tile) => tile.id)).toEqual([...new Set(labels.map(auditTileId))]);
   });
 });
 
@@ -306,7 +307,12 @@ describe("the trend the API returns", () => {
       point({ scope: ["a.example", "b.example"] }),
       point({ scope: ["a.example", "b.example"] }),
     ];
-    const trend = buildAuditTrend({ auditId: "accounts.inactive", days: 365, points, truncated: false });
+    const trend = buildAuditTrend({
+      auditId: "accounts.inactive",
+      days: 365,
+      points,
+      truncated: false,
+    });
     expect(trend.points.map((item) => item.notComparable)).toEqual([
       ["version", "scope"],
       ["scope"],
@@ -385,7 +391,13 @@ describe("audit schedules", () => {
       writeAuditSchedule(
         sql,
         tenantId,
-        { audits: { "accounts.inactive": "daily", "unknown.audit": "weekly", "guests.review": "weekly" } },
+        {
+          audits: {
+            "accounts.inactive": "daily",
+            "unknown.audit": "weekly",
+            "guests.review": "weekly",
+          },
+        },
         actor.id,
         builtInAudits,
       ),
@@ -407,7 +419,13 @@ describe("audit schedules", () => {
     expect(scheduledAuditCount(other)).toBe(0);
     // Saving again replaces it: an audit left out is off.
     const replaced = await database.tenant(tenantId, (sql) =>
-      writeAuditSchedule(sql, tenantId, { audits: { "guests.review": "daily" } }, actor.id, builtInAudits),
+      writeAuditSchedule(
+        sql,
+        tenantId,
+        { audits: { "guests.review": "daily" } },
+        actor.id,
+        builtInAudits,
+      ),
     );
     expect(replaced).toMatchObject({ "accounts.inactive": "off", "guests.review": "daily" });
   });
@@ -416,14 +434,21 @@ describe("audit schedules", () => {
     expect(knownAuditSchedule(null, builtInAudits)["accounts.inactive"]).toBe("off");
     expect(knownAuditSchedule({ audits: [] }, builtInAudits)["accounts.inactive"]).toBe("off");
     const mixed = knownAuditSchedule(
-      { audits: { "accounts.inactive": "hourly", "guests.review": "weekly", "gone.audit": "daily" } },
+      {
+        audits: { "accounts.inactive": "hourly", "guests.review": "weekly", "gone.audit": "daily" },
+      },
       builtInAudits,
     );
     expect(mixed["accounts.inactive"]).toBe("off");
     expect(mixed["guests.review"]).toBe("weekly");
     expect(mixed).not.toHaveProperty("gone.audit");
     // An inherited name is never read as a saved value.
-    expect(knownAuditSchedule({ audits: Object.create({ "accounts.inactive": "daily" }) }, builtInAudits)["accounts.inactive"]).toBe("off");
+    expect(
+      knownAuditSchedule(
+        { audits: Object.create({ "accounts.inactive": "daily" }) },
+        builtInAudits,
+      )["accounts.inactive"],
+    ).toBe("off");
     await database.tenant(tenantId, (sql) =>
       sql.query(
         `INSERT INTO prism365_preference (tenant_id, key, value, updated_at, updated_by)

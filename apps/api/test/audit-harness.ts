@@ -134,8 +134,7 @@ export async function auditHarness(
     const url = new URL(String(input));
     reads.push({
       path: url.pathname,
-      ledgerStarts: store.audit.filter((entry) => entry.event.type === "audit.run.started")
-        .length,
+      ledgerStarts: store.audit.filter((entry) => entry.event.type === "audit.run.started").length,
     });
     if (url.pathname === "/v1.0/users") return Response.json({ value: users });
     if (url.pathname === "/v1.0/reports/authenticationMethods/userRegistrationDetails")
