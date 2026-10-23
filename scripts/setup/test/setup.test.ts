@@ -1,0 +1,473 @@
+import { createPrivateKey, X509Certificate } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { certificateRequest, newCredential } from "../certificate.ts";
+import { KeyCredentialSafetyError } from "../key-credentials.ts";
+import type { SetupOptions } from "../options.ts";
+import { GRAPH_RESOURCE_APP_ID } from "../permissions.ts";
+import { SETUP_TAG } from "../plan.ts";
+import { runSetup, SetupError } from "../setup.ts";
+import {
+  ADMIN_ID,
+  error,
+  FakeTenant,
+  OTHER_API,
+  roleIds,
+  scopeIds,
+  TENANT_ID,
+} from "./fake-graph.ts";
+
+const envExample = join(import.meta.dirname, "../../../.env.example");
+const directories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+async function workspace() {
+  const dir = await mkdtemp(join(tmpdir(), "prism365-setup-"));
+  directories.push(dir);
+  return dir;
+}
+
+function optionsFor(dir: string, overrides: Partial<SetupOptions> = {}): SetupOptions {
+  return {
+    tenant: "contoso.example",
+    name: "Prism365",
+    origin: "https://localhost:8443",
+    redirectUris: ["https://localhost:8443/api/v1/auth/callback"],
+    features: ["directory.users.read", "user.licenses.read", "audit.signins.read"],
+    secretsDir: join(dir, "secrets"),
+    envFile: join(dir, ".env"),
+    appId: null,
+    yes: true,
+    dryRun: false,
+    rotateCertificate: false,
+    prunePermissions: false,
+    ...overrides,
+  };
+}
+
+function run(tenant: FakeTenant, options: SetupOptions, dir: string, output: string[] = []) {
+  return runSetup(options, {
+    fetch: tenant.fetch,
+    signIn: async () => ({ tenantId: TENANT_ID, getToken: async () => "synthetic-token" }),
+    confirm: async () => true,
+    print: (text) => output.push(text),
+    envExample,
+    cwd: dir,
+    sleep: async () => {},
+  });
+}
+
+const mode = async (path: string) => (await stat(path)).mode & 0o777;
+const graphScopes = (tenant: FakeTenant) =>
+  tenant.applications[0]?.requiredResourceAccess.find(
+    (entry) => entry.resourceAppId === GRAPH_RESOURCE_APP_ID,
+  )?.resourceAccess ?? [];
+const scope = (name: string) => ({ id: scopeIds.get(name), type: "Scope" });
+
+describe("npm run setup against a fake tenant", () => {
+  it("creates the registration, service principal, certificate and .env on a first run", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const output: string[] = [];
+    expect(await run(tenant, optionsFor(dir), dir, output)).toBe("applied");
+
+    expect(tenant.writes.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST applications",
+      "POST servicePrincipals",
+      `PATCH applications/${tenant.applications[0]?.id}`,
+    ]);
+    const application = tenant.applications[0];
+    expect(tenant.applications).toHaveLength(1);
+    expect(application?.tags).toEqual([SETUP_TAG]);
+    expect(application?.signInAudience).toBe("AzureADMyOrg");
+    expect(application?.web).toEqual({
+      redirectUris: ["https://localhost:8443/api/v1/auth/callback"],
+      implicitGrantSettings: { enableIdTokenIssuance: false, enableAccessTokenIssuance: false },
+    });
+    expect(graphScopes(tenant)).toEqual(
+      [
+        "openid",
+        "profile",
+        "offline_access",
+        "User.Read",
+        "User.Read.All",
+        "LicenseAssignment.Read.All",
+        "AuditLog.Read.All",
+      ].map(scope),
+    );
+    expect(tenant.servicePrincipals.map((principal) => principal.appId)).toEqual([
+      application?.appId,
+    ]);
+
+    const secrets = join(dir, "secrets");
+    expect(await mode(secrets)).toBe(0o700);
+    expect(await mode(join(secrets, "entra-private.pem"))).toBe(0o600);
+    expect(await mode(join(secrets, "entra-public.pem"))).toBe(0o644);
+    const certificate = new X509Certificate(await readFile(join(secrets, "entra-public.pem")));
+    expect(certificate.subject).toBe("CN=Prism365 contoso.example");
+    expect(
+      certificate.checkPrivateKey(
+        createPrivateKey(await readFile(join(secrets, "entra-private.pem"))),
+      ),
+    ).toBe(true);
+    expect(application?.keyCredentials).toEqual([
+      expect.objectContaining({
+        type: "AsymmetricX509Cert",
+        usage: "Verify",
+        key: certificate.raw.toString("base64"),
+        displayName: "CN=Prism365 contoso.example",
+      }),
+    ]);
+
+    const env = await readFile(join(dir, ".env"), "utf8");
+    expect(await mode(join(dir, ".env"))).toBe(0o600);
+    expect(env).toContain(
+      "# Copy to .env. Keep credentials and tenant-specific values out of Git.",
+    );
+    expect(env).toMatch(/^DATA_MODE=live$/m);
+    expect(env).toMatch(new RegExp(`^ENTRA_TENANT_ID=${TENANT_ID}$`, "m"));
+    expect(env).toMatch(new RegExp(`^ENTRA_CLIENT_ID=${application?.appId}$`, "m"));
+    expect(env).toMatch(new RegExp(`^ENTRA_ADMIN_OBJECT_IDS=${ADMIN_ID}$`, "m"));
+    expect(env).toMatch(
+      /^ENABLED_READ_FEATURES=directory\.users\.read,user\.licenses\.read,audit\.signins\.read$/m,
+    );
+    expect(env).toContain(`ENTRA_PRIVATE_KEY_PATH=${join(secrets, "entra-private.pem")}`);
+    expect(env).not.toMatch(/^ENTRA_CLIENT_SECRET=/m);
+
+    const printed = output.join("\n");
+    expect(printed).toContain(
+      `https://login.microsoftonline.com/${TENANT_ID}/adminconsent?client_id=${application?.appId}`,
+    );
+    expect(printed).toContain("scripts/docker-live.sh init");
+    expect(printed).toContain("Prism365 itself only reads.");
+    expect(printed).not.toContain("synthetic-token");
+    expect(tenant.tokens.every((header) => header === "Bearer synthetic-token")).toBe(true);
+  });
+
+  it("changes nothing on a second run", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    await run(tenant, optionsFor(dir), dir);
+    const files = ["secrets/entra-private.pem", "secrets/entra-public.pem", ".env"];
+    const before = await Promise.all(
+      files.map(async (file) => ({
+        text: await readFile(join(dir, file), "utf8"),
+        modified: (await stat(join(dir, file))).mtimeMs,
+      })),
+    );
+    const keys = structuredClone(tenant.applications[0]?.keyCredentials);
+    tenant.requests.length = 0;
+
+    const output: string[] = [];
+    expect(await run(tenant, optionsFor(dir), dir, output)).toBe("unchanged");
+    expect(tenant.writes).toEqual([]);
+    expect(tenant.applications).toHaveLength(1);
+    expect(tenant.servicePrincipals).toHaveLength(1);
+    expect(tenant.applications[0]?.keyCredentials).toEqual(keys);
+    for (const [index, file] of files.entries()) {
+      expect(await readFile(join(dir, file), "utf8")).toBe(before[index]?.text);
+      expect((await stat(join(dir, file))).mtimeMs).toBe(before[index]?.modified);
+    }
+    expect(output.join("\n")).toContain("already in place");
+  });
+
+  it("updates a registration found by its tag without removing anything on it", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const otherCertificate = new X509Certificate(
+      newCredential(certificateRequest("other.example", new Date())).certificatePem,
+    );
+    const existingKey = {
+      keyId: "44444444-4444-4444-8444-444444444444",
+      customKeyIdentifier: "ABCDEF",
+      displayName: "CN=Someone else",
+      type: "AsymmetricX509Cert",
+      usage: "Verify",
+      key: otherCertificate.raw.toString("base64"),
+      startDateTime: "2026-01-01T00:00:00Z",
+      endDateTime: "2026-12-31T00:00:00Z",
+    };
+    const otherPermissions = {
+      resourceAppId: OTHER_API,
+      resourceAccess: [{ id: "55555555-5555-4555-8555-555555555555", type: "Role" }],
+    };
+    const seeded = tenant.application({
+      displayName: "Renamed by the operator",
+      tags: ["their-tag", SETUP_TAG],
+      web: {
+        redirectUris: ["https://prism365.example/api/v1/auth/callback"],
+        logoutUrl: "https://prism365.example/signed-out",
+        implicitGrantSettings: { enableIdTokenIssuance: false, enableAccessTokenIssuance: false },
+      },
+      requiredResourceAccess: [
+        {
+          resourceAppId: GRAPH_RESOURCE_APP_ID,
+          resourceAccess: [scope("Mail.Read"), scope("User.Read")] as {
+            id: string;
+            type: string;
+          }[],
+        },
+        otherPermissions,
+      ],
+      keyCredentials: [existingKey],
+    });
+    tenant.servicePrincipals.push({
+      id: "66666666-6666-4666-8666-666666666666",
+      appId: seeded.appId,
+      tags: [],
+    });
+
+    expect(await run(tenant, optionsFor(dir, { features: ["audit.signins.read"] }), dir)).toBe(
+      "applied",
+    );
+    expect(tenant.applications).toHaveLength(1);
+    expect(tenant.writes.map((request) => request.method)).toEqual(["PATCH", "PATCH"]);
+    const update = tenant.writes[0]?.body as Record<string, unknown>;
+    expect(Object.keys(update).sort()).toEqual(["requiredResourceAccess", "web"]);
+    expect(seeded.web).toEqual({
+      redirectUris: [
+        "https://prism365.example/api/v1/auth/callback",
+        "https://localhost:8443/api/v1/auth/callback",
+      ],
+      logoutUrl: "https://prism365.example/signed-out",
+      implicitGrantSettings: { enableIdTokenIssuance: false, enableAccessTokenIssuance: false },
+    });
+    expect(seeded.displayName).toBe("Renamed by the operator");
+    expect(seeded.tags).toEqual(["their-tag", SETUP_TAG]);
+    expect(seeded.requiredResourceAccess).toEqual([
+      {
+        resourceAppId: GRAPH_RESOURCE_APP_ID,
+        resourceAccess: [
+          "Mail.Read",
+          "User.Read",
+          "openid",
+          "profile",
+          "offline_access",
+          "AuditLog.Read.All",
+        ].map(scope),
+      },
+      otherPermissions,
+    ]);
+    // The other certificate goes back exactly as Microsoft returned it, ahead of the new one.
+    expect(seeded.keyCredentials[0]).toEqual(existingKey);
+    expect(seeded.keyCredentials).toHaveLength(2);
+    expect(tenant.servicePrincipals).toHaveLength(1);
+  });
+
+  it("removes permissions it did not add only with --prune-permissions, and says so first", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const seeded = tenant.application({
+      tags: [SETUP_TAG],
+      requiredResourceAccess: [
+        {
+          resourceAppId: GRAPH_RESOURCE_APP_ID,
+          resourceAccess: [
+            scope("Mail.Read"),
+            { id: roleIds.get("Directory.Read.All") ?? "", type: "Role" },
+          ] as { id: string; type: string }[],
+        },
+        {
+          resourceAppId: OTHER_API,
+          resourceAccess: [{ id: "55555555-5555-4555-8555-555555555555", type: "Scope" }],
+        },
+      ],
+    });
+    const output: string[] = [];
+    await run(
+      tenant,
+      optionsFor(dir, { features: ["audit.signins.read"], prunePermissions: true }),
+      dir,
+      output,
+    );
+    expect(output[0]).toContain(
+      `remove Mail.Read, Directory.Read.All (application permission) and a permission of another API (${OTHER_API}) (--prune-permissions)`,
+    );
+    expect(seeded.requiredResourceAccess).toEqual([
+      {
+        resourceAppId: GRAPH_RESOURCE_APP_ID,
+        resourceAccess: [
+          "openid",
+          "profile",
+          "offline_access",
+          "User.Read",
+          "AuditLog.Read.All",
+        ].map(scope),
+      },
+    ]);
+  });
+
+  it("makes no request that changes anything and writes no file on --dry-run", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const output: string[] = [];
+    expect(await run(tenant, optionsFor(dir, { dryRun: true, yes: false }), dir, output)).toBe(
+      "dry-run",
+    );
+    expect(tenant.requests.length).toBeGreaterThan(0);
+    expect(tenant.writes).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+    const plan = output[0] ?? "";
+    expect(plan).toContain(
+      'App registration: create "Prism365", a single-tenant web app with implicit grant off, tagged prism365-setup.',
+    );
+    expect(plan).toContain("  openid, profile, offline_access and User.Read for sign-in");
+    expect(plan).toContain("  User.Read.All for directory.users.read");
+    expect(plan).toContain("  LicenseAssignment.Read.All for user.licenses.read");
+    expect(plan).toContain("Certificate: create an RSA 2048 key");
+    expect(plan).toContain(".env: create it from .env.example, readable only by you, and set:");
+    expect(plan).toContain("\n  DATA_MODE from demo to live\n");
+    expect(plan).toContain("\n  ENTRA_CLIENT_ID to the new registration's application ID\n");
+    expect(output.at(-1)).toContain("Dry run: nothing was changed.");
+  });
+
+  it("finishes the job on a re-run after failing midway", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    tenant.intercept = (request) =>
+      request.method === "PATCH" ? error(500, "Service_InternalServerError") : null;
+    const failure = await run(tenant, optionsFor(dir), dir).catch((caught: unknown) => caught);
+    expect(failure).toBeInstanceOf(SetupError);
+    expect((failure as Error).message).toContain(
+      "Adding the certificate to the registration failed: Microsoft Graph answered HTTP 500 (Service_InternalServerError).",
+    );
+    expect((failure as Error).message).not.toContain("Provider text");
+    expect(tenant.applications[0]?.keyCredentials).toEqual([]);
+    const privateKey = await readFile(join(dir, "secrets/entra-private.pem"), "utf8");
+    const certificate = new X509Certificate(await readFile(join(dir, "secrets/entra-public.pem")));
+    await expect(stat(join(dir, ".env"))).rejects.toThrow();
+
+    tenant.intercept = null;
+    tenant.requests.length = 0;
+    expect(await run(tenant, optionsFor(dir), dir)).toBe("applied");
+    expect(tenant.writes.map((request) => request.method)).toEqual(["PATCH"]);
+    expect(tenant.applications).toHaveLength(1);
+    expect(tenant.servicePrincipals).toHaveLength(1);
+    expect(await readFile(join(dir, "secrets/entra-private.pem"), "utf8")).toBe(privateKey);
+    expect(tenant.applications[0]?.keyCredentials).toEqual([
+      expect.objectContaining({ key: certificate.raw.toString("base64") }),
+    ]);
+    expect(await readFile(join(dir, ".env"), "utf8")).toContain(
+      `ENTRA_CLIENT_ID=${tenant.applications[0]?.appId}`,
+    );
+  });
+
+  it("makes a certificate for a key left without one, never replacing the key", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    await run(tenant, optionsFor(dir), dir);
+    const privateKey = await readFile(join(dir, "secrets/entra-private.pem"), "utf8");
+    await unlink(join(dir, "secrets/entra-public.pem"));
+    expect(await run(tenant, optionsFor(dir), dir)).toBe("applied");
+    expect(await readFile(join(dir, "secrets/entra-private.pem"), "utf8")).toBe(privateKey);
+    const certificate = new X509Certificate(await readFile(join(dir, "secrets/entra-public.pem")));
+    expect(certificate.checkPrivateKey(createPrivateKey(privateKey))).toBe(true);
+    expect(tenant.applications[0]?.keyCredentials).toHaveLength(2);
+  });
+
+  it("keeps the old certificate on the registration when rotating", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    await run(tenant, optionsFor(dir), dir);
+    const [old] = tenant.applications[0]?.keyCredentials ?? [];
+    const privateKey = await readFile(join(dir, "secrets/entra-private.pem"), "utf8");
+    await run(tenant, optionsFor(dir, { rotateCertificate: true }), dir);
+    expect(await readFile(join(dir, "secrets/entra-private.pem"), "utf8")).not.toBe(privateKey);
+    expect(await mode(join(dir, "secrets/entra-private.pem"))).toBe(0o600);
+    expect(tenant.applications[0]?.keyCredentials).toHaveLength(2);
+    expect(tenant.applications[0]?.keyCredentials[0]).toEqual(old);
+  });
+
+  it("refuses to replace a private key that does not match its certificate", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    await run(tenant, optionsFor(dir), dir);
+    const other = newCredential(certificateRequest("other.example", new Date()));
+    await writeFile(join(dir, "secrets/entra-public.pem"), other.certificatePem);
+    const privateKey = await readFile(join(dir, "secrets/entra-private.pem"), "utf8");
+    tenant.requests.length = 0;
+    const output: string[] = [];
+    await expect(run(tenant, optionsFor(dir), dir, output)).rejects.toThrow(SetupError);
+    expect(output[0]).toContain("do not belong together");
+    expect(tenant.writes).toEqual([]);
+    expect(await readFile(join(dir, "secrets/entra-private.pem"), "utf8")).toBe(privateKey);
+  });
+
+  it("stops when several registrations match", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    tenant.application({ tags: [SETUP_TAG] });
+    tenant.application({ tags: [SETUP_TAG] });
+    const output: string[] = [];
+    await expect(run(tenant, optionsFor(dir), dir, output)).rejects.toThrow(SetupError);
+    expect(output[0]).toContain("2 app registrations match");
+    expect(output[0]).toContain("--app-id");
+    expect(tenant.writes).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("stops before any change when a certificate's key cannot be read in full", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const hidden = "77777777-7777-4777-8777-777777777777";
+    tenant.application({
+      tags: [SETUP_TAG],
+      keyCredentials: [{ keyId: hidden, type: "AsymmetricX509Cert", usage: "Verify", key: "AAAA" }],
+      hiddenKeys: [hidden],
+    });
+    const output: string[] = [];
+    await expect(run(tenant, optionsFor(dir), dir, output)).rejects.toThrow(SetupError);
+    expect(output[0]).toContain(`did not return the full key of ${hidden}`);
+    expect(tenant.writes).toEqual([]);
+  });
+
+  it("reports a certificate the update lost", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const kept = new X509Certificate(
+      newCredential(certificateRequest("other.example", new Date())).certificatePem,
+    );
+    const keyId = "88888888-8888-4888-8888-888888888888";
+    tenant.application({
+      tags: [SETUP_TAG],
+      keyCredentials: [
+        { keyId, type: "AsymmetricX509Cert", usage: "Verify", key: kept.raw.toString("base64") },
+      ],
+    });
+    tenant.dropOnPatch = [keyId];
+    const failure = await run(tenant, optionsFor(dir), dir).catch((caught: unknown) => caught);
+    expect(failure).toBeInstanceOf(KeyCredentialSafetyError);
+    expect((failure as Error).message).toContain(keyId);
+  });
+
+  it("refuses a sign-in to a different tenant than the one named", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const options = optionsFor(dir, { tenant: "abababab-abab-4bab-8bab-abababababab" });
+    await expect(run(tenant, options, dir)).rejects.toThrow("not abababab");
+    expect(tenant.requests).toEqual([]);
+  });
+
+  it("asks before applying and changes nothing when the answer is no", async () => {
+    const dir = await workspace();
+    const tenant = new FakeTenant();
+    const output: string[] = [];
+    const outcome = await runSetup(optionsFor(dir, { yes: false }), {
+      fetch: tenant.fetch,
+      signIn: async () => ({ tenantId: TENANT_ID, getToken: async () => "synthetic-token" }),
+      confirm: async () => false,
+      print: (text) => output.push(text),
+      envExample,
+      cwd: dir,
+      sleep: async () => {},
+    });
+    expect(outcome).toBe("declined");
+    expect(tenant.writes).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+});
