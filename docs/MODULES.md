@@ -93,8 +93,8 @@ Backfill is a collector run with `since = now - N days` and no overlap, flagged 
 | # | Module | Source | New permissions | Why this order |
 |---|---|---|---|---|
 | 1 | `signins.audit` | port of Entra Guard, see `modules/signins-audit.md` | none (AuditLog.Read.All already consented) | proven rules, real data at the pilot tenant today, the clearest "the portal cannot do this" |
-| 2 | `mail.forwarding` | port of the forwarding monitor's Graph half: inbox rules that forward or redirect, per mailbox | `MailboxSettings.Read` | second module proves the contract; the Exchange half waits for the PowerShell worker |
-| 3 | `directory.changes` | daily snapshot and diff of users, roles, app consents, groups | `Directory.Read.All`, `RoleManagement.Read.Directory` | the change feed from the m365-skynet spec; feeds the digest with "what changed" |
+| 2 | `mail.forwarding` | port of the forwarding monitor's Graph half: inbox rules that forward or redirect, per mailbox | application `MailboxSettings.Read` (delegated access reaches only mailboxes delegated to the admin) | waits for the application credential, see ADR-0009 |
+| 3 | `directory.changes` | the directory audit log kept for good, a filterable feed, changes on each person's page, findings for risky changes | `AuditLog.Read.All` (consented) | in progress, see `docs/EYES-PLAN.md` S1 |
 | 4 | `licenses` | subscribedSkus daily, reclaim candidates | `LicenseAssignment.Read.All` (consented) | cheap, immediately useful |
 | 5 | `usage.reports` | the Graph report CSVs | `Reports.Read.All` + a reviewed download adapter | needs the 302 adapter the client refuses today |
 | 6 | `service.health`, `service.messages` | built: incidents, advisories and Message center into the notification center, see `modules/service-health.md` | `ServiceHealth.Read.All`, `ServiceMessage.Read.All` | platform-level, no per-person data; first source of the notification center (ADR-0007) |
