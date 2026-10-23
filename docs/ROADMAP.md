@@ -56,6 +56,10 @@ logs; a security reviewer approves the connector boundary.
 
 ## Milestone 2 — durable ingestion and evidence-backed findings
 
+Progress 2026-10-22: the module runtime spine (TL-020, ADR-0006) provides tenant-scoped module
+tables, the job loop with cursors and run history, findings, and per-table retention. No module
+ships yet; the first is `signins.audit`.
+
 Goal: reports remain reliable across throttling, pagination, restarts, and data gaps.
 
 - PostgreSQL schema with row-level tenant isolation and deletion workflow.
@@ -110,25 +114,26 @@ Goal: query Purview audit records without implying universal availability or com
 
 Exit: connector works in an authorized test tenant and is disabled by default.
 
-## Milestone 6 — guarded administration actions
+## Milestone 6 — not planned: Prism365 stays read-only
 
-Goal: introduce a very small number of reversible or recoverable actions safely.
+Decided 2026-10-22. Prism365 never writes to a tenant, in any release. The value of the
+product is that it structurally cannot overreach, and a write path, however guarded, makes
+that claim conditional. Lifecycle changes (onboard, role change, offboard) belong to the
+separate plan-then-apply tool, Tenure, which carries its own write identity, dry-run diff,
+confirmation, audit chain and refuter review.
 
-- Separate write application identity and permission review.
-- Dry-run diff, policy engine, step-up confirmation, idempotency, ledger, reconciliation.
-- Immutable package import, signature/digest review, and tenant/capability approval binding.
-- Ephemeral isolated PowerShell 7 worker with denied egress and a capability-broker mode.
-- Onboarding/offboarding protected-account rules, second approval, partial-failure recovery,
-  emergency kill switch, and test-tenant destructive-action suite.
-- First action selected through a threat-model and user-research issue.
-- Break-glass disable switch and incident runbook.
+What this means for code that already exists:
 
-Exit: independent security review and no broad “manage everything” permission bundle.
+- The lifecycle preview and private package import stay exactly as they are: preview-only,
+  execution disabled. They are retained as design artifacts and will not gain a runner.
+- The write permission packs in `packages/graph/src/permissions.ts` stay catalogued as
+  "never requested" so the readiness screen can say so explicitly.
+- ADR 0005 (isolated lifecycle automation) is superseded by this decision and kept for history.
 
 ## Explicitly out of scope for the first release
 
 - On-premises Active Directory agents.
-- An AI agent with autonomous tenant write privileges.
+- Tenant write actions of any kind, by a person or by AI. See Milestone 6 and Tenure.
 - Employee productivity, engagement, or performance scoring.
 - Full commercial-product feature parity.
 - Indefinite raw audit-log warehousing by default.

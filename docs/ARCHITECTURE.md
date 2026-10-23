@@ -40,7 +40,8 @@ short-lived isolated worker, never in the API process. No write capability is pa
 | `packages/automation` | Runbook previews and immutable private imports | JSON import implemented; all source unreviewed; execution unavailable |
 | `packages/storage` | Encrypted tenant state and restricted append-only access ledger | PostgreSQL/RLS implemented; integration verified separately in CI |
 | Worker service | Scheduled ingestion and reconciliation | Milestone 2 |
-| PostgreSQL report tables | Normalized historical reports and collection cursors | Milestone 2; current database stores bounded control state only |
+| `packages/modules` | Module contract, registry, scheduler, findings, collection cursors and run history | Spine implemented (TL-020, ADR-0006); no built-in modules yet |
+| Module storage | Tenant-scoped module tables, findings, cursors, runs | PostgreSQL or PGlite with the same migrations and forced RLS (ADR-0006) |
 | Queue | Bounded jobs, retries, dead-letter handling | Milestone 2 |
 | Object storage | Optional encrypted exports/raw archives | Post-MVP and opt-in |
 | Action ledger | Append-only record of administrative writes | Before any write action |

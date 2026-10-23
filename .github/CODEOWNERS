@@ -1,14 +1,14 @@
 # Replace or expand ownership as the maintainer group grows.
-* @nlj3
+* @Nullel
 
 # Sensitive boundaries always require owner review.
-/packages/graph/ @nlj3
-/packages/policy/ @nlj3
-/packages/ai/ @nlj3
-/packages/automation/ @nlj3
-/packages/storage/ @nlj3
-/apps/api/src/identity.ts @nlj3
-/apps/api/src/config.ts @nlj3
-/docs/PERMISSIONS.md @nlj3
-/docs/THREAT_MODEL.md @nlj3
-/.github/ @nlj3
+/packages/graph/ @Nullel
+/packages/policy/ @Nullel
+/packages/ai/ @Nullel
+/packages/automation/ @Nullel
+/packages/storage/ @Nullel
+/apps/api/src/identity.ts @Nullel
+/apps/api/src/config.ts @Nullel
+/docs/PERMISSIONS.md @Nullel
+/docs/THREAT_MODEL.md @Nullel
+/.github/ @Nullel
