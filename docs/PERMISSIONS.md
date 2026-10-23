@@ -32,8 +32,8 @@ This table groups the intended scope for review.
 | `audit.signins.read` | Graph | `AuditLog.Read.All` | MVP | Delegated caller needs an allowed role; license affects fields/retention |
 | `reports.authentication-methods.read` | Graph | `AuditLog.Read.All` | MVP | MFA registration audit; Reports Reader, Security Reader, Security Administrator or Global Reader; excludes disabled accounts |
 | `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Usage-report availability and privacy setting; global/GCC target only |
-| `identity.conditional-access.read` | Graph | `Policy.Read.All` | Experimental | Supported role and applicable Conditional Access licensing |
-| `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Entra ID P2; not targeted for China |
+| `identity.conditional-access.read` | Graph | `Policy.Read.All` | Experimental | Conditional Access policies audit; Global Reader, Security Reader, Security Administrator or Conditional Access Administrator; Entra ID P1; 1 request per second per tenant, shared with risky users |
+| `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Risky users audit; Entra ID P2; Global Reader, Security Reader, Security Operator or Security Administrator; 1 request per second per tenant, shared with Conditional Access; not targeted for China |
 | `security.score.read` | Graph | `SecurityEvents.Read.All` | Experimental | Applicable subscriptions; not targeted for China |
 | `security.incidents.read` | Graph | `SecurityIncident.Read.All` | Experimental | Defender entitlement and security role; not targeted for China |
 | `devices.intune.read` | Graph | `DeviceManagementManagedDevices.Read.All` | Experimental | Active Intune license and role |

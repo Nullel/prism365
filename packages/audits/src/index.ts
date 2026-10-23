@@ -1,14 +1,17 @@
 import { type AuditDefinition, auditDefinitionSchema } from "@prism365/contracts";
 import { type GraphFeatureId, permissionPacks } from "@prism365/graph";
 import { licenseCapacityAudit } from "./capacity.ts";
+import { conditionalAccessAudit } from "./conditional-access.ts";
 import type { Audit } from "./definition.ts";
 import { guestAccountsAudit } from "./guests.ts";
 import { inactiveAccountsAudit } from "./inactive.ts";
 import { mfaRegistrationAudit } from "./mfa.ts";
 import { licenseReclaimAudit } from "./reclaim.ts";
+import { riskyUsersAudit } from "./risky-users.ts";
 
 export * from "./definition.ts";
 export * from "./directory.ts";
+export * from "./paced-read.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
 export { strongestMethod, methodLabel } from "./mfa.ts";
@@ -19,6 +22,8 @@ export {
   licenseReclaimAudit,
   mfaRegistrationAudit,
 };
+export { conditionalAccessAudit, createConditionalAccessAudit } from "./conditional-access.ts";
+export { createRiskyUsersAudit, riskyUsersAudit } from "./risky-users.ts";
 
 // Built-in audits, in the order the page lists them. A new audit is a new entry here.
 export const builtInAudits: readonly Audit[] = [
@@ -27,6 +32,8 @@ export const builtInAudits: readonly Audit[] = [
   mfaRegistrationAudit,
   guestAccountsAudit,
   licenseCapacityAudit,
+  conditionalAccessAudit,
+  riskyUsersAudit,
 ];
 
 function permissionsOf(packs: readonly GraphFeatureId[]): string[] {

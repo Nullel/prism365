@@ -182,6 +182,8 @@ describe("audits API", () => {
       "mfa.registration",
       "guests.review",
       "licenses.capacity",
+      "identity.conditional-access",
+      "identity.risky-users",
     ]);
     expect(by("accounts.inactive")).toEqual({
       state: "missing_permission",

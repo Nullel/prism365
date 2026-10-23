@@ -204,6 +204,34 @@ const registrations = [
   { userPrincipalName: "broken@example.invalid" },
 ];
 
+// One policy and one risky user, so the generic definition checks see a row from each audit.
+const policies = [
+  {
+    id: "p-block-legacy",
+    displayName: "Block legacy authentication",
+    state: "enabled",
+    conditions: {
+      users: { includeUsers: ["All"], excludeUsers: [] },
+      applications: { includeApplications: ["All"] },
+      clientAppTypes: ["exchangeActiveSync", "other"],
+    },
+    grantControls: { operator: "OR", builtInControls: ["block"] },
+  },
+];
+const riskyUsers = [
+  {
+    id: "u-stale",
+    isDeleted: false,
+    isProcessing: false,
+    riskLastUpdatedDateTime: daysAgo(3),
+    riskLevel: "high",
+    riskState: "atRisk",
+    riskDetail: "none",
+    userDisplayName: "Sam Stale",
+    userPrincipalName: "sam@example.invalid",
+  },
+];
+
 type Route = (url: URL) => Response | undefined;
 
 function context(
@@ -246,6 +274,10 @@ const tenant: Route = (url) => {
   if (url.pathname === "/v1.0/subscribedSkus") return Response.json({ value: skus });
   if (url.pathname === "/v1.0/reports/authenticationMethods/userRegistrationDetails")
     return Response.json({ value: registrations });
+  if (url.pathname === "/v1.0/identity/conditionalAccess/policies")
+    return Response.json({ value: policies });
+  if (url.pathname === "/v1.0/identityProtection/riskyUsers")
+    return Response.json({ value: riskyUsers });
   return undefined;
 };
 
