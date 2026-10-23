@@ -2,6 +2,7 @@ import { sessionSchema, type PrismSession } from "@prism365/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { signInFailedNotice } from "../src/App.tsx";
 import { TenantConnection } from "../src/TenantConnection.tsx";
 import { UserIntelligence } from "../src/UserIntelligence.tsx";
 
@@ -31,6 +32,23 @@ function connectionMarkup(value: PrismSession | null) {
 }
 
 describe("connection interface", () => {
+  it("shows a sign-in failure sentence on the live card without exposing a reason code", () => {
+    const html = renderToStaticMarkup(
+      createElement(TenantConnection, {
+        session: session(),
+        error: signInFailedNotice,
+        onRetry: () => {},
+        onLogout: () => {},
+        loggingOut: false,
+      }),
+    );
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Microsoft sign-in did not complete");
+    expect(html).toContain("operator list");
+    expect(html).not.toContain("AADSTS");
+    expect(html).toContain("Sign in with Microsoft");
+  });
+
   it("waits for the mode without displaying a synthetic tenant", () => {
     const html = connectionMarkup(null);
     expect(html).toContain("Checking your workspace");

@@ -117,11 +117,9 @@ export function UserIntelligence({ session }: { session: PrismSession }) {
 
   return (
     <section className="investigation" aria-labelledby="investigation-title">
-      <div className="investigation__intro">
-        <span className="eyebrow">User Intelligence</span>
-        <h2 id="investigation-title">Start with a work email.</h2>
-        <p>Bring a user’s profile, assigned licenses, and recent sign-in evidence into one view.</p>
-      </div>
+      <h2 id="investigation-title" className="visually-hidden">
+        Live lookup
+      </h2>
       <form className="investigation-search" onSubmit={investigate}>
         <label className="field" htmlFor={inputId}>
           <span>User principal name or work email</span>

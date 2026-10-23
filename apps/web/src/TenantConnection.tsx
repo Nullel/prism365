@@ -20,6 +20,18 @@ const featureDescriptions = [
     scope: "AuditLog.Read.All",
     detail: "Read recent sign-ins, subject to role and license availability.",
   },
+  {
+    id: "service.health.read",
+    label: "Service health",
+    scope: "ServiceHealth.Read.All",
+    detail: "Microsoft's incidents and advisories for the services this tenant has.",
+  },
+  {
+    id: "service.messages.read",
+    label: "Message center",
+    scope: "ServiceMessage.Read.All",
+    detail: "Planned changes, retirements and actions Microsoft asks administrators to take.",
+  },
 ];
 
 export function TenantConnection({
