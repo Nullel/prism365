@@ -115,6 +115,77 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
       ).rejects.toMatchObject({ code: "42501" });
     });
 
+    it("isolates handoffs and receipts, whose ids come from another tool", async () => {
+      // One receipt id in both tenants: the key includes the tenant, so neither blocks the other.
+      const receipt = randomUUID();
+      const addReceipt = (tenant: string) =>
+        db().tenant(tenant, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_receipt (tenant_id, id, handoff_id, tool_name, tool_version,
+               performed_at, performed_by, items, done_count, failed_count, skipped_count,
+               imported_at, imported_by, digest)
+             VALUES ($1,$2,$3,'Example tool','1',now(),'Operator',1,1,0,0,now(),$1,$4)`,
+            [tenant, receipt, null, "a".repeat(64)],
+          ),
+        );
+      for (const [tenant, detail] of [
+        [tenantA, "synthetic-a"],
+        [tenantB, "synthetic-b"],
+      ] as const) {
+        await addReceipt(tenant);
+        await db().tenant(tenant, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_receipt_item (tenant_id, receipt_id, position, user_id,
+               user_principal_name, action, status, detail)
+             VALUES ($1,$2,0,NULL,'Shared@Example.invalid','account.disabled','done',$3)`,
+            [tenant, receipt, detail],
+          ),
+        );
+      }
+      const seen = await db().tenant(tenantA, (sql) =>
+        sql.query<{ detail: string }>(
+          "SELECT detail FROM prism365_receipt_item WHERE lower(user_principal_name) = lower($1)",
+          ["shared@example.invalid"],
+        ),
+      );
+      expect(seen.rows.map((row) => row.detail)).toEqual(["synthetic-a"]);
+      // A handoff of tenant B can be neither written from A nor answered by A's receipts.
+      const handoff = randomUUID();
+      const addHandoff = (tenant: string, owner: string) =>
+        db().tenant(tenant, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_handoff (tenant_id, id, audit_id, audit_title, run_id, items,
+               generated_at, generated_by)
+             VALUES ($1,$2,'accounts.inactive','Inactive accounts',$3,0,now(),$3)`,
+            [owner, handoff, randomUUID()],
+          ),
+        );
+      await expect(addHandoff(tenantA, tenantB)).rejects.toMatchObject({ code: "42501" });
+      await addHandoff(tenantB, tenantB);
+      await expect(
+        db().tenant(tenantA, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_receipt (tenant_id, id, handoff_id, tool_name, tool_version,
+               performed_at, performed_by, items, done_count, failed_count, skipped_count,
+               imported_at, imported_by, digest)
+             VALUES ($1,$2,$3,'Example tool','1',now(),'Operator',1,1,0,0,now(),$1,$4)`,
+            [tenantA, randomUUID(), handoff, "a".repeat(64)],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "23503" });
+      // An item must name an account one way or the other.
+      await expect(
+        db().tenant(tenantB, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_receipt_item (tenant_id, receipt_id, position, user_id,
+               user_principal_name, action, status, detail)
+             VALUES ($1,$2,1,NULL,NULL,'account.disabled','done','')`,
+            [tenantB, receipt],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    });
+
     it("refuses identity, setting, schema, and multi-statement SQL at runtime", async () => {
       for (const statement of [
         "RESET ROLE",

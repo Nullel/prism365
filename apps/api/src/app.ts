@@ -105,6 +105,7 @@ import {
 import { MemoryStateStore, type SqlClient, type StateStore } from "@prism365/storage";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { auditExportParamsSchema, auditExportQuery } from "./audit-export.ts";
 import { AuditRunner } from "./audits.ts";
 import { type AppConfig, type SupportedReadFeature, supportedReadFeatures } from "./config.ts";
 import { demoDashboard } from "./demo-data.ts";
@@ -1327,7 +1328,7 @@ export function createApp(options: AppOptions = {}) {
     if (!session) return reply.status(401).send({ error: "authentication_required" });
     if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
     const params = runParams.safeParse(request.params);
-    const query = z.record(z.string().max(60), z.string().max(200)).safeParse(request.query ?? {});
+    const query = auditExportParamsSchema.safeParse(request.query ?? {});
     if (!params.success || !query.success)
       return reply.status(400).send({ error: "invalid_request", message: "Check the filters." });
     const run = await loadRun(session, params.data.runId);
@@ -1337,19 +1338,8 @@ export function createApp(options: AppOptions = {}) {
         .status(404)
         .send({ error: "run_not_found", message: "That run has no results." });
     const definition = auditDefinition(audit);
-    // Export what the page shows: ?view=, ?search=, ?sort=&direction=, and f.<column>= filters.
-    const { view, search, sort, direction } = query.data;
-    const facets = Object.fromEntries(
-      Object.entries(query.data)
-        .filter(([key]) => key.startsWith("f."))
-        .map(([key, value]) => [key.slice(2), value]),
-    );
-    const rows = queryAuditRows(definition, run.rows, {
-      view: view ?? null,
-      facets,
-      search: search ?? "",
-      sort: sort ? { column: sort, direction: direction === "asc" ? "asc" : "desc" } : null,
-    });
+    // Export what the page shows. The handoff export parses the same way (audit-export.ts).
+    const rows = queryAuditRows(definition, run.rows, auditExportQuery(query.data));
     await store.appendAudit(session.tenantId, session.actorId, {
       type: "audit.run.exported",
       auditId: run.auditId,
