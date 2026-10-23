@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import staticFiles from "@fastify/static";
 import {
   AiAnalysisBroker,
-  LocalOllamaProvider,
   type AiEvidenceQuery,
   type AiProvider,
+  LocalOllamaProvider,
 } from "@prism365/ai";
 import {
   type Audit,
@@ -19,13 +19,20 @@ import {
 } from "@prism365/audits";
 import {
   createAutomationPreview,
-  listAutomationWorkflows,
   inspectAutomationPackage,
+  listAutomationWorkflows,
   summarizeAutomationPackage,
 } from "@prism365/automation";
 import {
-  aiAccessGrantSchema,
+  type AiEvidenceRecord,
   type AuditAvailability,
+  aiAccessGrantSchema,
+  attentionItemSchema,
+  attentionListSchema,
+  attentionMuteRequestSchema,
+  attentionPreferencesSchema,
+  attentionReviewRequestSchema,
+  attentionSettingsSchema,
   auditCatalogSchema,
   auditCsv,
   auditIdSchema,
@@ -34,34 +41,27 @@ import {
   auditScopeSchema,
   auditSettingsSchema,
   auditStartSchema,
-  queryAuditRows,
-  attentionItemSchema,
-  attentionListSchema,
-  attentionMuteRequestSchema,
-  attentionPreferencesSchema,
-  attentionReviewRequestSchema,
-  attentionSettingsSchema,
-  serviceHealthStatusSchema,
-  type SystemAlert,
-  automationPackageSummarySchema,
   automationPackageListSchema,
-  investigationEmailSchema,
+  automationPackageSummarySchema,
   automationPreviewRequestSchema,
   capabilitySummarySchema,
-  type AiEvidenceRecord,
-  type UserInvestigation,
   collectionStatusSchema,
   findingListSchema,
   findingStateRequestSchema,
   findingStateSchema,
+  investigationEmailSchema,
   moduleListSchema,
   personIdSchema,
   personListSchema,
   personLookupSchema,
   personRecordSchema,
   personSigninPageSchema,
+  queryAuditRows,
+  type SystemAlert,
+  serviceHealthStatusSchema,
   sessionSchema,
   signinSummarySchema,
+  type UserInvestigation,
 } from "@prism365/contracts";
 import {
   createDemoUserInvestigation,
@@ -74,6 +74,11 @@ import {
   UserInvestigationError,
 } from "@prism365/graph";
 import {
+  HEALTH_MODULE,
+  MESSAGES_MODULE,
+  serviceHealthStatus,
+} from "@prism365/module-service-health";
+import {
   listPeople,
   personHistory,
   personSignins,
@@ -81,14 +86,9 @@ import {
   summarizeSignins,
 } from "@prism365/module-signins-audit";
 import {
-  HEALTH_MODULE,
-  MESSAGES_MODULE,
-  serviceHealthStatus,
-} from "@prism365/module-service-health";
-import {
   attentionCounts,
-  clearCollectionIntent,
   type CollectionIntent,
+  clearCollectionIntent,
   latestRuns,
   listAttention,
   listFindings,
@@ -105,6 +105,7 @@ import {
 import { MemoryStateStore, type SqlClient, type StateStore } from "@prism365/storage";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { AuditRunner } from "./audits.ts";
 import { type AppConfig, type SupportedReadFeature, supportedReadFeatures } from "./config.ts";
 import { demoDashboard } from "./demo-data.ts";
 import {
@@ -114,8 +115,13 @@ import {
   type IdentitySession,
   LoginRejectedError,
 } from "./identity.ts";
-import { AuditRunner } from "./audits.ts";
 import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
+import { registerAuditInsightRoutes } from "./routes/audit-insights.ts";
+import { registerChangeRoutes } from "./routes/changes.ts";
+import type { RouteContext } from "./routes/context.ts";
+import { registerDigestRoutes } from "./routes/digest.ts";
+import { registerHandoffRoutes } from "./routes/handoffs.ts";
+import { registerSetupRoutes } from "./routes/setup.ts";
 
 export interface AppOptions {
   config?: AppConfig;
@@ -1396,6 +1402,26 @@ export function createApp(options: AppOptions = {}) {
     });
     return auditSettingsSchema.parse(settings);
   });
+
+  // Features with their own route files (routes/). Each checks the session itself.
+  const routes: RouteContext = {
+    config,
+    store,
+    identity,
+    modules,
+    audits,
+    sessionFor,
+    sessionHandle: (request) => readCookie(request, cookieName),
+    enabledPermissions,
+    sessionGraph: auditGraph,
+    auditAvailability,
+    collectingCredential: () => collecting,
+  };
+  registerChangeRoutes(app, routes);
+  registerAuditInsightRoutes(app, routes);
+  registerDigestRoutes(app, routes);
+  registerSetupRoutes(app, routes);
+  registerHandoffRoutes(app, routes);
 
   app.get("/v1/dashboard/summary", async (_request, reply) => {
     if (config.mode === "demo") return demoDashboard;

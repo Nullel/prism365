@@ -1,8 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GraphHttpClient } from "@prism365/graph";
 import {
@@ -16,7 +14,7 @@ import { createApp } from "../../apps/api/src/app.ts";
 import type { AppConfig, IdentityConfig } from "../../apps/api/src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../../apps/api/src/identity.ts";
 import { createModuleRegistry } from "../../apps/api/src/modules.ts";
-import { normalizeKey, type Fixtures } from "../../apps/web/src/demo/replay.ts";
+import { type Fixtures, normalizeKey } from "../../apps/web/src/demo/replay.ts";
 import {
   assertSynthetic,
   buildSyntheticTenant,
@@ -50,6 +48,14 @@ const features = [
   "reports.authentication-methods.read",
   "service.health.read",
   "service.messages.read",
+  "audit.directory.read",
+  "identity.conditional-access.read",
+  "identity.risk.read",
+  "devices.intune.read",
+  "directory.applications.read",
+  "directory.permission-grants.read",
+  "reports.usage.read",
+  "reports.settings.read",
 ] as const;
 const scopes = [
   "User.Read",
@@ -58,6 +64,13 @@ const scopes = [
   "AuditLog.Read.All",
   "ServiceHealth.Read.All",
   "ServiceMessage.Read.All",
+  "Policy.Read.All",
+  "IdentityRiskyUser.Read.All",
+  "DeviceManagementManagedDevices.Read.All",
+  "Application.Read.All",
+  "DelegatedPermissionGrant.Read.All",
+  "Reports.Read.All",
+  "ReportSettings.Read.All",
 ];
 const origin = "http://localhost:5173";
 const tenantId = SYNTHETIC_TENANT_ID;

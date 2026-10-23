@@ -1,6 +1,6 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
-import { type SigninsAuditConfig, signinsAuditConfigFromEnv } from "@prism365/module-signins-audit";
 import { readFile } from "node:fs/promises";
+import { type SigninsAuditConfig, signinsAuditConfigFromEnv } from "@prism365/module-signins-audit";
 
 export const supportedReadFeatures = {
   "directory.users.read": "User.Read.All",
@@ -10,6 +10,14 @@ export const supportedReadFeatures = {
   "reports.authentication-methods.read": "AuditLog.Read.All",
   "service.health.read": "ServiceHealth.Read.All",
   "service.messages.read": "ServiceMessage.Read.All",
+  "audit.directory.read": "AuditLog.Read.All",
+  "identity.conditional-access.read": "Policy.Read.All",
+  "identity.risk.read": "IdentityRiskyUser.Read.All",
+  "devices.intune.read": "DeviceManagementManagedDevices.Read.All",
+  "directory.applications.read": "Application.Read.All",
+  "directory.permission-grants.read": "DelegatedPermissionGrant.Read.All",
+  "reports.usage.read": "Reports.Read.All",
+  "reports.settings.read": "ReportSettings.Read.All",
 } as const;
 export type SupportedReadFeature = keyof typeof supportedReadFeatures;
 

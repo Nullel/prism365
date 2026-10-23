@@ -1,5 +1,8 @@
-import { type PersonDirectory, personDirectorySchema } from "@prism365/contracts";
-import { investigationLicenseSchema } from "@prism365/contracts";
+import {
+  investigationLicenseSchema,
+  type PersonDirectory,
+  personDirectorySchema,
+} from "@prism365/contracts";
 import { z } from "zod";
 import { type GraphHttpClient, GraphRequestError } from "./client.ts";
 

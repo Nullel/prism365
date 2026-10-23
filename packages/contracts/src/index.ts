@@ -3,9 +3,14 @@ import { personHistorySchema } from "./people.ts";
 
 export * from "./attention.ts";
 export * from "./audits.ts";
+export * from "./changes.ts";
+export * from "./digest.ts";
+export * from "./handoff.ts";
+export * from "./insights.ts";
 export * from "./investigation.ts";
 export * from "./licenses.ts";
 export * from "./people.ts";
+export * from "./setup.ts";
 export * from "./text.ts";
 
 export const sessionSchema = z.object({

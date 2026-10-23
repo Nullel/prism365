@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { demoGraphExtensions } from "./graph/index.ts";
 
 // A synthetic Microsoft Graph for the portfolio demo.
 //
@@ -2084,6 +2085,10 @@ export function createSyntheticGraph(options: { now: Date }): typeof fetch {
       );
     if (path === "admin/serviceAnnouncement/messages")
       return page(url, communications.messages, null);
+    for (const extension of demoGraphExtensions) {
+      const response = extension({ url, path, select, tenant }, { json, page, notFound });
+      if (response) return response;
+    }
     return notFound();
   }) as typeof fetch;
 }

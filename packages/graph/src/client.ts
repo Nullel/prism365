@@ -113,11 +113,16 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
   "service.health.read":
     /^\/v1\.0\/admin\/serviceAnnouncement\/(?:healthOverviews|issues)(?:\/[^/]+)?\/?$/i,
   "service.messages.read": /^\/v1\.0\/admin\/serviceAnnouncement\/messages(?:\/[^/]+)?\/?$/i,
-  "audit.signins.read": /^\/v1\.0\/auditLogs\/(?:signIns|directoryAudits)(?:\/[^/]+)?\/?$/i,
+  "audit.signins.read": /^\/v1\.0\/auditLogs\/signIns(?:\/[^/]+)?\/?$/i,
+  "audit.directory.read": /^\/v1\.0\/auditLogs\/directoryAudits(?:\/[^/]+)?\/?$/i,
   "reports.authentication-methods.read":
     /^\/v1\.0\/reports\/authenticationMethods\/userRegistrationDetails(?:\/[^/]+)?\/?$/i,
   "identity.conditional-access.read":
-    /^\/v1\.0\/identity\/conditionalAccess\/policies(?:\/[^/]+)?\/?$/i,
+    /^\/v1\.0\/identity\/conditionalAccess\/(?:policies|namedLocations)(?:\/[^/]+)?\/?$/i,
+  // Enterprise applications, one of them, or the application permissions granted to one.
+  "directory.applications.read":
+    /^\/v1\.0\/servicePrincipals(?:\/[^/]+(?:\/appRoleAssignments)?)?\/?$/i,
+  "directory.permission-grants.read": /^\/v1\.0\/oauth2PermissionGrants\/?$/i,
   "identity.risk.read": /^\/v1\.0\/identityProtection\/riskyUsers(?:\/[^/]+)?\/?$/i,
   "reports.usage.read": /^\/v1\.0\/reports\/get[A-Za-z0-9]+\([^/]+\)\/?$/i,
   "reports.settings.read": /^\/v1\.0\/admin\/reportSettings\/?$/i,
