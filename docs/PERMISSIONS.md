@@ -29,9 +29,12 @@ This table groups the intended scope for review.
 | `tenant.licenses.read` | Graph | `LicenseAssignment.Read.All` | MVP | Delegated caller needs an allowed directory role |
 | `user.licenses.read` | Graph | `LicenseAssignment.Read.All` | Pilot implemented | `/users/{id}/licenseDetails` supports delegated access only, plus an allowed Entra role |
 | `service.health.read` | Graph | `ServiceHealth.Read.All` | MVP | Service health available for tenant services |
-| `audit.signins.read` | Graph | `AuditLog.Read.All` | MVP | Delegated caller needs an allowed role; license affects fields/retention |
+| `audit.signins.read` | Graph | `AuditLog.Read.All` | MVP | Sign-ins only; delegated caller needs an allowed role; license affects fields/retention |
+| `audit.directory.read` | Graph | `AuditLog.Read.All` | MVP | Directory audit log for the change feed; Reports Reader, Security Reader or Global Reader; Microsoft keeps 7 days (30 with Entra ID P1/P2) |
+| `directory.applications.read` | Graph | `Application.Read.All` | Experimental | App consents audit: enterprise applications and the application permissions granted to them; Microsoft does not list Global Reader for reading app role assignments |
+| `directory.permission-grants.read` | Graph | `Directory.Read.All` | Experimental | Optional for the app consents audit: delegated consents. `Directory.Read.All` is Microsoft's documented least privilege for listing grants (both the tenant-wide and the per-application list), and it can read the whole directory, so enable it only if you want delegated consents shown |
 | `reports.authentication-methods.read` | Graph | `AuditLog.Read.All` | MVP | MFA registration audit; Reports Reader, Security Reader, Security Administrator or Global Reader; excludes disabled accounts |
-| `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Usage-report availability and privacy setting; global/GCC target only |
+| `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Only the per-user Microsoft 365 apps report (`getM365AppUserDetail`, JSON) and the name-concealment setting; per-user detail needs Reports Reader or a service admin role; global/GCC target only |
 | `identity.conditional-access.read` | Graph | `Policy.Read.All` | Experimental | Supported role and applicable Conditional Access licensing |
 | `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Entra ID P2; not targeted for China |
 | `security.score.read` | Graph | `SecurityEvents.Read.All` | Experimental | Applicable subscriptions; not targeted for China |
@@ -123,3 +126,18 @@ separate designs and are not part of the initial lifecycle runbooks. See
 - [Assign license](https://learn.microsoft.com/en-us/graph/api/user-assignlicense?view=graph-rest-1.0)
 - [Add group member](https://learn.microsoft.com/en-us/graph/api/group-post-members?view=graph-rest-1.0)
 - [Exchange Online application RBAC](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac)
+
+## Packs share permissions; Prism365 enforces packs
+
+Several packs carry the same Microsoft permission (`AuditLog.Read.All` serves sign-ins, the
+directory audit log and MFA registration; `LicenseAssignment.Read.All` serves per-user and tenant
+licences). Microsoft grants permissions, not packs, so consenting one of them grants all. Prism365
+therefore enforces the pack itself: a module collects, an audit runs, and a route reads only when
+every pack it uses is in `ENABLED_READ_FEATURES`, whatever the session's token would allow.
+
+Rolling back to a build older than 2026-10-23: remove `audit.directory.read`,
+`identity.conditional-access.read`, `identity.risk.read`, `devices.intune.read`,
+`directory.applications.read`, `directory.permission-grants.read`, `reports.usage.read` and
+`reports.settings.read` from `ENABLED_READ_FEATURES` first. Older builds refuse to start when the
+list names a feature they do not know.
+

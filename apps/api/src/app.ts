@@ -9,6 +9,7 @@ import {
 import {
   type Audit,
   auditDefinition,
+  auditReadScope,
   builtInAudits,
   findAudit,
   getRun,
@@ -65,6 +66,7 @@ import {
 } from "@prism365/contracts";
 import {
   createDemoUserInvestigation,
+  type GraphFeatureId,
   GraphHttpClient,
   investigateUser,
   lookupPersonId,
@@ -96,6 +98,7 @@ import {
   modulePermissions,
   readAttentionPreferences,
   readCollectionIntent,
+  scopeGraph,
   setAttentionMuted,
   setAttentionReview,
   setFindingState,
@@ -118,7 +121,7 @@ import {
 import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
 import { registerAuditInsightRoutes } from "./routes/audit-insights.ts";
 import { registerChangeRoutes } from "./routes/changes.ts";
-import type { RouteContext } from "./routes/context.ts";
+import { RouteBoundaryError, type RouteContext } from "./routes/context.ts";
 import { registerDigestRoutes } from "./routes/digest.ts";
 import { registerHandoffRoutes } from "./routes/handoffs.ts";
 import { registerSetupRoutes } from "./routes/setup.ts";
@@ -1140,18 +1143,20 @@ export function createApp(options: AppOptions = {}) {
   // delegated session of whoever started it, and its rows are kept for history and export.
   const packPermission = (id: string) =>
     permissionPacks.find((pack) => pack.id === id)?.permission ?? null;
+  // An audit is available when every pack it requires is enabled (the pack itself, not just a
+  // permission another enabled pack happens to share) and the session granted their permissions.
   const auditAvailability = (audit: Audit, session: IdentitySession): AuditAvailability => {
-    const enabled = new Set(enabledPermissions());
-    const granted = new Set(session.scopes.filter((scope) => enabled.has(scope)));
-    const { permissions } = auditDefinition(audit);
-    const notEnabled = permissions.filter((permission) => !enabled.has(permission));
-    if (notEnabled.length > 0)
+    const enabledPacks = new Set<string>(config.enabledFeatures);
+    const notEnabledPacks = audit.packs.filter((pack) => !enabledPacks.has(pack));
+    if (notEnabledPacks.length > 0)
       return {
         state: "not_enabled",
-        missing: notEnabled,
+        missing: [...new Set(notEnabledPacks.map((pack) => packPermission(pack) ?? pack))],
         grantFeature: null,
-        enable: audit.packs.filter((pack) => notEnabled.includes(packPermission(pack) ?? "")),
+        enable: notEnabledPacks,
       };
+    const { permissions } = auditDefinition(audit);
+    const granted = new Set(auditReadScope(audit, config.enabledFeatures, session.scopes).granted);
     const missing = permissions.filter((permission) => !granted.has(permission));
     if (missing.length > 0)
       return {
@@ -1236,19 +1241,21 @@ export function createApp(options: AppOptions = {}) {
       });
     const id = audit.definition.id;
     const { client, scopes } = auditGraph(session, handle);
+    const read = auditReadScope(audit, config.enabledFeatures, scopes);
     const definition = auditDefinition(audit);
     // The ledger names what this run will read: required permissions, and optional ones the
-    // session granted (license names, sign-in dates).
+    // session granted for an enabled pack (license names, sign-in dates).
     const datasets = [
       ...definition.permissions,
-      ...definition.optionalPermissions.filter((permission) => scopes.includes(permission)),
+      ...definition.optionalPermissions.filter((permission) => read.granted.includes(permission)),
     ];
     const result = await audits.start({
       tenantId: session.tenantId,
       actor: { id: session.actorId, name: session.displayName ?? null },
       audit,
       client,
-      granted: scopes,
+      packs: read.packs,
+      granted: read.granted,
       beforeRead: (started) =>
         store.appendAudit(session.tenantId, session.actorId, {
           type: "audit.run.started",
@@ -1403,19 +1410,55 @@ export function createApp(options: AppOptions = {}) {
     return auditSettingsSchema.parse(settings);
   });
 
-  // Features with their own route files (routes/). Each checks the session itself.
+  // Features with their own route files (routes/). Each checks the session itself, and gets
+  // nothing that could act as anyone else: see routes/context.ts.
+  const routeGraph = (
+    session: IdentitySession,
+    handle: string,
+    packs: readonly GraphFeatureId[],
+  ) => {
+    const enabled = new Set<string>(config.enabledFeatures);
+    const off = packs.filter((pack) => !enabled.has(pack));
+    if (off.length > 0) throw new RouteBoundaryError(`Read packs not enabled: ${off.join(", ")}.`);
+    const { client, scopes } = auditGraph(session, handle);
+    const carried = new Set<string | null>(packs.map((pack) => packPermission(pack)));
+    return {
+      graph: scopeGraph(client, packs),
+      granted: scopes.filter((scope) => carried.has(scope)),
+    };
+  };
+  const credential = config.identity?.credential ?? null;
   const routes: RouteContext = {
-    config,
+    settings: {
+      mode: config.mode,
+      origin: config.origin,
+      production: config.production,
+      configured: Boolean(config.identity),
+      missingConfiguration: [...config.missingConfiguration],
+      enabledFeatures: [...config.enabledFeatures],
+      credentialKind: !credential
+        ? null
+        : "clientCertificate" in credential
+          ? "certificate"
+          : "secret",
+      certificate: config.certificate ? { ...config.certificate } : null,
+      durableStorage: Boolean(config.databaseUrl || config.moduleDataDir),
+    },
     store,
-    identity,
-    modules,
+    modules: modules
+      ? {
+          registry: modules.registry,
+          database: modules.database,
+          status: () => modules.scheduler.status(),
+        }
+      : null,
     audits,
     sessionFor,
     sessionHandle: (request) => readCookie(request, cookieName),
     enabledPermissions,
-    sessionGraph: auditGraph,
+    sessionGraph: routeGraph,
     auditAvailability,
-    collectingCredential: () => collecting,
+    collectingAdmin: () => (collecting ? { actorId: collecting.actorId } : null),
   };
   registerChangeRoutes(app, routes);
   registerAuditInsightRoutes(app, routes);
