@@ -6,36 +6,47 @@ and tracks Microsoft's own incidents and Message center posts.
 
 ![The Overview of the demo tenant: collection status, a Microsoft incident, and a Message center deadline](docs/images/overview.jpg)
 
-A [clickable demo](docs/DEMO.md) runs every screen on data recorded from the real server against
-an invented company, with no tenant and no backend.
+[Try the demo](https://nullel.github.io/prism365/). It shows every screen on data recorded from
+the real server running against an invented company, with no tenant and no backend
+([how it is made](docs/DEMO.md)).
 
 Prism365 is a personal project I use every day as an IT administrator. It is pre-alpha and
 not affiliated with Microsoft.
 
 ## What it does
 
-**Sign-in monitoring.** Collects every interactive sign-in from Microsoft Graph, learns where
+### Sign-in monitoring
+
+Collects every interactive sign-in from Microsoft Graph, learns where
 and on which devices each account normally signs in, and flags what breaks that: impossible
 travel, password sprays, repeated MFA prompts, a success right after a run of failures. Each
 finding carries its evidence and its limitations.
 
-**People.** One page per account: where they signed in from, with full addresses and devices,
+### People
+
+One page per account: where they signed in from, with full addresses and devices,
 the apps they use, their manager and licenses from the live directory, open findings, and every
 stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator's own browser.
 
-**Audits.** Checks you run when you need them: inactive accounts by days since the last
+### Audits
+
+Checks you run when you need them: inactive accounts by days since the last
 successful sign-in (7, 30, 60, 90, 120, 180 and 365 days, or never), licenses on disabled or
 inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts and
 license capacity. Results are kept, filterable, sortable and exportable as CSV.
 
 ![The license capacity audit: products with no seats left, more assigned than owned, or an expired subscription](docs/images/license-capacity.jpg)
 
-**Service health and notifications.** Microsoft's incidents and advisories for the services the
+### Service health and notifications
+
+Microsoft's incidents and advisories for the services the
 tenant uses, and Message center posts with deadlines, retirements and major changes. Each change
 is tracked as a revision with a plain note, and review state is kept apart from what Microsoft
 says.
 
-**Read-only, always.** The Graph client refuses every write, and every permission Prism365 asks
+### Read-only, always
+
+The Graph client refuses every write, and every permission Prism365 asks
 for is tied to one feature.
 
 ## How it is built

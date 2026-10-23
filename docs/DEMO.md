@@ -117,3 +117,9 @@ recorded output. That is the whole claim, and it should stay true. If a screen n
 real code does not produce, change the invented tenant in `scripts/demo/tenant.ts` so the real
 code produces it. Do not edit the recording by hand. Prism365 does not invent security evidence,
 and the demo does not either: it shows what the product does with a company that never existed.
+
+## Publishing
+
+The demo is published to GitHub Pages from `main` by `.github/workflows/demo.yml`, which builds it
+with `npm run build:demo` whenever the web app or the shared contracts change, and can also be run
+by hand. It is served at https://nullel.github.io/prism365/.
