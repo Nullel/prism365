@@ -89,7 +89,9 @@ export class SetupGraph {
         signal: AbortSignal.timeout(this.#timeout),
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-      if ([429, 503, 504].includes(response.status) && attempt < MAX_RETRIES) {
+      // A POST is never sent twice: Microsoft may have committed one it answered with a 5xx or a
+      // throttle, and a second would create a second object. Callers re-read before retrying.
+      if (method !== "POST" && [429, 503, 504].includes(response.status) && attempt < MAX_RETRIES) {
         const delay = retryDelay(response, attempt);
         await response.body?.cancel();
         if (delay <= MAX_RETRY_WAIT_MILLISECONDS) {
@@ -178,6 +180,12 @@ const requiredResourceAccessSchema = z.object({
   resourceAccess: z.array(resourceAccessSchema).max(1_000),
 });
 
+const redirectsSchema = z
+  .object({ redirectUris: z.array(z.string().max(2_048)).max(1_000).nullable().optional() })
+  .loose()
+  .nullable()
+  .optional();
+
 export const applicationSchema = z.object({
   id: guid,
   appId: guid,
@@ -200,8 +208,30 @@ export const applicationSchema = z.object({
     .nullable()
     .optional(),
   requiredResourceAccess: z.array(requiredResourceAccessSchema).max(1_000).nullable().optional(),
+  // Client secrets: Graph lists their hints and dates, never the values.
+  passwordCredentials: z.array(z.object({}).loose()).max(1_000).nullable().optional(),
+  publicClient: redirectsSchema,
+  spa: redirectsSchema,
+  isFallbackPublicClient: z.boolean().nullable().optional(),
 });
 export type GraphApplication = z.infer<typeof applicationSchema>;
+
+export const directoryObjectListSchema = z.object({
+  value: z.array(z.object({ id: guid })).max(1_000),
+  "@odata.nextLink": z.string().max(16_384).optional(),
+});
+
+export const appRoleAssignmentListSchema = z.object({
+  value: z
+    .array(
+      z.object({
+        id: z.string().max(200),
+        resourceDisplayName: z.string().max(1_024).nullable().optional(),
+      }),
+    )
+    .max(1_000),
+  "@odata.nextLink": z.string().max(16_384).optional(),
+});
 
 export const applicationListSchema = z.object({
   value: z.array(applicationSchema).max(100),

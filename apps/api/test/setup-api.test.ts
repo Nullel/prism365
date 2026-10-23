@@ -25,7 +25,7 @@ import {
 } from "../src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../src/identity.ts";
 import { createModuleRegistry } from "../src/modules.ts";
-import { setupChecks } from "../src/routes/setup.ts";
+import { probePaths, setupChecks } from "../src/routes/setup.ts";
 
 // Starting collection runs the collectors against the same in-memory database the checklist
 // reads, which can take longer than the default five seconds on a busy machine.
@@ -34,6 +34,7 @@ vi.setConfig({ testTimeout: 30_000 });
 // Synthetic tenant and administrator only.
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const actorId = "22222222-2222-4222-8222-222222222222";
+const OTHER_ACTOR = "44444444-4444-4444-8444-444444444444";
 const clientId = "33333333-3333-4333-8333-333333333333";
 const origin = "http://localhost:5173";
 const privateKey = "synthetic-private-key-never-shown";
@@ -102,7 +103,7 @@ const events: string[] = [];
 let answer: (url: URL) => Response = () => Response.json({ value: [] });
 const graphFetch = (async (input: RequestInfo | URL) => {
   const url = new URL(String(input));
-  events.push(`graph ${url.pathname}`);
+  events.push(`graph ${url.pathname}${decodeURIComponent(url.search)}`);
   return answer(url);
 }) as typeof fetch;
 
@@ -163,14 +164,8 @@ const byId = (checks: SetupCheck[], id: string) => checks.find((check) => check.
 describe("GET /v1/setup/status", () => {
   it("tells a caller without a session no more than /v1/session does", async () => {
     const session = (await app.inject({ method: "GET", url: "/v1/session" })).json();
-    for (const url of [
-      "/v1/setup/status",
-      "/v1/setup/status?probe=1",
-      "/%76%31/setup/status",
-      "/api/v1/setup/status",
-    ]) {
-      // No cookie, and a cookie for a session that does not exist (signed out, expired, or an
-      // administrator taken off the list).
+    for (const url of ["/v1/setup/status", "/%76%31/setup/status", "/api/v1/setup/status"]) {
+      // No cookie, and a cookie for a session that does not exist (signed out or expired).
       for (const cookie of [undefined, `prism365_session=${"A".repeat(43)}`]) {
         const response = await app.inject({
           method: "GET",
@@ -188,6 +183,45 @@ describe("GET /v1/setup/status", () => {
       }
     }
     expect(events).toEqual([]);
+  });
+
+  it("tells an administrator taken off the list no more than anyone else", async () => {
+    // A session signed in while the administrator was allowed, then an installation whose list
+    // no longer has them. Its own store: Prism365 deletes such a session when it sees it.
+    const isolated = new MemoryStateStore();
+    const signedIn = await signIn(
+      new IdentityService(identityConfig(features), isolated, provider),
+    );
+    const narrowed = { ...identityConfig(features), allowedActorIds: [OTHER_ACTOR] };
+    const removed = createApp({
+      config: liveConfig({ identity: narrowed }),
+      store: isolated,
+      identity: new IdentityService(narrowed, isolated, provider),
+      graphFetch,
+    });
+    try {
+      const status = await removed.inject({
+        method: "GET",
+        url: "/v1/setup/status",
+        headers: signedIn,
+      });
+      expect(status.json()).toEqual({
+        mode: "live",
+        configured: true,
+        missingConfiguration: [],
+        checks: [],
+        probed: false,
+      });
+      const probe = await removed.inject({
+        method: "POST",
+        url: "/v1/setup/probe",
+        headers: signedIn,
+      });
+      expect(probe.statusCode).toBe(401);
+      expect(events.filter((event) => event.startsWith("graph"))).toEqual([]);
+    } finally {
+      await removed.close();
+    }
   });
 
   it("names the missing settings of an installation nobody can sign in to yet", async () => {
@@ -222,7 +256,8 @@ describe("GET /v1/setup/status", () => {
       "certificate",
       "signin",
       ...features.map((feature) => `feature.${feature}`),
-      "storage",
+      "storage.sessions",
+      "storage.data",
       "collection",
       ...builtInAudits.map((audit) => `audit.${audit.definition.id}`),
     ]);
@@ -236,7 +271,8 @@ describe("GET /v1/setup/status", () => {
       state: "warn",
       grantFeature: "reports.settings.read",
     });
-    expect(byId(result.checks, "storage")?.state).toBe("warn");
+    expect(byId(result.checks, "storage.sessions")?.state).toBe("warn");
+    expect(byId(result.checks, "storage.data")?.state).toBe("warn");
     expect(byId(result.checks, "collection")?.state).toBe("fail");
     expect(byId(result.checks, "audit.guests.review")).toMatchObject({
       state: "warn",
@@ -290,21 +326,23 @@ describe("GET /v1/setup/status", () => {
     await app.inject({ method: "POST", url: "/v1/collection/stop", headers });
   });
 
-  it("probes each granted pack after writing the ledger, and explains a refusal", async () => {
+  it("probes each granted pack after writing the ledger, minimally, and explains a refusal", async () => {
     answer = (url) =>
       url.pathname === "/v1.0/auditLogs/signIns"
         ? new Response("{}", { status: 403, headers: { "request-id": "synthetic-request" } })
         : url.pathname === "/v1.0/admin/serviceAnnouncement/healthOverviews"
           ? new Response("{}", { status: 500 })
           : Response.json({ value: [] });
-    const { status: result } = await status("/v1/setup/status?probe=1");
+    const response = await app.inject({ method: "POST", url: "/v1/setup/probe", headers });
+    expect(response.statusCode, response.body).toBe(200);
+    const result = setupStatusSchema.parse(response.json());
     expect(result.probed).toBe(true);
     // One ledger entry, before any read, naming only the packs the session granted.
     expect(events[0]).toBe("ledger setup.probed");
     expect(events.slice(1).sort()).toEqual([
-      "graph /v1.0/admin/serviceAnnouncement/healthOverviews",
-      "graph /v1.0/auditLogs/signIns",
-      "graph /v1.0/users",
+      "graph /v1.0/admin/serviceAnnouncement/healthOverviews?$select=id",
+      "graph /v1.0/auditLogs/signIns?$top=1",
+      "graph /v1.0/users?$top=1&$select=id",
     ]);
     const entry = store.audit.findLast((item) => item.event.type === "setup.probed");
     expect(entry?.event).toEqual({
@@ -327,17 +365,24 @@ describe("GET /v1/setup/status", () => {
     expect(byId(result.checks, "feature.reports.settings.read")?.state).toBe("warn");
   });
 
+  it("makes every probe minimal, and never reads the per-person usage report", async () => {
+    for (const [feature, path] of Object.entries(probePaths)) {
+      const url = new URL(path({ actorId } as never), "https://graph.microsoft.com/v1.0/");
+      const top = url.searchParams.get("$top");
+      const filter = url.searchParams.get("$filter");
+      expect(top === "1" || filter !== null || !url.search.includes("$top"), feature).toBe(true);
+      expect(url.searchParams.has("$expand"), feature).toBe(false);
+    }
+    expect(probePaths["reports.usage.read"]).toBeUndefined();
+  });
+
   it("reads nothing when the ledger entry cannot be written", async () => {
     const append = store.appendAudit;
     store.appendAudit = async () => {
       throw new Error("ledger unavailable");
     };
     try {
-      const response = await app.inject({
-        method: "GET",
-        url: "/v1/setup/status?probe=1",
-        headers,
-      });
+      const response = await app.inject({ method: "POST", url: "/v1/setup/probe", headers });
       expect(response.statusCode).toBe(500);
       expect(events.filter((event) => event.startsWith("graph"))).toEqual([]);
     } finally {
@@ -345,13 +390,18 @@ describe("GET /v1/setup/status", () => {
     }
   });
 
-  it("refuses an unknown probe value", async () => {
-    const response = await app.inject({
-      method: "GET",
-      url: "/v1/setup/status?probe=yes",
-      headers,
-    });
-    expect(response.statusCode).toBe(400);
+  it("keeps the status read-only and the probe behind the CSRF check", async () => {
+    // A link, an image or a top-level navigation is a GET: it can never reach Microsoft.
+    for (const url of ["/v1/setup/status?probe=1", "/v1/setup/status?x=1"]) {
+      const response = await app.inject({ method: "GET", url, headers });
+      expect(response.statusCode, url).toBe(400);
+    }
+    const { cookie } = headers;
+    for (const sent of [{ cookie }, { cookie, origin }, { cookie, "x-csrf-token": "wrong" }]) {
+      const response = await app.inject({ method: "POST", url: "/v1/setup/probe", headers: sent });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(events).toEqual([]);
   });
 });
 
@@ -416,6 +466,34 @@ describe("certificate expiry", () => {
     expect(valid).toMatchObject({ state: "ok", title: "The certificate is valid" });
   }, 30_000);
 
+  it("tells sessions and collected data apart: PRISM_DATA_DIR keeps only the data", () => {
+    const checks = setupChecks({
+      settings: {
+        mode: "live",
+        origin,
+        production: false,
+        configured: true,
+        missingConfiguration: [],
+        enabledFeatures: [],
+        credentialKind: "certificate",
+        certificate: null,
+        durableStorage: true,
+        durableSessions: false,
+      },
+      moduleDataDurable: true,
+      now: new Date(),
+      granted: new Set(),
+      probes: null,
+      collection: null,
+      audits: null,
+    });
+    expect(byId(checks, "storage.sessions")).toMatchObject({ state: "warn" });
+    expect(byId(checks, "storage.sessions")?.detail).toContain(
+      "PRISM_DATA_DIR does not change that",
+    );
+    expect(byId(checks, "storage.data")).toMatchObject({ state: "ok" });
+  });
+
   it("warns about a client secret and leaves the certificate check out", () => {
     const checks = setupChecks({
       settings: {
@@ -428,7 +506,9 @@ describe("certificate expiry", () => {
         credentialKind: "secret",
         certificate: null,
         durableStorage: true,
+        durableSessions: true,
       },
+      moduleDataDurable: null,
       now: new Date(),
       granted: new Set(),
       probes: null,
@@ -437,7 +517,8 @@ describe("certificate expiry", () => {
     });
     expect(byId(checks, "credential")).toMatchObject({ state: "warn" });
     expect(byId(checks, "certificate")).toBeUndefined();
-    expect(byId(checks, "storage")?.state).toBe("ok");
+    expect(byId(checks, "storage.sessions")?.state).toBe("ok");
+    expect(byId(checks, "storage.data")).toBeUndefined();
     expect(byId(checks, "collection")?.state).toBe("unknown");
     expect(byId(checks, "audits")?.state).toBe("unknown");
   });

@@ -1,66 +1,14 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { certificateRequest, newCredential } from "../certificate.ts";
 import { KeyCredentialSafetyError } from "../key-credentials.ts";
-import type { SetupOptions } from "../options.ts";
 import { GRAPH_RESOURCE_APP_ID } from "../permissions.ts";
 import { SETUP_TAG } from "../plan.ts";
-import { runSetup, SetupError } from "../setup.ts";
-import {
-  ADMIN_ID,
-  error,
-  FakeTenant,
-  OTHER_API,
-  roleIds,
-  scopeIds,
-  TENANT_ID,
-} from "./fake-graph.ts";
-
-const envExample = join(import.meta.dirname, "../../../.env.example");
-const directories: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-});
-
-async function workspace() {
-  const dir = await mkdtemp(join(tmpdir(), "prism365-setup-"));
-  directories.push(dir);
-  return dir;
-}
-
-function optionsFor(dir: string, overrides: Partial<SetupOptions> = {}): SetupOptions {
-  return {
-    tenant: "contoso.example",
-    name: "Prism365",
-    origin: "https://localhost:8443",
-    redirectUris: ["https://localhost:8443/api/v1/auth/callback"],
-    features: ["directory.users.read", "user.licenses.read", "audit.signins.read"],
-    secretsDir: join(dir, "secrets"),
-    envFile: join(dir, ".env"),
-    appId: null,
-    yes: true,
-    dryRun: false,
-    rotateCertificate: false,
-    prunePermissions: false,
-    ...overrides,
-  };
-}
-
-function run(tenant: FakeTenant, options: SetupOptions, dir: string, output: string[] = []) {
-  return runSetup(options, {
-    fetch: tenant.fetch,
-    signIn: async () => ({ tenantId: TENANT_ID, getToken: async () => "synthetic-token" }),
-    confirm: async () => true,
-    print: (text) => output.push(text),
-    envExample,
-    cwd: dir,
-    sleep: async () => {},
-  });
-}
+import { CLI_TOOLS_REMINDER, runSetup, SetupError } from "../setup.ts";
+import { ADMIN_ID, error, FakeTenant, OTHER_API, scopeIds, TENANT_ID } from "./fake-graph.ts";
+import { envExample, optionsFor, run, workspace } from "./harness.ts";
 
 const mode = async (path: string) => (await stat(path)).mode & 0o777;
 const graphScopes = (tenant: FakeTenant) =>
@@ -145,6 +93,7 @@ describe("npm run setup against a fake tenant", () => {
     );
     expect(printed).toContain("scripts/docker-live.sh init");
     expect(printed).toContain("Prism365 itself only reads.");
+    expect(printed).toContain(CLI_TOOLS_REMINDER);
     expect(printed).not.toContain("synthetic-token");
     expect(tenant.tokens.every((header) => header === "Bearer synthetic-token")).toBe(true);
   });
@@ -176,7 +125,7 @@ describe("npm run setup against a fake tenant", () => {
     expect(output.join("\n")).toContain("already in place");
   });
 
-  it("updates a registration found by its tag without removing anything on it", async () => {
+  it("updates a registration you own found by its tag, keeping what you chose to keep", async () => {
     const dir = await workspace();
     const tenant = new FakeTenant();
     const otherCertificate = new X509Certificate(
@@ -194,7 +143,7 @@ describe("npm run setup against a fake tenant", () => {
     };
     const otherPermissions = {
       resourceAppId: OTHER_API,
-      resourceAccess: [{ id: "55555555-5555-4555-8555-555555555555", type: "Role" }],
+      resourceAccess: [{ id: "55555555-5555-4555-8555-555555555555", type: "Scope" }],
     };
     const seeded = tenant.application({
       displayName: "Renamed by the operator",
@@ -216,14 +165,19 @@ describe("npm run setup against a fake tenant", () => {
       ],
       keyCredentials: [existingKey],
     });
-    tenant.servicePrincipals.push({
-      id: "66666666-6666-4666-8666-666666666666",
-      appId: seeded.appId,
-      tags: [],
-    });
+    tenant.servicePrincipal(seeded.appId);
 
-    expect(await run(tenant, optionsFor(dir, { features: ["audit.signins.read"] }), dir)).toBe(
-      "applied",
+    const options = optionsFor(dir, {
+      features: ["audit.signins.read"],
+      keepOtherPermissions: true,
+      keepOtherRedirectUris: true,
+      keepOtherCertificates: true,
+    });
+    const output: string[] = [];
+    expect(await run(tenant, options, dir, output)).toBe("applied");
+    expect(output[0]).toContain("The setup checked that you own it");
+    expect(output[0]).toContain(
+      "You chose to keep them, so the admin consent link grants them too.",
     );
     expect(tenant.applications).toHaveLength(1);
     expect(tenant.writes.map((request) => request.method)).toEqual(["PATCH", "PATCH"]);
@@ -267,10 +221,10 @@ describe("npm run setup against a fake tenant", () => {
       requiredResourceAccess: [
         {
           resourceAppId: GRAPH_RESOURCE_APP_ID,
-          resourceAccess: [
-            scope("Mail.Read"),
-            { id: roleIds.get("Directory.Read.All") ?? "", type: "Role" },
-          ] as { id: string; type: string }[],
+          resourceAccess: [scope("Mail.Read"), scope("User.Read")] as {
+            id: string;
+            type: string;
+          }[],
         },
         {
           resourceAppId: OTHER_API,
@@ -286,7 +240,7 @@ describe("npm run setup against a fake tenant", () => {
       output,
     );
     expect(output[0]).toContain(
-      `remove Mail.Read, Directory.Read.All (application permission) and a permission of another API (${OTHER_API}) (--prune-permissions)`,
+      `remove Mail.Read and a delegated permission of another API (${OTHER_API}) (--prune-permissions)`,
     );
     expect(seeded.requiredResourceAccess).toEqual([
       {
@@ -440,7 +394,9 @@ describe("npm run setup against a fake tenant", () => {
       ],
     });
     tenant.dropOnPatch = [keyId];
-    const failure = await run(tenant, optionsFor(dir), dir).catch((caught: unknown) => caught);
+    const failure = await run(tenant, optionsFor(dir, { keepOtherCertificates: true }), dir).catch(
+      (caught: unknown) => caught,
+    );
     expect(failure).toBeInstanceOf(KeyCredentialSafetyError);
     expect((failure as Error).message).toContain(keyId);
   });

@@ -69,15 +69,25 @@ in with a device code through Microsoft's public client for the Microsoft Graph 
 tools (`14d82eec-204b-4c2f-b7e8-296a70dab67e`), asking for delegated `Application.ReadWrite.All`
 and `User.Read`, and keeps the token in memory only. With it, it creates or updates Prism365's
 own registration and service principal and adds a certificate. It never grants consent to that
-registration, never creates a secret, and never asks for an application permission.
+registration, never creates a secret, and never asks for an application permission. It adopts
+an existing registration only when the signed-in administrator owns it and it has no client
+secret, no application permission, no other sign-in platform, and nothing else the consent link
+would grant beyond Prism365's own permissions unless the administrator chose to keep it.
+
 That `Application.ReadWrite.All` is the one exception to the rule below against `*.ReadWrite.*`
-permissions: it belongs to Microsoft's tool, for the length of one setup run, and is never on
-Prism365's registration or held by the running app.
+permissions. It is never on Prism365's registration or held by the running app, but the consent
+for it does not end with the run: Microsoft keeps it for the command line tools until it is
+revoked. Consent for yourself only (leave Consent on behalf of your organization unticked, which
+would let every account in the tenant use the tool with it), and revoke it once setup is done
+([Setup](SETUP.md#revoke-the-setups-access) has the steps). The setup prints that reminder at
+the end of every run.
 
 The registration it makes requests, as delegated Microsoft Graph permissions, `openid`,
 `profile`, `offline_access` and `User.Read` for sign-in (MSAL asks for the first three on every
 sign-in, and `offline_access` is what keeps a session and collection going), plus the permission
-of each pack in its feature list. The runtime still uses only the packs in
+of each pack in its feature list. By default that list is the core packs; the consent-batch
+packs are added only when named or with `--features all`, and `directory.permission-grants.read`
+(`Directory.Read.All`) only when named. The runtime still uses only the packs in
 `ENABLED_READ_FEATURES`.
 
 ## Not approved for the MVP

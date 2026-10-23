@@ -1,12 +1,10 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { builtInAudits } from "@prism365/audits";
 import {
   isUuid,
   type SupportedReadFeature,
   supportedReadFeatures,
 } from "../../apps/api/src/config.ts";
-import { createModuleRegistry } from "../../apps/api/src/modules.ts";
 
 export const DEFAULT_ORIGIN = "https://localhost:8443";
 export const DEV_ORIGIN = "http://localhost:5173";
@@ -25,6 +23,10 @@ export interface SetupOptions {
   dryRun: boolean;
   rotateCertificate: boolean;
   prunePermissions: boolean;
+  // Keep what an existing registration has beyond what Prism365 asks for, after reading the plan.
+  keepOtherPermissions: boolean;
+  keepOtherRedirectUris: boolean;
+  keepOtherCertificates: boolean;
 }
 
 export class UsageError extends Error {
@@ -39,34 +41,49 @@ export const usage = `Usage: npm run setup -- --tenant <tenant ID or domain> [op
 Registers Prism365 in your Microsoft Entra tenant, creates its certificate and writes .env.
 It shows its plan and asks before changing anything.
 
-  --tenant <id or domain>   The tenant to set up (required)
-  --name <display name>     Name of the app registration (default Prism365)
-  --origin <origin>         Where Prism365 runs (default ${DEFAULT_ORIGIN})
-  --dev                     Also allow sign-in from the development server (${DEV_ORIGIN})
-  --features <list>         Comma-separated read packs (default: what the audits and modules use)
-  --app-id <app ID>         Use this registration when several could match
-  --secrets-dir <dir>       Where the certificate goes (default ./secrets)
-  --env-file <file>         The settings file to write (default .env)
-  --rotate-certificate      Make a new certificate even if one exists
-  --prune-permissions       Remove permissions on the registration that Prism365 does not use
-  --dry-run                 Sign in, read and show the plan, then stop without changing anything
-  --yes                     Apply the plan without asking
-  --help                    Show this text`;
+  --tenant <id or domain>     The tenant to set up (required)
+  --name <display name>       Name of the app registration (default Prism365)
+  --origin <origin>           Where Prism365 runs (default ${DEFAULT_ORIGIN})
+  --dev                       Also allow sign-in from the development server (${DEV_ORIGIN})
+  --features <list>           Comma-separated read packs, or "all" (default: the core packs)
+  --app-id <app ID>           Use this registration when several match or only its name does
+  --secrets-dir <dir>         Where the certificate goes (default ./secrets)
+  --env-file <file>           The settings file to write (default .env)
+  --rotate-certificate        Make a new certificate even if one exists
+  --prune-permissions         Remove delegated permissions Prism365 does not use
+  --keep-other-permissions    Keep them instead (the consent link grants them too)
+  --keep-other-redirect-uris  Keep redirect URIs outside --origin
+  --keep-other-certificates   Keep certificates this setup did not make
+  --dry-run                   Sign in, read and show the plan, then stop without changing anything
+  --yes                       Apply the plan without asking
+  --help                      Show this text`;
 
-// What the People page and investigations read (profiles, licence details, sign-ins), plus every
-// pack a built-in audit or module uses, in the order the API lists them.
+// The core packs: what the People page, the audits, the sign-in audit, the change feed, service
+// health and Message center read. Each is a read permission most administrators already expect a
+// reporting tool to have. The consent-batch packs (Conditional Access, risk, devices, app
+// consents, usage reports) are asked for only when named, or with "all".
+export const CORE_FEATURES = [
+  "directory.users.read",
+  "user.licenses.read",
+  "tenant.licenses.read",
+  "audit.signins.read",
+  "audit.directory.read",
+  "reports.authentication-methods.read",
+  "service.health.read",
+  "service.messages.read",
+] as const satisfies readonly SupportedReadFeature[];
+
+// directory.permission-grants.read is Directory.Read.All, which reads the whole directory, so even
+// "all" leaves it out unless it is named too.
+export const NAMED_ONLY_FEATURES: readonly SupportedReadFeature[] = [
+  "directory.permission-grants.read",
+];
+
+// In the API's order, so the same list always reads the same way.
 export function defaultFeatures(): SupportedReadFeature[] {
-  const wanted = new Set<string>([
-    "directory.users.read",
-    "user.licenses.read",
-    "audit.signins.read",
-  ]);
-  for (const audit of builtInAudits)
-    for (const pack of [...audit.packs, ...audit.optionalPacks]) wanted.add(pack);
-  for (const module of createModuleRegistry().list())
-    for (const pack of module.packs) wanted.add(pack);
+  const core = new Set<string>(CORE_FEATURES);
   return (Object.keys(supportedReadFeatures) as SupportedReadFeature[]).filter((feature) =>
-    wanted.has(feature),
+    core.has(feature),
   );
 }
 
@@ -107,13 +124,18 @@ export function parseFeatures(value: string): SupportedReadFeature[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-  const unknown = names.filter((name) => !(name in supportedReadFeatures));
+  const unknown = names.filter((name) => name !== "all" && !(name in supportedReadFeatures));
   if (unknown.length > 0)
     throw new UsageError(
-      `Unknown read pack: ${unknown.join(", ")}. Choose from ${Object.keys(supportedReadFeatures).join(", ")}.`,
+      `Unknown read pack: ${unknown.join(", ")}. Choose from all, ${Object.keys(supportedReadFeatures).join(", ")}.`,
     );
   if (names.length === 0) throw new UsageError("--features needs at least one read pack.");
-  return [...new Set(names)] as SupportedReadFeature[];
+  const wanted = new Set(names);
+  // In the API's order, so the same list always reads the same way.
+  return (Object.keys(supportedReadFeatures) as SupportedReadFeature[]).filter(
+    (feature) =>
+      wanted.has(feature) || (wanted.has("all") && !NAMED_ONLY_FEATURES.includes(feature)),
+  );
 }
 
 export function parseOptions(argv: string[], cwd: string): SetupOptions | "help" {
@@ -132,6 +154,8 @@ export function parseOptions(argv: string[], cwd: string): SetupOptions | "help"
   const origin = parseOrigin(values.origin ?? DEFAULT_ORIGIN);
   const redirectUris = [`${origin}${CALLBACK_PATH}`];
   if (values.dev && origin !== DEV_ORIGIN) redirectUris.push(`${DEV_ORIGIN}${CALLBACK_PATH}`);
+  if (values["prune-permissions"] && values["keep-other-permissions"])
+    throw new UsageError("Choose --prune-permissions or --keep-other-permissions, not both.");
   const appId = values["app-id"]?.trim().toLowerCase() ?? null;
   if (appId !== null && !isUuid(appId))
     throw new UsageError("--app-id must be the registration's application (client) ID.");
@@ -148,6 +172,9 @@ export function parseOptions(argv: string[], cwd: string): SetupOptions | "help"
     dryRun: Boolean(values["dry-run"]),
     rotateCertificate: Boolean(values["rotate-certificate"]),
     prunePermissions: Boolean(values["prune-permissions"]),
+    keepOtherPermissions: Boolean(values["keep-other-permissions"]),
+    keepOtherRedirectUris: Boolean(values["keep-other-redirect-uris"]),
+    keepOtherCertificates: Boolean(values["keep-other-certificates"]),
   };
 }
 
@@ -167,6 +194,9 @@ function read(argv: string[]) {
       "env-file": { type: "string" },
       "rotate-certificate": { type: "boolean" },
       "prune-permissions": { type: "boolean" },
+      "keep-other-permissions": { type: "boolean" },
+      "keep-other-redirect-uris": { type: "boolean" },
+      "keep-other-certificates": { type: "boolean" },
       "dry-run": { type: "boolean" },
       yes: { type: "boolean" },
       help: { type: "boolean" },

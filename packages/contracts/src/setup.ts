@@ -27,9 +27,11 @@ export const setupStatusSchema = z.object({
   configured: z.boolean(),
   missingConfiguration: z.array(z.string().max(200)).max(20),
   checks: z.array(setupCheckSchema).max(100),
-  // True when this answer includes a test read of each granted pack (?probe=1).
+  // True when this answer includes a test read of each granted pack (POST /v1/setup/probe).
   probed: z.boolean(),
 });
 export type SetupStatus = z.infer<typeof setupStatusSchema>;
 
-export const setupStatusQuerySchema = z.object({ probe: z.enum(["0", "1"]).optional() });
+// GET /v1/setup/status takes no options, and POST /v1/setup/probe no body.
+export const setupStatusQuerySchema = z.object({}).strict();
+export const setupProbeBodySchema = z.object({}).strict();

@@ -26,18 +26,21 @@ Global Administrator).
    It prints a device code and a sign-in address; sign in there with the administrator
    account. It signs in through Microsoft's own public client for the Microsoft Graph command
    line tools and asks for `Application.ReadWrite.All` and `User.Read`, so the first time
-   Microsoft may ask you to consent to that tool. The token stays in memory and is never
-   written to disk.
+   Microsoft asks you to consent to that tool. Consent for yourself only: leave Consent on
+   behalf of your organization unticked, or every account in the tenant could use the tool with
+   that permission. Microsoft keeps the consent after the run; see
+   [Revoke the setup's access](#revoke-the-setups-access). The token itself stays in memory and
+   is never written to disk.
 
 2. Read the plan it prints, and type `yes` to apply it. It then:
 
-   - registers a single-tenant web app (tagged `prism365-setup`, implicit grant off) with the
-     redirect URI `https://localhost:8443/api/v1/auth/callback` and the delegated Microsoft
-     Graph permissions the chosen features need, and creates its service principal;
-   - makes an RSA 2048 key and a self-signed certificate valid for 365 days, writes
+   - registers a single-tenant web app (tagged `prism365-setup`, implicit grant off, with you as
+     its owner) with the redirect URI `https://localhost:8443/api/v1/auth/callback` and the
+     delegated Microsoft Graph permissions the chosen features need, and creates its service
+     principal;
+   - makes an RSA 2048 key and a self-signed certificate valid for one year, writes
      `secrets/entra-private.pem` (readable only by you, in a folder only you can open) and
-     `secrets/entra-public.pem`, and adds the certificate to the registration, keeping every
-     certificate already there;
+     `secrets/entra-public.pem`, and adds the certificate to the registration;
    - creates `.env` from `.env.example`, or changes only the settings it manages in an existing
      one: `DATA_MODE`, `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_ADMIN_OBJECT_IDS` (your
      account is added, others stay), `ENABLED_READ_FEATURES`, `PUBLIC_ORIGIN`,
@@ -57,10 +60,28 @@ Global Administrator).
 5. Open `https://localhost:8443`, sign in, and look at the setup checklist on the Microsoft
    access page.
 
-The setup never grants consent, never creates a client secret, never asks for an application
-permission, and never removes a permission or a certificate it did not add, unless you ask with
-`--prune-permissions`. It is the only part of the project that changes anything in Microsoft;
-Prism365 itself only reads.
+6. Revoke the access you gave the Microsoft Graph command line tools (see below).
+
+The setup never grants consent to Prism365's registration, never creates a client secret, never
+asks for an application permission, and never removes a permission or a certificate unless you
+ask (`--prune-permissions` for permissions). It is the only part of the project that changes
+anything in Microsoft; Prism365 itself only reads.
+
+### Which permissions it asks for
+
+By default the registration asks for the core packs only: `directory.users.read`,
+`user.licenses.read`, `tenant.licenses.read`, `audit.signins.read`, `audit.directory.read`,
+`reports.authentication-methods.read`, `service.health.read` and `service.messages.read`. They
+are what the People page, the audits, the sign-in audit, the change feed, service health and
+Message center read, and each is a read permission a reporting tool is expected to hold.
+
+The other packs (Conditional Access, risky users, Intune devices, enterprise applications, usage
+reports and the usage-report privacy setting) reach further into the tenant, and the admin
+consent link grants whatever the registration asks for. So they are asked for only when you
+name them, as in `--features directory.users.read,identity.risk.read`, or with `--features all`.
+Even `all` leaves out `directory.permission-grants.read`, because its permission,
+`Directory.Read.All`, reads the whole directory; name it as well if you want delegated consents
+shown (`--features all,directory.permission-grants.read`).
 
 ### Setup options
 
@@ -72,36 +93,68 @@ Pass them after `--`, as in `npm run setup -- --tenant contoso.onmicrosoft.com -
 | `--name <display name>` | The registration's name. Default `Prism365`. |
 | `--origin <origin>` | Where Prism365 runs. Default `https://localhost:8443`, the Docker install. The redirect URI is this origin plus `/api/v1/auth/callback`, and it becomes `PUBLIC_ORIGIN`. |
 | `--dev` | Also registers the development server's redirect URI, `http://localhost:5173/api/v1/auth/callback`. |
-| `--features <list>` | Comma-separated read packs to enable. Default: the packs the audits and modules use, plus the ones the People page reads. See the table below. |
-| `--app-id <application ID>` | The registration to use when several match. |
+| `--features <list>` | Comma-separated read packs to enable, or `all`. Default: the core packs above. |
+| `--app-id <application ID>` | The registration to use: when several match, or when the only match is by name. |
 | `--secrets-dir <dir>` | Where the certificate goes. Default `./secrets`. |
 | `--env-file <file>` | The settings file to write. Default `.env`. |
 | `--rotate-certificate` | Makes a new key and certificate even when a pair exists. |
-| `--prune-permissions` | Removes permissions on the registration that the chosen features do not use. |
+| `--prune-permissions` | Removes delegated permissions on an existing registration that the chosen features do not use. |
+| `--keep-other-permissions` | Keeps those delegated permissions instead. The admin consent link then grants them too. |
+| `--keep-other-redirect-uris` | Keeps redirect URIs outside the chosen origins on an existing registration. |
+| `--keep-other-certificates` | Keeps certificates this setup did not make on an existing registration. |
 | `--dry-run` | Signs in, reads, prints the plan and stops. Nothing is written anywhere. |
 | `--yes` | Applies the plan without asking. |
 
-### Running it again
+### Running it again, and existing registrations
 
 Every step checks what is already there first, so running the setup again is safe and finishes
-a run that stopped halfway. It finds its registration by the `prism365-setup` tag, then by its
-exact name; if several match, it stops and asks for `--app-id`. On an existing registration it
-adds missing redirect URIs, permissions and the tag, and leaves everything else as it is. A
-second run on a finished install changes nothing.
+a run that stopped halfway. A second run on a finished install changes nothing.
 
-The certificate's private key is never overwritten without `--rotate-certificate`. If the key
-exists without its certificate, the setup makes a certificate for that same key. If the two
-files do not belong together, or the certificate has expired, it stops and says so.
+It looks for registrations tagged `prism365-setup` that you own. The tag is only a search aid:
+anyone allowed to register apps can put it on theirs, so a tagged registration someone else
+owns is left alone, named in the plan, and the setup makes your own. If no tagged registration
+of yours exists but one has the same name, it stops and asks you to pass `--app-id` for it, or
+a different `--name`. A create that Microsoft answers with an error or not at all may still
+have happened, so before trying again the setup looks for it, and never makes two.
 
-Adding a certificate to a registration replaces the registration's whole certificate list, so
-the setup reads the list with every key, sends each one back unchanged with the new one, and
-checks afterwards that every certificate from before is still there. If Microsoft does not
-return a key in full, it stops without changing anything.
+Before it changes an existing registration, it checks that you own it, and stops without
+changing anything if the registration:
+
+- has a client secret (anyone holding it could sign in as Prism365);
+- allows sign-in from mobile, desktop or single-page applications, or public client flows;
+- asks for, or has been granted, any application permission;
+- asks for delegated permissions Prism365 does not use, unless you pass `--prune-permissions`
+  or `--keep-other-permissions`;
+- sends sign-ins to an address outside the chosen origins, unless you pass
+  `--keep-other-redirect-uris`;
+- has a certificate this setup did not make, unless you pass `--keep-other-certificates`.
+
+The first three have no option on purpose: remove them in the Entra admin center first. When
+it updates a registration, the plan names each property it sends; nothing else on the
+registration changes.
+
+The certificate's private key is never overwritten. If the key exists without its certificate,
+the setup makes a certificate for that same key. If the two files do not belong together, the
+key is not RSA 2048 or larger, or the certificate has expired, it stops before changing anything
+and says so.
+
+Adding a certificate to a registration replaces the registration's whole certificate list.
+The setup reads the list again right before the update and stops if it differs from the list
+the plan was made from, sends every existing certificate back unchanged with the new one, and
+reads the list afterwards to check that each certificate it had just before is still there. If
+Microsoft does not return a key in full, it stops without changing anything. Nobody should add
+or remove the registration's certificates in the admin center while the setup runs: a change in
+the moment between its last read and its update cannot be seen. (Microsoft's `addKey` would add
+a certificate without replacing the list, but it needs proof signed by a certificate already on
+the registration, which a first certificate cannot have, so the setup uses the update and these
+checks for every case.)
 
 ### Rotating the certificate
 
-The certificate lasts 365 days, the longest Microsoft accepts through its API. The setup
-checklist warns 30 days before it expires. To replace it:
+The certificate lasts one year: Microsoft accepts a certificate credential for at most a year
+from its start date when it is added through Microsoft Graph
+([Add a certificate to an app](https://learn.microsoft.com/en-us/graph/applications-how-to-add-certificate)).
+The setup checklist warns 30 days before it expires. To replace it:
 
 ```bash
 npm run setup -- --tenant contoso.onmicrosoft.com --rotate-certificate
@@ -109,8 +162,52 @@ scripts/docker-live.sh down
 scripts/docker-live.sh up
 ```
 
+The new pair is written as `secrets/entra-private.new.pem` and `secrets/entra-public.new.pem`
+and added to the registration first. Only once Microsoft has it does the setup move it into
+place, keeping the old pair as `secrets/entra-private.previous.pem` and
+`secrets/entra-public.previous.pem`. If anything fails before then, the working pair is
+untouched and Prism365 keeps signing in with it. If the move itself is interrupted, the next run
+finishes it.
+
 The old certificate stays on the registration until you remove it under Certificates and
-secrets in the Entra admin center.
+secrets in the Entra admin center. Once Prism365 signs in with the new one, remove the old
+certificate there and delete the two `.previous` files; the setup will not rotate again while
+they are there.
+
+### File permissions on Windows
+
+Windows has no file modes: the folder's access control list decides who can read the key, and
+the setup leaves it as it is. Limit the secrets folder, and the files in it, to your account:
+
+```powershell
+icacls secrets /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F"
+```
+
+### Revoke the setup's access
+
+The setup signs in through the Microsoft Graph command line tools, and Microsoft keeps the
+`Application.ReadWrite.All` consent you gave that tool after the run ends. Once setup is done,
+remove it:
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com), open Entra ID, then
+   Enterprise apps, then All applications, and select Microsoft Graph Command Line Tools.
+2. Open Permissions. If you consented on behalf of your organization, the Admin consent tab
+   lists `Application.ReadWrite.All`: choose it, select the menu next to it, and choose Revoke
+   permission.
+3. A consent for yourself only is on the User consent tab, which the admin center cannot
+   revoke. Remove it with Microsoft Graph, for example in Graph Explorer signed in as a Cloud
+   Application Administrator:
+   `GET https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq '14d82eec-204b-4c2f-b7e8-296a70dab67e'&$select=id`
+   gives the tool's ID; then
+   `GET https://graph.microsoft.com/v1.0/oauth2PermissionGrants?$filter=clientId eq '<that ID>' and principalId eq '<your object ID>'`
+   lists your grant, and `DELETE https://graph.microsoft.com/v1.0/oauth2PermissionGrants/<grant ID>`
+   removes it.
+4. Open Users and groups and remove your own assignment if you are listed. That alone does not
+   remove the consent, which is why step 3 matters.
+
+Microsoft documents these steps in
+[Review permissions granted to enterprise applications](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-permissions).
+The setup prints a reminder at the end of every run.
 
 ## The setup checklist
 
@@ -124,13 +221,17 @@ installation is configured, and which settings are missing. Signed in, it checks
   under 30 days and fails once expired; the private key is never read for this);
 - you are signed in and on `ENTRA_ADMIN_OBJECT_IDS`;
 - each enabled read pack has been granted by your session, with its consent link when not;
-- sessions and collected data survive restarts;
+- sessions and the access ledger survive restarts (only with PostgreSQL: `DATABASE_URL` and
+  `STATE_ENCRYPTION_KEY`), and so does collected data (PostgreSQL, or `PRISM_DATA_DIR`);
 - collection is running, or will resume;
 - each audit has run at least once.
 
-Check with Microsoft makes one small read per granted pack (one item, and only its ID where
-the endpoint allows) and shows Microsoft's answer. It writes a `setup.probed` entry naming the
-packs to the access ledger before it reads. When Microsoft refuses a read even though the
+Loading the checklist only reads what Prism365 has stored. Check with Microsoft (a separate
+request that carries the session's CSRF value, so no link or other site can trigger it) makes
+one small read per granted pack: one item and only its ID where the endpoint allows it, a
+filter that matches nothing where it allows only filters. It writes a `setup.probed` entry naming
+the packs to the access ledger before it reads. The usage report lists every person, so it is
+not read here; it is checked when its audit runs. When Microsoft refuses a read even though the
 permission is granted, the check names the roles that pack needs.
 
 ## Manual setup
@@ -163,7 +264,7 @@ permissions. Then choose Grant admin consent, or use the consent link
 ### 3. Make the certificate
 
 Create a folder only you can open, a 2048-bit RSA key and a self-signed certificate valid for
-365 days. The key must be a PEM file that starts with `-----BEGIN PRIVATE KEY-----`.
+one year (365 days). The key must be a PEM file that starts with `-----BEGIN PRIVATE KEY-----`.
 
 On macOS and Linux, with OpenSSL (or the LibreSSL that ships with macOS):
 
@@ -236,8 +337,8 @@ Run `scripts/docker-live.sh init` and `scripts/docker-live.sh up` (see
 Each read pack in `ENABLED_READ_FEATURES` needs its delegated Microsoft Graph permission with
 admin consent, and the signed-in administrator needs a role Microsoft accepts for it. Several
 packs share a permission; Prism365 still only uses a pack you enabled (see
-[Permissions](PERMISSIONS.md)). The source of truth is `packages/graph/src/permissions.ts`, and
-a test keeps this table in step with it.
+[Permissions](PERMISSIONS.md)). The source of truth is `packages/graph/src/permissions.ts`: a test checks the permission column
+against it, and the role and licence columns summarise the notes kept there.
 
 | Feature | Delegated permission | Role Microsoft also requires | Licence and limits |
 |---|---|---|---|
@@ -363,7 +464,8 @@ Audits, in the sidebar under Audit, runs point-in-time checks when you press Run
 accounts by days since last sign-in, licenses to reclaim, MFA registration, guest accounts,
 license capacity, Conditional Access policies and risky users. They use `directory.users.read`,
 `audit.signins.read`, `tenant.licenses.read`, `reports.authentication-methods.read`,
-`identity.conditional-access.read` and `identity.risk.read`, all in the setup's default list.
+`identity.conditional-access.read` and `identity.risk.read`. The first four are in the setup's
+default list; the last two are asked for only when you name them or pass `--features all`.
 Inactivity needs Microsoft Entra ID P1 or P2 and a role such as Reports Reader, Security Reader
 or Global Reader; risky users need Entra ID P2. Results are kept (the last 10 successful runs
 per audit) and can be exported as CSV. See `docs/audits.md`.
@@ -404,9 +506,21 @@ run `down` and `up`. For a secrets folder other than `./secrets`, run
 `PRISM_SECRETS_DIR=<dir> scripts/docker-live.sh init`.
 
 The app container reads the certificate pair through a read-only mount as the image's `node`
-user (user ID 1000). On Linux, if your account has another user ID, give that ID read access to
-the key, for example with `setfacl -m u:1000:x secrets` and
-`setfacl -m u:1000:r secrets/entra-private.pem`.
+user (user ID 1000). On Linux, if your account has another user ID, give that ID access with an
+access control list, including a default entry so files written later (a rotated pair) get it
+too:
+
+```bash
+chmod 700 secrets
+setfacl -m u:1000:x secrets
+setfacl -d -m u:1000:r secrets
+setfacl -m u:1000:r secrets/entra-private.pem secrets/entra-public.pem
+```
+
+The setup keeps that working: it never tightens a file or folder that has an access list (or,
+where it cannot read the list, one whose group can read it), writes new keys with mode 640 in a
+folder with a default list so its entry applies, and after a rotation gives the new files the
+list the old ones had, or prints the `setfacl` command to run when it cannot.
 
 The browser warns about the local certificate until it is trusted;
 `scripts/docker-live.sh export-ca` saves it and prints the macOS command to trust it.

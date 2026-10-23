@@ -1,23 +1,27 @@
 import { X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import type { z } from "zod";
 import { isUuid } from "../../apps/api/src/config.ts";
+import { type AccessList, type AclTools, setfaclCommand, systemAcl } from "./acl.ts";
 import {
-  type CertificateFiles,
   certificateFiles,
   certificateKey,
   certificateRequest,
   inspectSecrets,
   newCredential,
-  prepareSecretsDirectory,
-  restrictPrivateKey,
+  promotePending,
+  restrictToOwner,
   selfSignedCertificate,
   writeCredential,
+  writePending,
 } from "./certificate.ts";
 import { mergeEnv, writeEnvFile } from "./env-file.ts";
 import {
   applicationListSchema,
   applicationSchema,
+  appRoleAssignmentListSchema,
+  directoryObjectListSchema,
   explainGraphError,
   type Fetch,
   type GraphApplication,
@@ -42,6 +46,7 @@ import {
   consentLink,
   managedValues,
   planText,
+  type RegistrationFacts,
   SETUP_TAG,
   type SetupPlan,
   type SetupState,
@@ -62,6 +67,8 @@ export interface SetupDependencies {
   cwd: string;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
+  acl?: AclTools;
+  platform?: NodeJS.Platform;
 }
 
 export type SetupOutcome = "applied" | "unchanged" | "dry-run" | "declined";
@@ -74,10 +81,28 @@ export class SetupError extends Error {
   }
 }
 
-const APPLICATION_FIELDS = "id,appId,displayName,signInAudience,tags,web,requiredResourceAccess";
+const APPLICATION_FIELDS = [
+  "id",
+  "appId",
+  "displayName",
+  "signInAudience",
+  "tags",
+  "web",
+  "requiredResourceAccess",
+  "passwordCredentials",
+  "publicClient",
+  "spa",
+  "isFallbackPublicClient",
+].join(",");
 // A registration made moments ago can take a little while to be visible everywhere in Microsoft
 // Entra. Steps on it wait and retry, about 45 seconds in all.
 const NEW_OBJECT_DELAYS = [2_000, 4_000, 8_000, 15_000, 15_000];
+// After a create that may or may not have happened (a 5xx, a throttle, a timeout), wait this long
+// and look for the object before trying again.
+const UNCERTAIN_CREATE_DELAYS = [5_000, 15_000];
+
+export const CLI_TOOLS_REMINDER =
+  "Microsoft keeps the access you gave the Microsoft Graph command line tools to sign this setup in. Revoke it now that setup is done: docs/SETUP.md, Revoke the setup's access.";
 
 async function step<T>(label: string, work: () => Promise<T>): Promise<T> {
   try {
@@ -106,54 +131,130 @@ async function readEnvSource(options: SetupOptions, example: string) {
     : { exists: false, text: "", source: "empty" as const };
 }
 
-async function findApplication(graph: SetupGraph, options: SetupOptions) {
-  const select = `$select=${APPLICATION_FIELDS}`;
+// Every page of a directory-object list, up to a bound.
+async function allPages<T>(
+  graph: SetupGraph,
+  first: string,
+  schema: z.ZodType<{ value: T[]; "@odata.nextLink"?: string | undefined }>,
+): Promise<{ items: T[]; complete: boolean }> {
+  const items: T[] = [];
+  let next: string | undefined = first;
+  for (let page = 0; next && page < 20; page += 1) {
+    const result: { value: T[]; "@odata.nextLink"?: string | undefined } = await graph.get(
+      next,
+      schema,
+    );
+    items.push(...result.value);
+    next = result["@odata.nextLink"];
+  }
+  return { items, complete: !next };
+}
+
+async function readOwners(graph: SetupGraph, applicationId: string) {
+  const { items, complete } = await allPages(
+    graph,
+    `applications/${applicationId}/owners?$select=id`,
+    directoryObjectListSchema,
+  );
+  return { owners: items.map((owner) => owner.id), complete };
+}
+
+const owns = (owners: readonly string[], adminId: string) =>
+  owners.some((owner) => owner.toLowerCase() === adminId.toLowerCase());
+
+async function search(graph: SetupGraph, filter: string) {
+  const page = await graph.get(
+    `applications?$filter=${encodeURIComponent(filter)}&$select=${APPLICATION_FIELDS}&$top=50`,
+    applicationListSchema,
+  );
+  return { items: page.value, more: Boolean(page["@odata.nextLink"]) };
+}
+
+// The tagged registrations the signed-in administrator owns. The tag alone proves nothing.
+async function ownedTagged(graph: SetupGraph, adminId: string) {
+  const tagged = await search(graph, `tags/any(t:t eq '${SETUP_TAG}')`);
+  const owned: { application: GraphApplication; owners: string[]; complete: boolean }[] = [];
+  const unowned: GraphApplication[] = [];
+  for (const application of tagged.items) {
+    const { owners, complete } = await readOwners(graph, application.id);
+    if (owns(owners, adminId)) owned.push({ application, owners, complete });
+    else unowned.push(application);
+  }
+  return { owned, unowned, more: tagged.more };
+}
+
+async function findApplication(graph: SetupGraph, options: SetupOptions, adminId: string) {
+  const none = { unownedTagged: [] as GraphApplication[], owners: null };
   if (options.appId) {
     try {
       const application = await graph.get(
-        `applications(appId='${options.appId}')?${select}`,
+        `applications(appId='${options.appId}')?$select=${APPLICATION_FIELDS}`,
         applicationSchema,
       );
-      return { application, foundBy: "appId" as const, matches: 1 };
+      return { ...none, application, foundBy: "appId" as const, matches: 1 };
     } catch (error) {
       if (error instanceof SetupGraphError && error.status === 404)
-        return { application: null, foundBy: null, matches: 0 };
+        return { ...none, application: null, foundBy: null, matches: 0 };
       throw error;
     }
   }
-  const search = async (filter: string) => {
-    const page = await graph.get(
-      `applications?$filter=${encodeURIComponent(filter)}&${select}&$top=10`,
-      applicationListSchema,
-    );
-    return { items: page.value, count: page.value.length + (page["@odata.nextLink"] ? 1 : 0) };
-  };
-  const tagged = await search(`tags/any(t:t eq '${SETUP_TAG}')`);
-  if (tagged.count > 0)
+  const tagged = await ownedTagged(graph, adminId);
+  if (tagged.more) return { ...none, application: null, foundBy: "tag" as const, matches: 51 };
+  const [only] = tagged.owned;
+  if (tagged.owned.length > 0)
     return {
-      application: tagged.count === 1 ? (tagged.items[0] ?? null) : null,
+      application: tagged.owned.length === 1 && only ? only.application : null,
       foundBy: "tag" as const,
-      matches: tagged.count,
+      matches: tagged.owned.length,
+      unownedTagged: tagged.unowned,
+      owners: only ? { owners: only.owners, complete: only.complete } : null,
     };
-  const named = await search(`displayName eq '${options.name.replaceAll("'", "''")}'`);
+  // A tagged registration someone else owns is left alone, whatever its name.
+  const named = await search(graph, `displayName eq '${options.name.replaceAll("'", "''")}'`);
+  named.items = named.items.filter((item) => !tagged.unowned.some((other) => other.id === item.id));
+  const count = named.items.length + (named.more ? 1 : 0);
   return {
-    application: named.count === 1 ? (named.items[0] ?? null) : null,
-    foundBy: named.count > 0 ? ("name" as const) : null,
-    matches: named.count,
+    application: count === 1 ? (named.items[0] ?? null) : null,
+    foundBy: count > 0 ? ("name" as const) : null,
+    matches: count,
+    unownedTagged: tagged.unowned.filter(
+      (item) => !named.items.some((match) => match.id === item.id),
+    ),
+    owners: null,
   };
+}
+
+async function servicePrincipalOf(graph: SetupGraph, appId: string) {
+  const list = await graph.get(
+    `servicePrincipals?$filter=${encodeURIComponent(`appId eq '${appId}'`)}&$select=id`,
+    servicePrincipalListSchema,
+  );
+  return list.value[0]?.id ?? null;
+}
+
+async function readAcl(acl: AclTools, path: string): Promise<AccessList | null> {
+  try {
+    return await acl.read(path);
+  } catch {
+    return null;
+  }
 }
 
 export async function gatherState(
   options: SetupOptions,
   graph: SetupGraph,
   tenantId: string,
-  dependencies: Pick<SetupDependencies, "envExample" | "cwd"> & { now: Date },
+  dependencies: Pick<SetupDependencies, "envExample" | "cwd"> & {
+    now: Date;
+    acl: AclTools;
+    platform: NodeJS.Platform;
+  },
 ): Promise<SetupState> {
   const admin = await step("Reading the signed-in account", () =>
     graph.get("me?$select=id,userPrincipalName", meSchema),
   );
   const found = await step("Looking for an existing Prism365 registration", () =>
-    findApplication(graph, options),
+    findApplication(graph, options, admin.id),
   );
   const graphPrincipal = await step("Reading Microsoft Graph's permission list", () =>
     graph.get(
@@ -163,15 +264,29 @@ export async function gatherState(
   );
   let servicePrincipal = false;
   let keyCredentials: unknown[] = [];
+  let registration: RegistrationFacts | null = null;
   const application = found.application;
   if (application) {
-    servicePrincipal = await step("Checking the registration's service principal", async () => {
-      const list = await graph.get(
-        `servicePrincipals?$filter=${encodeURIComponent(`appId eq '${application.appId}'`)}&$select=id`,
-        servicePrincipalListSchema,
-      );
-      return list.value.length > 0;
-    });
+    registration = await step(
+      "Checking who owns the registration and what it was granted",
+      async () => {
+        const owners = found.owners ?? (await readOwners(graph, application.id));
+        const principal = await servicePrincipalOf(graph, application.appId);
+        servicePrincipal = principal !== null;
+        const assignments = principal
+          ? await allPages(
+              graph,
+              `servicePrincipals/${principal}/appRoleAssignments?$select=id,resourceDisplayName`,
+              appRoleAssignmentListSchema,
+            )
+          : null;
+        return {
+          owners: owners.owners,
+          ownersComplete: owners.complete,
+          appRoleAssignments: assignments?.items ?? null,
+        };
+      },
+    );
     keyCredentials = await step("Reading the registration's certificates", async () => {
       const response = await graph.get(
         `applications/${application.id}?$select=keyCredentials`,
@@ -181,6 +296,8 @@ export async function gatherState(
     });
   }
   const files = certificateFiles(options.secretsDir);
+  const secrets = await inspectSecrets(files);
+  const credential = secrets.credential;
   return {
     options,
     tenantId,
@@ -188,14 +305,30 @@ export async function gatherState(
     application,
     foundBy: found.foundBy,
     matches: found.matches,
+    unownedTagged: found.unownedTagged.map((item) => ({
+      appId: item.appId,
+      displayName: item.displayName ?? null,
+    })),
+    registration,
     servicePrincipal,
     graph: graphPrincipal,
     keyCredentials,
     files,
-    secrets: await inspectSecrets(files),
+    secrets,
+    acl: {
+      directory:
+        secrets.directoryMode === null ? null : await readAcl(dependencies.acl, files.directory),
+      privateKey:
+        credential.state === "pair" || credential.state === "keyOnly"
+          ? await readAcl(dependencies.acl, files.privateKey)
+          : null,
+      certificate:
+        credential.state === "pair" ? await readAcl(dependencies.acl, files.certificate) : null,
+    },
     env: await readEnvSource(options, dependencies.envExample),
     cwd: dependencies.cwd,
     now: dependencies.now,
+    platform: dependencies.platform,
   };
 }
 
@@ -229,12 +362,89 @@ async function retryWhileNew<T>(
   }
 }
 
-// Adds the certificate to the registration without touching any other: the current list is
-// read with its keys, sent back unchanged with the new one, and read again to check.
+// A create answered with a server error, a throttle or nothing at all may still have happened.
+const uncertain = (error: unknown) =>
+  !(error instanceof SetupGraphError) || error.status >= 500 || error.status === 429;
+
+// Creates the registration once. When Microsoft's answer leaves it unclear whether the create
+// happened, the setup looks for a tagged registration the administrator owns before trying again,
+// so an answer lost on the way never leaves two registrations.
+async function createApplication(
+  graph: SetupGraph,
+  body: Record<string, unknown>,
+  adminId: string,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<Pick<GraphApplication, "id" | "appId">> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await graph.post("applications", body, applicationSchema);
+    } catch (error) {
+      const delay = UNCERTAIN_CREATE_DELAYS[attempt];
+      if (delay === undefined || !uncertain(error)) throw error;
+      await sleep(delay);
+      const { owned } = await ownedTagged(graph, adminId);
+      if (owned.length > 1)
+        throw new SetupError(
+          `Microsoft did not answer the create clearly, and you now own ${owned.length} registrations tagged ${SETUP_TAG}. Delete the extra one in the Entra admin center, then run the setup again with --app-id.`,
+        );
+      const [made] = owned;
+      if (made) return made.application;
+    }
+  }
+}
+
+async function createServicePrincipal(
+  graph: SetupGraph,
+  appId: string,
+  fresh: boolean,
+  sleep: (milliseconds: number) => Promise<void>,
+) {
+  let uncertainTries = 0;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await graph.post(
+        "servicePrincipals",
+        { appId, tags: ["WindowsAzureActiveDirectoryIntegratedApp"] },
+        servicePrincipalSchema,
+      );
+      return;
+    } catch (error) {
+      if (uncertain(error)) {
+        const delay = UNCERTAIN_CREATE_DELAYS[uncertainTries];
+        uncertainTries += 1;
+        if (delay === undefined) throw error;
+        await sleep(delay);
+        if (await servicePrincipalOf(graph, appId)) return;
+        continue;
+      }
+      // A 400 or 404 means it was not created; on a registration made moments ago that is usually
+      // Entra not having caught up yet.
+      const delay = fresh ? NEW_OBJECT_DELAYS[attempt] : undefined;
+      const definite = error as SetupGraphError;
+      if (delay === undefined || (definite.status !== 400 && definite.status !== 404)) throw error;
+      await sleep(delay);
+    }
+  }
+}
+
+const keyIds = (list: readonly unknown[]) =>
+  list
+    .map((item) => String((item as { keyId?: unknown }).keyId ?? "").toLowerCase())
+    .sort()
+    .join(",");
+
+// Adds the certificate to the registration without touching any other. A PATCH replaces the whole
+// list, so the list is read right before it and compared with the one the plan was made from: if
+// someone changed the certificates in between, the setup stops rather than undo their change.
+// After the PATCH the list is read again, and every certificate from right before must be there.
+// (Microsoft's addKey would add without replacing, but it needs proof signed by a certificate
+// already on the registration, which the first certificate cannot have, and its proof format can
+// only be checked against a real tenant; the PATCH path has to be safe either way.)
 async function addCertificate(
   graph: SetupGraph,
   applicationId: string,
   certificate: X509Certificate,
+  planned: readonly unknown[],
   fresh: boolean,
   sleep: (milliseconds: number) => Promise<void>,
 ): Promise<"added" | "present"> {
@@ -247,6 +457,10 @@ async function addCertificate(
     retryWhileNew(fresh, sleep, read, (error) => error.status === 404),
   );
   if (hasCertificate(before, key)) return "present";
+  if (keyIds(before) !== keyIds(planned))
+    throw new SetupError(
+      "The registration's certificates changed while the setup was running (someone added or removed one). Its certificates were not changed. Run the setup again once nobody is editing them.",
+    );
   const added: NewKeyCredential = {
     type: "AsymmetricX509Cert",
     usage: "Verify",
@@ -269,33 +483,29 @@ async function addCertificate(
   return "added";
 }
 
-async function applyCertificate(
-  plan: SetupPlan,
-  state: SetupState,
-  now: Date,
-): Promise<X509Certificate | null> {
-  const files: CertificateFiles = state.files;
-  const credential = state.secrets.credential;
-  const request = certificateRequest(state.options.tenant, now);
-  switch (plan.certificate.action) {
-    case "create":
-    case "rotate": {
-      const made = newCredential(request);
-      await writeCredential(files, made, { replaceKey: plan.certificate.action === "rotate" });
-      return new X509Certificate(made.certificatePem);
-    }
-    case "certify": {
-      if (credential.state !== "keyOnly")
-        throw new SetupError("The private key changed. Run the setup again.");
-      const certificatePem = selfSignedCertificate(credential.privateKey, request);
-      await writeCredential(files, { privateKeyPem: null, certificatePem }, { replaceKey: false });
-      return new X509Certificate(certificatePem);
-    }
-    case "upload":
-      return credential.state === "pair" ? credential.certificate : null;
-    case "keep":
-    case "blocked":
-      return null;
+// After a rotation's files are in place, give them the access list the old ones had.
+async function reapplyAcl(state: SetupState, acl: AclTools, print: (text: string) => void) {
+  for (const [path, previous, mode] of [
+    [
+      state.files.privateKey,
+      state.acl.privateKey,
+      state.secrets.credential.state === "pair" ? state.secrets.credential.privateKeyMode : null,
+    ],
+    [state.files.certificate, state.acl.certificate, null],
+  ] as const) {
+    const shown = relative(state.cwd, path) || path;
+    const named = previous?.entries.filter((entry) => !entry.startsWith("mask::")) ?? [];
+    if (named.length > 0) {
+      if (await acl.apply(path, named).catch(() => false))
+        print(`Gave the new ${shown} the access list the old one had.`);
+      else
+        print(
+          `The old ${shown} had an access list the setup could not copy. Run: ${setfaclCommand(path, named)}`,
+        );
+    } else if (!previous && mode !== null && (mode & 0o070) !== 0 && state.platform !== "win32")
+      print(
+        `The old ${shown} could be read by its group or an access list (mode ${mode.toString(8)}), and the new one is mode 600. If the Docker install read it that way, give that access again (docs/SETUP.md).`,
+      );
   }
 }
 
@@ -331,6 +541,8 @@ function finish(
   lines.push(
     `If an earlier install already made .env.docker, init refuses to replace it: copy ENTRA_CLIENT_ID, ENTRA_ADMIN_OBJECT_IDS and ENABLED_READ_FEATURES from ${relative(state.cwd, state.options.envFile) || ".env"} into it instead, then run up.`,
     "",
+    CLI_TOOLS_REMINDER,
+    "",
     "Prism365 itself only reads. This setup is the one part of the project that changes anything in Microsoft.",
   );
   print(lines.join("\n"));
@@ -343,6 +555,7 @@ export async function runSetup(
   const now = dependencies.now ?? (() => new Date());
   const sleep =
     dependencies.sleep ?? ((milliseconds) => new Promise((done) => setTimeout(done, milliseconds)));
+  const acl = dependencies.acl ?? systemAcl;
   const signedIn = await dependencies.signIn(options.tenant);
   const tenantId = signedIn.tenantId.toLowerCase();
   if (!isUuid(tenantId)) throw new SetupError("Microsoft did not report the tenant ID.");
@@ -355,6 +568,8 @@ export async function runSetup(
     envExample: dependencies.envExample,
     cwd: dependencies.cwd,
     now: now(),
+    acl,
+    platform: dependencies.platform ?? process.platform,
   });
   const plan = buildPlan(state);
   dependencies.print(planText(plan, state));
@@ -381,7 +596,7 @@ export async function runSetup(
   if (plan.application.action === "create") {
     const body = plan.application.body;
     application = await step("Creating the app registration", () =>
-      graph.post("applications", body, applicationSchema),
+      createApplication(graph, body, state.admin.id, sleep),
     );
     dependencies.print(`Created the app registration (application ID ${application.appId}).`);
   } else {
@@ -398,41 +613,75 @@ export async function runSetup(
   // 2. Its service principal.
   if (plan.servicePrincipal === "create") {
     await step("Creating the service principal", () =>
-      retryWhileNew(
-        fresh,
-        sleep,
-        () =>
-          graph.post(
-            "servicePrincipals",
-            { appId: application.appId, tags: ["WindowsAzureActiveDirectoryIntegratedApp"] },
-            servicePrincipalSchema,
-          ),
-        (error) => error.status === 404 || error.status === 400,
-      ),
+      createServicePrincipal(graph, application.appId, fresh, sleep),
     );
     dependencies.print("Created the service principal.");
   }
 
-  // 3. The certificate, written before it is uploaded so a key never reaches the registration
-  // without being saved here first.
-  if (plan.restrictDirectory) await prepareSecretsDirectory(state.files.directory);
-  if (plan.restrictPrivateKey) await restrictPrivateKey(state.files);
-  const certificate = await applyCertificate(plan, state, now());
-  if (plan.certificate.action === "create" || plan.certificate.action === "rotate")
-    dependencies.print(
-      `Wrote ${relative(state.cwd, state.files.privateKey)} and ${relative(state.cwd, state.files.certificate)}.`,
-    );
-  else if (plan.certificate.action === "certify")
-    dependencies.print(`Wrote ${relative(state.cwd, state.files.certificate)}.`);
+  // 3. Permissions on the secrets the plan chose to tighten.
+  if (plan.restrictDirectory) await restrictToOwner(state.files.directory, 0o700);
+  if (plan.restrictPrivateKey) await restrictToOwner(state.files.privateKey, 0o600);
 
-  // 4. The certificate on the registration.
-  if (certificate) {
-    const result = await addCertificate(graph, application.id, certificate, fresh, sleep);
+  // 4. The certificate. A new key is always saved here before its certificate reaches the
+  // registration. A rotation keeps the working pair in place until the new certificate is on
+  // the registration, so a failure in between leaves Prism365 signing in as before.
+  const files = state.files;
+  const credential = state.secrets.credential;
+  const request = certificateRequest(options.tenant, now());
+  const planned = state.application ? state.keyCredentials : [];
+  const upload = async (certificate: X509Certificate) => {
+    const result = await addCertificate(graph, application.id, certificate, planned, fresh, sleep);
     dependencies.print(
       result === "added"
-        ? "Added the certificate to the registration. Every certificate that was there before is still there."
+        ? "Added the certificate to the registration, and checked that every certificate it had just before is still on it."
         : "The certificate is already on the registration.",
     );
+  };
+  const shown = (path: string) => relative(state.cwd, path) || path;
+  switch (plan.certificate.action) {
+    case "create": {
+      const made = newCredential(request);
+      await writeCredential(files, made, plan.writeModes);
+      dependencies.print(`Wrote ${shown(files.privateKey)} and ${shown(files.certificate)}.`);
+      await upload(new X509Certificate(made.certificatePem));
+      break;
+    }
+    case "certify": {
+      if (credential.state !== "keyOnly")
+        throw new SetupError("The private key changed. Run the setup again.");
+      const certificatePem = selfSignedCertificate(credential.privateKey, request);
+      await writeCredential(files, { privateKeyPem: null, certificatePem }, plan.writeModes);
+      dependencies.print(`Wrote ${shown(files.certificate)}.`);
+      await upload(new X509Certificate(certificatePem));
+      break;
+    }
+    case "upload":
+      if (credential.state === "pair") await upload(credential.certificate);
+      break;
+    case "rotate": {
+      const made = newCredential(request);
+      await writePending(files, made, plan.writeModes);
+      dependencies.print(
+        `Wrote the new pair as ${shown(files.pendingKey)} and ${shown(files.pendingCertificate)}.`,
+      );
+      await upload(new X509Certificate(made.certificatePem));
+      await promotePending(files);
+      dependencies.print(
+        `Moved the new pair into place. The old one is ${shown(files.previousKey)} and ${shown(files.previousCertificate)}; delete them once you have removed the old certificate from the registration.`,
+      );
+      await reapplyAcl(state, acl, dependencies.print);
+      break;
+    }
+    case "promote":
+      await promotePending(files);
+      dependencies.print(
+        `Finished the earlier rotation. The old pair is ${shown(files.previousKey)} and ${shown(files.previousCertificate)}.`,
+      );
+      await reapplyAcl(state, acl, dependencies.print);
+      break;
+    case "keep":
+    case "blocked":
+      break;
   }
 
   // 5. .env, read again in case it changed while the plan was on screen.

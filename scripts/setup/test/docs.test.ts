@@ -21,4 +21,24 @@ describe("the setup guide", () => {
         permissionPacks.find((pack) => pack.id === feature)?.permission,
       );
   });
+
+  it("says the setup's consent outlives the run, and how to revoke it", async () => {
+    const root = join(import.meta.dirname, "../../..");
+    // Lines wrap anywhere in the Markdown, so compare with whitespace collapsed.
+    const read = async (file: string) =>
+      (await readFile(join(root, file), "utf8")).replace(/\s+/g, " ");
+    const guide = await read("docs/SETUP.md");
+    const permissions = await read("docs/PERMISSIONS.md");
+    for (const text of [guide, permissions]) {
+      expect(text).not.toContain("for the length of one setup run");
+      expect(text).toContain("Consent on behalf of your organization");
+    }
+    expect(guide).toContain("### Revoke the setup's access");
+    expect(guide).toContain("14d82eec-204b-4c2f-b7e8-296a70dab67e");
+    // The one-year limit is Microsoft's, and the guide says where Microsoft says it.
+    expect(guide).not.toContain("the longest Microsoft accepts");
+    expect(guide).toContain(
+      "https://learn.microsoft.com/en-us/graph/applications-how-to-add-certificate",
+    );
+  });
 });

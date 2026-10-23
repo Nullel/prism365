@@ -2,6 +2,7 @@ import { type Audit, builtInAudits, latestRuns as latestAuditRuns } from "@prism
 import {
   type AuditAvailability,
   type SetupCheck,
+  setupProbeBodySchema,
   setupStatusQuerySchema,
   setupStatusSchema,
 } from "@prism365/contracts";
@@ -20,32 +21,35 @@ import { RouteBoundaryError, type RouteContext, type RouteSettings } from "./con
 
 // The first-run checklist (docs/SETUP.md): what this installation has set up and what it has
 // not, each with its fix. It reads only public facts about the configuration (never a key or a
-// secret) and the requesting administrator's own session. `?probe=1` adds one small read per
-// granted pack, recorded in the access ledger first, so Microsoft's own answer can be shown.
+// secret) and the requesting administrator's own session. GET /v1/setup/status only reads what is
+// stored here; POST /v1/setup/probe (CSRF-checked like every POST) adds one small read per granted
+// pack, recorded in the access ledger first, so Microsoft's own answer can be shown.
 
 const DAY = 86_400_000;
 
-// The smallest read each pack allows: one item and only its ID where the endpoint supports it,
-// otherwise a list that is short in every tenant. A pack without an entry is not probed.
+// The smallest read each pack allows, by Microsoft's documentation of each endpoint: one item and
+// only its ID where the endpoint supports $top and $select, a filter that matches nothing where it
+// supports only $filter, and the endpoint's own small answer otherwise. A pack without an entry is
+// not probed: the usage report returns a row per person, so it is checked when its audit runs.
 export const probePaths: Partial<
   Record<SupportedReadFeature, (session: IdentitySession) => string>
 > = {
   "directory.users.read": () => "users?$top=1&$select=id",
   // The administrator's own licence details: the pack's own endpoint, on an account that exists.
   "user.licenses.read": (session) => `users/${session.actorId}/licenseDetails?$select=id`,
-  "tenant.licenses.read": () => "subscribedSkus",
+  "tenant.licenses.read": () => "subscribedSkus?$select=skuId",
   "audit.signins.read": () => "auditLogs/signIns?$top=1",
   "audit.directory.read": () => "auditLogs/directoryAudits?$top=1",
   "reports.authentication-methods.read": () =>
-    "reports/authenticationMethods/userRegistrationDetails?$top=1&$select=id",
-  "service.health.read": () => "admin/serviceAnnouncement/healthOverviews",
+    `reports/authenticationMethods/userRegistrationDetails?$filter=${encodeURIComponent("userPrincipalName eq 'probe@prism365.invalid'")}`,
+  "service.health.read": () => "admin/serviceAnnouncement/healthOverviews?$select=id",
   "service.messages.read": () => "admin/serviceAnnouncement/messages?$top=1&$select=id",
-  "identity.conditional-access.read": () => "identity/conditionalAccess/policies?$select=id",
+  "identity.conditional-access.read": () => "identity/conditionalAccess/policies?$top=1&$select=id",
   "identity.risk.read": () => "identityProtection/riskyUsers?$top=1&$select=id",
   "devices.intune.read": () => "deviceManagement/managedDevices?$top=1&$select=id",
   "directory.applications.read": () => "servicePrincipals?$top=1&$select=id",
-  "directory.permission-grants.read": () => "oauth2PermissionGrants?$top=1",
-  "reports.usage.read": () => "reports/getM365AppUserDetail(period='D7')?$format=application/json",
+  "directory.permission-grants.read": () =>
+    `oauth2PermissionGrants?$filter=${encodeURIComponent("clientId eq '00000000-0000-0000-0000-000000000000'")}`,
   "reports.settings.read": () => "admin/reportSettings",
 };
 
@@ -57,6 +61,8 @@ export type ProbeResult =
 
 export interface SetupFacts {
   settings: RouteSettings;
+  // Whether collected module data survives a restart; null without a module runtime.
+  moduleDataDurable: boolean | null;
   now: Date;
   // Microsoft permissions the requesting session granted, among the enabled ones.
   granted: ReadonlySet<string>;
@@ -164,7 +170,9 @@ function featureCheck(
       probe?.outcome === "answered"
         ? "Granted, and Microsoft answered a test read."
         : probe?.outcome === "untested"
-          ? "Granted. Prism365 has no test read for this pack."
+          ? feature === "reports.usage.read"
+            ? "Granted. The usage report lists every person, so it is checked when its audit runs, not here."
+            : "Granted. Prism365 has no test read for this pack."
           : "Granted by your Microsoft session.",
     fix: null,
   });
@@ -317,22 +325,41 @@ export function setupChecks(facts: SetupFacts): SetupCheck[] {
   for (const feature of settings.enabledFeatures)
     checks.push(featureCheck(feature, facts.granted, facts.probes?.get(feature)));
   checks.push(
-    settings.durableStorage
+    settings.durableSessions
       ? check({
-          id: "storage",
+          id: "storage.sessions",
           state: "ok",
-          title: "Storage survives restarts",
-          detail: "Sessions and collected data are kept on disk.",
+          title: "Sessions and the access ledger survive restarts",
+          detail: "They are kept, encrypted, in PostgreSQL.",
           fix: null,
         })
       : check({
-          id: "storage",
+          id: "storage.sessions",
           state: "warn",
-          title: "Storage is lost on restart",
+          title: "Sessions and the access ledger are lost on restart",
           detail:
-            "Sessions and collected data are held in memory, so a restart signs everyone out and forgets what was collected.",
-          fix: "Use the Docker install (scripts/docker-live.sh), or set DATABASE_URL and STATE_ENCRYPTION_KEY, or PRISM_DATA_DIR.",
+            "They are held in memory, so a restart signs everyone out and the record of who read what is gone. PRISM_DATA_DIR does not change that; it keeps only collected data.",
+          fix: "Use the Docker install (scripts/docker-live.sh), or set DATABASE_URL and STATE_ENCRYPTION_KEY.",
         }),
+    ...(facts.moduleDataDurable === null
+      ? []
+      : [
+          facts.moduleDataDurable
+            ? check({
+                id: "storage.data",
+                state: "ok",
+                title: "Collected data survives restarts",
+                detail: "Sign-ins, findings and audit results are kept on disk.",
+                fix: null,
+              })
+            : check({
+                id: "storage.data",
+                state: "warn",
+                title: "Collected data is lost on restart",
+                detail: "Sign-ins, findings and audit results are held in memory.",
+                fix: "Use the Docker install (scripts/docker-live.sh), or set PRISM_DATA_DIR or a PostgreSQL database.",
+              }),
+        ]),
     collectionCheck(facts.collection),
     ...auditChecks(facts.audits),
   );
@@ -380,89 +407,114 @@ async function probe(
   }
 }
 
+// The checklist for one signed-in administrator, with the probe results when there are any.
+async function checklist(
+  context: RouteContext,
+  session: IdentitySession,
+  granted: ReadonlySet<string>,
+  probes: ReadonlyMap<SupportedReadFeature, ProbeResult> | null,
+) {
+  const { settings, modules } = context;
+  const tenantId = session.tenantId;
+  const stored = modules
+    ? await modules.database.tenant(tenantId, async (sql) => ({
+        intent: await readCollectionIntent(sql, tenantId),
+        runs: context.audits ? await latestAuditRuns(sql, tenantId) : [],
+      }))
+    : null;
+  const status = modules?.status();
+  return setupChecks({
+    settings,
+    moduleDataDurable: modules ? modules.database.durable : null,
+    now: new Date(),
+    granted,
+    probes,
+    collection: status
+      ? {
+          state: status.state,
+          boundAt: status.boundAt,
+          collectingAs: context.collectingAdmin()?.actorId ?? null,
+          chosenBy: stored?.intent?.actorId ?? null,
+          viewer: session.actorId,
+        }
+      : null,
+    audits:
+      context.audits && stored
+        ? builtInAudits.map((audit: Audit) => {
+            const run = stored.runs.find((item) => item.auditId === audit.definition.id);
+            return {
+              id: audit.definition.id,
+              title: audit.definition.title,
+              lastRun: run ? { status: run.status, startedAt: run.startedAt } : null,
+              availability: context.auditAvailability(audit, session),
+            };
+          })
+        : null,
+  });
+}
+
 export function registerSetupRoutes(app: FastifyInstance, context: RouteContext): void {
+  const { settings } = context;
+  const visible = () => ({
+    mode: settings.mode,
+    configured: settings.configured,
+    missingConfiguration: [...settings.missingConfiguration],
+  });
+  const grantedFor = (session: IdentitySession) => {
+    const enabled = new Set(context.enabledPermissions());
+    return new Set(session.scopes.filter((scope) => enabled.has(scope)));
+  };
+
+  // Read-only: it never reads Microsoft and writes nothing, so a link to it can do no harm.
   app.get("/v1/setup/status", async (request, reply) => {
-    const query = setupStatusQuerySchema.safeParse(request.query ?? {});
-    if (!query.success)
-      return reply
-        .status(400)
-        .send({ error: "invalid_request", message: "Use probe=1 to check with Microsoft." });
-    const { settings } = context;
-    const visible = {
-      mode: settings.mode,
-      configured: settings.configured,
-      missingConfiguration: [...settings.missingConfiguration],
-    };
+    if (!setupStatusQuerySchema.safeParse(request.query ?? {}).success)
+      return reply.status(400).send({
+        error: "invalid_request",
+        message:
+          "This address takes no options. To check with Microsoft, use POST /v1/setup/probe.",
+      });
+    const session = settings.mode === "live" ? await context.sessionFor(request) : null;
+    // Without an allow-listed session: nothing beyond what /v1/session tells anyone.
+    if (!session) return setupStatusSchema.parse({ ...visible(), checks: [], probed: false });
+    return setupStatusSchema.parse({
+      ...visible(),
+      probed: false,
+      checks: await checklist(context, session, grantedFor(session), null),
+    });
+  });
+
+  // One small read per granted pack. A POST, so the global hook checks the session's CSRF value
+  // and origin: a link or a page on another site cannot make an administrator's browser run it.
+  app.post("/v1/setup/probe", async (request, reply) => {
+    if (!setupProbeBodySchema.safeParse(request.body ?? {}).success)
+      return reply.status(400).send({ error: "invalid_request", message: "Send no options." });
     const session = settings.mode === "live" ? await context.sessionFor(request) : null;
     const handle = context.sessionHandle(request);
-    // Without an allow-listed session: nothing beyond what /v1/session tells anyone.
-    if (!session || !handle)
-      return setupStatusSchema.parse({ ...visible, checks: [], probed: false });
-
-    const enabled = new Set(context.enabledPermissions());
-    const granted = new Set(session.scopes.filter((scope) => enabled.has(scope)));
-    let probes: Map<SupportedReadFeature, ProbeResult> | null = null;
-    if (query.data.probe === "1") {
-      probes = new Map();
-      const packs = settings.enabledFeatures.filter(
-        (feature) => granted.has(supportedReadFeatures[feature]) && probePaths[feature],
+    if (!session || !handle) return reply.status(401).send({ error: "authentication_required" });
+    const granted = grantedFor(session);
+    const probes = new Map<SupportedReadFeature, ProbeResult>();
+    const packs = settings.enabledFeatures.filter(
+      (feature) => granted.has(supportedReadFeatures[feature]) && probePaths[feature],
+    );
+    if (packs.length > 0) {
+      // The ledger entry comes first: no test read without one. It names packs, nothing read.
+      await context.store.appendAudit(session.tenantId, session.actorId, {
+        type: "setup.probed",
+        packs,
+        occurredAt: new Date().toISOString(),
+      });
+      const results = await Promise.all(
+        packs.map((feature) => probe(context, session, handle, feature)),
       );
-      if (packs.length > 0) {
-        // The ledger entry comes first: no test read without one. It names packs, nothing read.
-        await context.store.appendAudit(session.tenantId, session.actorId, {
-          type: "setup.probed",
-          packs,
-          occurredAt: new Date().toISOString(),
-        });
-        const results = await Promise.all(
-          packs.map((feature) => probe(context, session, handle, feature)),
-        );
-        for (const [index, feature] of packs.entries())
-          probes.set(feature, results[index] ?? { outcome: "untested" });
-      }
-      for (const feature of settings.enabledFeatures)
-        if (!probes.has(feature)) probes.set(feature, { outcome: "untested" });
+      for (const [index, feature] of packs.entries())
+        probes.set(feature, results[index] ?? { outcome: "untested" });
     }
-
-    const modules = context.modules;
-    const tenantId = session.tenantId;
-    const stored = modules
-      ? await modules.database.tenant(tenantId, async (sql) => ({
-          intent: await readCollectionIntent(sql, tenantId),
-          runs: context.audits ? await latestAuditRuns(sql, tenantId) : [],
-        }))
-      : null;
-    const status = modules?.status();
+    for (const feature of settings.enabledFeatures)
+      if (!probes.has(feature)) probes.set(feature, { outcome: "untested" });
     return setupStatusSchema.parse({
-      ...visible,
-      probed: probes !== null,
-      checks: setupChecks({
-        settings,
-        now: new Date(),
-        granted,
-        probes,
-        collection: status
-          ? {
-              state: status.state,
-              boundAt: status.boundAt,
-              collectingAs: context.collectingAdmin()?.actorId ?? null,
-              chosenBy: stored?.intent?.actorId ?? null,
-              viewer: session.actorId,
-            }
-          : null,
-        audits:
-          context.audits && stored
-            ? builtInAudits.map((audit: Audit) => {
-                const run = stored.runs.find((item) => item.auditId === audit.definition.id);
-                return {
-                  id: audit.definition.id,
-                  title: audit.definition.title,
-                  lastRun: run ? { status: run.status, startedAt: run.startedAt } : null,
-                  availability: context.auditAvailability(audit, session),
-                };
-              })
-            : null,
-      }),
+      ...visible(),
+      probed: true,
+      checks: await checklist(context, session, granted, probes),
     });
   });
 }

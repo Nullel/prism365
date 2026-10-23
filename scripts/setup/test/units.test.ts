@@ -6,11 +6,13 @@ import {
 } from "node:crypto";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -18,22 +20,26 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { builtInAudits } from "@prism365/audits";
 import { afterEach, describe, expect, it } from "vitest";
 import { supportedReadFeatures } from "../../../apps/api/src/config.ts";
-import { createModuleRegistry } from "../../../apps/api/src/modules.ts";
+import { modeDecision, parseGetfacl, setfaclCommand } from "../acl.ts";
 import {
   CERTIFICATE_DAYS,
   certificateFiles,
   certificateRequest,
   commonNameFor,
   inspectSecrets,
+  interruptedRotation,
+  keyProblem,
   newCredential,
+  promotePending,
   selfSignedCertificate,
   writeCredential,
+  writePending,
 } from "../certificate.ts";
 import {
   adminObjectIds,
+  EnvFileError,
   MANAGED_KEYS,
   type ManagedValues,
   mergeEnv,
@@ -48,7 +54,7 @@ import {
   type NewKeyCredential,
   verifyKeyCredentials,
 } from "../key-credentials.ts";
-import { defaultFeatures, parseOptions, UsageError } from "../options.ts";
+import { defaultFeatures, parseFeatures, parseOptions, UsageError } from "../options.ts";
 import {
   GRAPH_RESOURCE_APP_ID,
   graphResourceAccess,
@@ -199,12 +205,13 @@ describe(".env merge", () => {
     expect(merged.text.split("\n")).toEqual([
       "# My notes about this install",
       "HOST=127.0.0.1",
-      "DATA_MODE=live # was the demo",
+      "# was the demo",
+      "DATA_MODE=live",
       "UNKNOWN_SETTING=keep me",
       "",
       "# ENTRA_TENANT_ID=",
       `ENTRA_TENANT_ID=${values.ENTRA_TENANT_ID}`,
-      "export PUBLIC_ORIGIN=https://localhost:8443",
+      "PUBLIC_ORIGIN=https://localhost:8443",
       "SIGNINS_TIME_ZONE=America/Chicago",
       "DATA_MODE=live",
       "",
@@ -220,6 +227,40 @@ describe(".env merge", () => {
     expect(merged.changes[0]).toEqual({ key: "DATA_MODE", before: "demo", after: "live" });
     expect(readEnv(merged.text).get("UNKNOWN_SETTING")).toBe("keep me");
     expect(mergeEnv(merged.text, values)).toEqual({ text: merged.text, changes: [] });
+  });
+
+  it("refuses a value that runs over several lines instead of editing inside it", () => {
+    const text = 'NOTE="first line\nENTRA_CLIENT_ID=inside-a-quoted-value\nlast line"\nOTHER=1\n';
+    expect(() => mergeEnv(text, values)).toThrow(EnvFileError);
+    expect(() => mergeEnv(text, values)).toThrow("NOTE");
+  });
+
+  it("writes managed keys as plain KEY=value, keeping an inline comment on its own line", () => {
+    const merged = mergeEnv(
+      [
+        "ENTRA_CLIENT_ID = old-id",
+        "export DATA_MODE=demo",
+        `PUBLIC_ORIGIN="${values.PUBLIC_ORIGIN}"`,
+        "ENTRA_TENANT_ID=old # the pilot tenant",
+        "",
+      ].join("\n"),
+      values,
+    );
+    expect(merged.text.split("\n").slice(0, 5)).toEqual([
+      `ENTRA_CLIENT_ID=${values.ENTRA_CLIENT_ID}`,
+      "DATA_MODE=live",
+      `PUBLIC_ORIGIN=${values.PUBLIC_ORIGIN}`,
+      "# the pilot tenant",
+      `ENTRA_TENANT_ID=${values.ENTRA_TENANT_ID}`,
+    ]);
+    // What scripts/docker-live.sh reads: everything after "KEY=" on a line that starts with it.
+    const sed = (key: string) =>
+      merged.text
+        .split("\n")
+        .filter((line) => line.startsWith(`${key}=`))
+        .map((line) => line.slice(key.length + 1))
+        .at(-1);
+    for (const key of MANAGED_KEYS) expect(sed(key), key).toBe(values[key]);
   });
 
   it("keeps Windows line endings and a file without a final newline", () => {
@@ -360,27 +401,72 @@ describe("certificate credentials", () => {
     ).toThrow("RSA");
   });
 
-  it("writes the pair with owner-only modes and never overwrites a key unless rotating", async () => {
+  it("writes a new pair owner-only, never overwrites a key, and leaves an existing folder's mode alone", async () => {
     const dir = await workspace();
     const files = certificateFiles(join(dir, "secrets"));
-    await mkdir(files.directory, { mode: 0o755 });
-    await chmod(files.directory, 0o755);
-    await writeCredential(files, pair, { replaceKey: false });
+    await writeCredential(files, pair);
     expect(await mode(files.directory)).toBe(0o700);
     expect(await mode(files.privateKey)).toBe(0o600);
     expect(await mode(files.certificate)).toBe(0o644);
     expect((await inspectSecrets(files)).credential.state).toBe("pair");
 
-    await expect(writeCredential(files, other, { replaceKey: false })).rejects.toThrow(
-      "--rotate-certificate",
-    );
+    await expect(writeCredential(files, other)).rejects.toThrow("--rotate-certificate");
     expect(await readFile(files.privateKey, "utf8")).toBe(pair.privateKeyPem);
     expect(await readFile(files.certificate, "utf8")).toBe(pair.certificatePem);
     expect(await readdir(files.directory)).toEqual(["entra-private.pem", "entra-public.pem"]);
 
-    await writeCredential(files, other, { replaceKey: true });
+    // An existing folder may carry an access list; only an explicit plan step changes it.
+    const shared = certificateFiles(join(dir, "shared"));
+    await mkdir(shared.directory, { mode: 0o750 });
+    await chmod(shared.directory, 0o750);
+    await writeCredential(shared, pair, { privateKey: 0o640, certificate: 0o644 });
+    expect(await mode(shared.directory)).toBe(0o750);
+    expect(await mode(shared.privateKey)).toBe(0o640);
+  });
+
+  it("rotates through .new files, keeping the old pair as .previous, and can finish an interrupted move", async () => {
+    const dir = await workspace();
+    const files = certificateFiles(join(dir, "secrets"));
+    await writeCredential(files, pair);
+    await writePending(files, other);
+    // Until it is moved, the working pair is untouched and the new one is only pending.
+    expect(await readFile(files.privateKey, "utf8")).toBe(pair.privateKeyPem);
+    let inspected = await inspectSecrets(files);
+    expect(inspected.credential.state).toBe("pair");
+    expect(inspected.pending?.certificate.raw.equals(certificate(other.certificatePem).raw)).toBe(
+      true,
+    );
+    expect(await mode(files.pendingKey)).toBe(0o600);
+
+    // Interrupted after the key moved but before the certificate did.
+    await link(files.privateKey, files.previousKey);
+    await rename(files.pendingKey, files.privateKey);
+    inspected = await inspectSecrets(files);
+    expect(inspected.credential.state).toBe("mismatch");
+    expect(interruptedRotation(inspected)).toBe(true);
+
+    await promotePending(files);
+    inspected = await inspectSecrets(files);
+    expect(inspected.credential.state).toBe("pair");
     expect(await readFile(files.privateKey, "utf8")).toBe(other.privateKeyPem);
-    expect(await mode(files.privateKey)).toBe(0o600);
+    expect(await readFile(files.certificate, "utf8")).toBe(other.certificatePem);
+    expect(await readFile(files.previousKey, "utf8")).toBe(pair.privateKeyPem);
+    expect(await readFile(files.previousCertificate, "utf8")).toBe(pair.certificatePem);
+    expect(inspected.pendingFiles).toBe(false);
+    expect(inspected.previousFiles).toBe(true);
+    expect(await mode(files.previousKey)).toBe(0o600);
+    // Every name ends in .pem, so .gitignore, .dockerignore and the Dockerfile's guard see them.
+    expect((await readdir(files.directory)).every((name) => name.endsWith(".pem"))).toBe(true);
+  });
+
+  it("names the key problems MSAL and Microsoft would reject", () => {
+    expect(keyProblem(createPrivateKey(pair.privateKeyPem))).toBeNull();
+    expect(keyProblem(generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey)).toContain(
+      "EC key",
+    );
+    expect(keyProblem(generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey)).toContain(
+      "1024-bit",
+    );
   });
 
   it("tells apart every state the secrets directory can be in", async () => {
@@ -389,6 +475,10 @@ describe("certificate credentials", () => {
     expect(await inspectSecrets(files)).toEqual({
       directoryMode: null,
       credential: { state: "none" },
+      pending: null,
+      pendingFiles: false,
+      previous: null,
+      previousFiles: false,
     });
     await mkdir(files.directory, { mode: 0o700 });
     await writeFile(files.certificate, pair.certificatePem);
@@ -408,22 +498,68 @@ describe("certificate credentials", () => {
   });
 });
 
+describe("access control lists", () => {
+  it("reads only what is more than the mode bits from getfacl", () => {
+    expect(
+      parseGetfacl(
+        [
+          "user::rw-",
+          "user:1000:r--",
+          "group::---",
+          "mask::r--",
+          "other::---",
+          "default:user::rwx",
+          "default:user:1000:r--  #effective:r--",
+          "default:group::---",
+        ].join("\n"),
+      ),
+    ).toEqual({ entries: ["user:1000:r--", "mask::r--"], defaults: ["user:1000:r--"] });
+    expect(parseGetfacl("user::rw-\ngroup::r--\nother::---\n")).toEqual({
+      entries: [],
+      defaults: [],
+    });
+  });
+
+  it("never tightens what an access list or a group may depend on", () => {
+    const acl = { entries: ["user:1000:r--", "mask::r--"], defaults: [] };
+    const plain = { entries: [], defaults: [] };
+    expect(modeDecision(0o600, null)).toBe("fine");
+    expect(modeDecision(0o640, acl)).toBe("keep-acl");
+    expect(modeDecision(0o640, null)).toBe("keep-group");
+    expect(modeDecision(0o640, plain)).toBe("tighten");
+    expect(modeDecision(0o644, null)).toBe("tighten");
+    expect(setfaclCommand("/srv/prism 365/secrets/entra-private.pem", acl.entries)).toBe(
+      "setfacl -m user:1000:r-- '/srv/prism 365/secrets/entra-private.pem'",
+    );
+  });
+});
+
 describe("options", () => {
   const cwd = "/srv/prism365";
 
-  it("defaults to the packs the audits and modules use", () => {
-    const expected = new Set<string>([
+  it("defaults to the core packs, and asks for the consent-batch packs only when named", () => {
+    expect(defaultFeatures()).toEqual([
       "directory.users.read",
       "user.licenses.read",
+      "tenant.licenses.read",
       "audit.signins.read",
+      "reports.authentication-methods.read",
+      "service.health.read",
+      "service.messages.read",
+      "audit.directory.read",
     ]);
-    for (const audit of builtInAudits)
-      for (const pack of [...audit.packs, ...audit.optionalPacks]) expected.add(pack);
-    for (const module of createModuleRegistry().list())
-      for (const pack of module.packs) expected.add(pack);
-    const features = defaultFeatures();
-    expect(new Set(features)).toEqual(expected);
-    for (const feature of features) expect(feature in supportedReadFeatures).toBe(true);
+    for (const feature of defaultFeatures()) expect(feature in supportedReadFeatures).toBe(true);
+    const all = parseFeatures("all");
+    expect(all).toEqual(
+      Object.keys(supportedReadFeatures).filter((id) => id !== "directory.permission-grants.read"),
+    );
+    expect(parseFeatures("all,directory.permission-grants.read")).toEqual(
+      Object.keys(supportedReadFeatures),
+    );
+    expect(parseFeatures("identity.risk.read,directory.users.read")).toEqual([
+      "directory.users.read",
+      "identity.risk.read",
+    ]);
   });
 
   it("reads the options and resolves paths from the working directory", () => {

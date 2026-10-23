@@ -1447,6 +1447,7 @@ export function createApp(options: AppOptions = {}) {
           : "secret",
       certificate: config.certificate ? { ...config.certificate } : null,
       durableStorage: Boolean(config.databaseUrl || config.moduleDataDir),
+      durableSessions: store.durable,
     },
     store,
     modules: modules

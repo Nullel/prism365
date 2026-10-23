@@ -45,8 +45,20 @@ export interface FakeApplication {
     resourceAccess: { id: string; type: string }[];
   }[];
   keyCredentials: Record<string, unknown>[];
+  passwordCredentials: Record<string, unknown>[];
+  publicClient: { redirectUris: string[] };
+  spa: { redirectUris: string[] };
+  isFallbackPublicClient: boolean | null;
+  owners: string[];
   // Key IDs whose key value the fake leaves out, as Microsoft does on list queries.
   hiddenKeys?: string[];
+}
+
+export interface FakeServicePrincipal {
+  id: string;
+  appId: string;
+  tags: string[];
+  appRoleAssignments: { id: string; resourceDisplayName: string }[];
 }
 
 const APPLICATION_FIELDS = [
@@ -57,12 +69,16 @@ const APPLICATION_FIELDS = [
   "tags",
   "web",
   "requiredResourceAccess",
+  "passwordCredentials",
+  "publicClient",
+  "spa",
+  "isFallbackPublicClient",
 ] as const;
 
 export class FakeTenant {
   readonly requests: FakeRequest[] = [];
   applications: FakeApplication[] = [];
-  servicePrincipals: { id: string; appId: string; tags: string[] }[] = [];
+  servicePrincipals: FakeServicePrincipal[] = [];
   me = { id: ADMIN_ID, userPrincipalName: "admin@contoso.example" };
   // Answers a request before the fake does, to inject failures.
   intercept: ((request: FakeRequest) => Response | null) | null = null;
@@ -83,10 +99,29 @@ export class FakeTenant {
       },
       requiredResourceAccess: [],
       keyCredentials: [],
+      passwordCredentials: [],
+      publicClient: { redirectUris: [] },
+      spa: { redirectUris: [] },
+      isFallbackPublicClient: null,
+      // A registration someone made through the admin centre is owned by them; tests that mean
+      // the signed-in administrator's own registration say so.
+      owners: [ADMIN_ID],
       ...overrides,
     };
     this.applications.push(application);
     return application;
+  }
+
+  servicePrincipal(appId: string, overrides: Partial<FakeServicePrincipal> = {}) {
+    const principal: FakeServicePrincipal = {
+      id: randomUUID(),
+      appId,
+      tags: [],
+      appRoleAssignments: [],
+      ...overrides,
+    };
+    this.servicePrincipals.push(principal);
+    return principal;
   }
 
   get writes() {
@@ -134,9 +169,22 @@ export class FakeTenant {
       const body = request.body as { appId: string; tags: string[] };
       if (!this.applications.some((application) => application.appId === body.appId))
         return error(400, "Request_BadRequest");
-      const principal = { id: randomUUID(), appId: body.appId, tags: body.tags };
-      this.servicePrincipals.push(principal);
-      return Response.json(principal, { status: 201 });
+      const principal = this.servicePrincipal(body.appId, { tags: body.tags });
+      return Response.json({ id: principal.id, appId: principal.appId }, { status: 201 });
+    }
+    const assignedTo = /^servicePrincipals\/([^/]+)\/appRoleAssignments$/.exec(path)?.[1];
+    if (method === "GET" && assignedTo) {
+      const principal = this.servicePrincipals.find((item) => item.id === assignedTo);
+      return principal
+        ? Response.json({ value: principal.appRoleAssignments })
+        : error(404, "Request_ResourceNotFound");
+    }
+    const ownersOf = /^applications\/([^/]+)\/owners$/.exec(path)?.[1];
+    if (method === "GET" && ownersOf) {
+      const application = this.applications.find((item) => item.id === ownersOf);
+      return application
+        ? Response.json({ value: application.owners.map((id) => ({ id })) })
+        : error(404, "Request_ResourceNotFound");
     }
     if (method === "GET" && path === "applications") {
       const tag = /^tags\/any\(t:t eq '([^']+)'\)$/.exec(filter)?.[1];
@@ -155,11 +203,13 @@ export class FakeTenant {
     }
     if (method === "POST" && path === "applications") {
       const body = request.body as Partial<FakeApplication>;
+      // Microsoft makes the signed-in caller the owner of a registration it creates.
       const application = this.application({
         ...body,
         id: randomUUID(),
         appId: randomUUID(),
         keyCredentials: [],
+        owners: [this.me.id],
       } as Partial<FakeApplication>);
       return Response.json(listed(application), { status: 201 });
     }

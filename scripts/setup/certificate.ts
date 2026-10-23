@@ -157,6 +157,13 @@ export interface CertificateFiles {
   directory: string;
   privateKey: string;
   certificate: string;
+  // A rotation's new pair until it is on the registration, and the pair it replaced afterwards.
+  // They end in .pem like the pair itself, so .gitignore, .dockerignore and the Dockerfile's guard
+  // keep them out of Git and out of images too.
+  pendingKey: string;
+  pendingCertificate: string;
+  previousKey: string;
+  previousCertificate: string;
 }
 
 export function certificateFiles(directory: string): CertificateFiles {
@@ -164,23 +171,49 @@ export function certificateFiles(directory: string): CertificateFiles {
     directory,
     privateKey: join(directory, "entra-private.pem"),
     certificate: join(directory, "entra-public.pem"),
+    pendingKey: join(directory, "entra-private.new.pem"),
+    pendingCertificate: join(directory, "entra-public.new.pem"),
+    previousKey: join(directory, "entra-private.previous.pem"),
+    previousCertificate: join(directory, "entra-public.previous.pem"),
   };
 }
 
+// MSAL signs its client assertion with PS256, so the key must be RSA, and Microsoft wants at
+// least 2048 bits. Anything else would only fail later, after Microsoft had been changed.
+export function keyProblem(privateKey: KeyObject): string | null {
+  if (privateKey.asymmetricKeyType !== "rsa")
+    return `is ${privateKey.asymmetricKeyType ? `an ${privateKey.asymmetricKeyType.toUpperCase()}` : "not an RSA"} key, and Prism365 signs in with RSA only`;
+  const bits = privateKey.asymmetricKeyDetails?.modulusLength ?? 0;
+  return bits < 2048 ? `is a ${bits}-bit RSA key, and Microsoft needs at least 2048 bits` : null;
+}
+
 // The pair already in the secrets directory, as far as the setup needs to know it. The private
-// key is read only to check that it belongs to the certificate; it is never printed or sent.
+// key is read only to check its type and that it belongs to the certificate; it is never printed
+// or sent.
 export type LocalCredential =
   | { state: "none" }
-  | { state: "pair"; certificate: X509Certificate; privateKeyMode: number | null }
+  | {
+      state: "pair";
+      certificate: X509Certificate;
+      privateKey: KeyObject;
+      privateKeyMode: number | null;
+    }
   | { state: "keyOnly"; privateKey: KeyObject; privateKeyMode: number | null }
   | { state: "certificateOnly" }
-  | { state: "mismatch" }
+  | { state: "mismatch"; certificate: X509Certificate; privateKey: KeyObject }
   | { state: "unreadable"; file: "certificate" | "privateKey" };
 
 export interface LocalSecrets {
   credential: LocalCredential;
   // Permission bits of the secrets directory, or null when it does not exist yet.
   directoryMode: number | null;
+  // A rotation's new certificate, with its key while the key has not been moved into place yet
+  // (null once it has); `pendingFiles` is true when either file is there at all.
+  pending: { certificate: X509Certificate; privateKey: KeyObject | null } | null;
+  pendingFiles: boolean;
+  // The pair the last rotation replaced: its certificate, and whether either file is there.
+  previous: X509Certificate | null;
+  previousFiles: boolean;
 }
 
 async function modeOf(path: string): Promise<number | null> {
@@ -201,42 +234,92 @@ async function readIfPresent(path: string): Promise<Buffer | null> {
   }
 }
 
+const parseKey = (bytes: Buffer | null) => {
+  if (!bytes) return null;
+  try {
+    return createPrivateKey(bytes);
+  } catch {
+    return "unreadable" as const;
+  }
+};
+const parseCertificate = (bytes: Buffer | null) => {
+  if (!bytes) return null;
+  try {
+    return new X509Certificate(bytes);
+  } catch {
+    return "unreadable" as const;
+  }
+};
+
+async function readPair(keyPath: string, certificatePath: string) {
+  const keyBytes = await readIfPresent(keyPath);
+  const certificateBytes = await readIfPresent(certificatePath);
+  return {
+    present: keyBytes !== null || certificateBytes !== null,
+    privateKey: parseKey(keyBytes),
+    certificate: parseCertificate(certificateBytes),
+  };
+}
+
 export async function inspectSecrets(files: CertificateFiles): Promise<LocalSecrets> {
   const directoryMode = await modeOf(files.directory);
-  const keyBytes = await readIfPresent(files.privateKey);
-  const certificateBytes = await readIfPresent(files.certificate);
-  let privateKey: KeyObject | null = null;
-  if (keyBytes) {
-    try {
-      privateKey = createPrivateKey(keyBytes);
-    } catch {
-      return { directoryMode, credential: { state: "unreadable", file: "privateKey" } };
-    }
-  }
-  let certificate: X509Certificate | null = null;
-  if (certificateBytes) {
-    try {
-      certificate = new X509Certificate(certificateBytes);
-    } catch {
-      return { directoryMode, credential: { state: "unreadable", file: "certificate" } };
-    }
-  }
+  const current = await readPair(files.privateKey, files.certificate);
+  const pendingPair = await readPair(files.pendingKey, files.pendingCertificate);
+  const previousPair = await readPair(files.previousKey, files.previousCertificate);
+  const pendingCertificate =
+    pendingPair.certificate && pendingPair.certificate !== "unreadable"
+      ? pendingPair.certificate
+      : null;
+  const pendingKey =
+    pendingPair.privateKey && pendingPair.privateKey !== "unreadable"
+      ? pendingPair.privateKey
+      : null;
+  // With both files there they must belong together; a lone certificate is what an interrupted
+  // move leaves once its key is in place.
+  const pending =
+    pendingCertificate &&
+    (pendingKey ? pendingCertificate.checkPrivateKey(pendingKey) : pendingPair.privateKey === null)
+      ? { certificate: pendingCertificate, privateKey: pendingKey }
+      : null;
+  const around = {
+    directoryMode,
+    pending,
+    pendingFiles: pendingPair.present,
+    previous:
+      previousPair.certificate && previousPair.certificate !== "unreadable"
+        ? previousPair.certificate
+        : null,
+    previousFiles: previousPair.present,
+  };
+  const { privateKey, certificate } = current;
+  if (privateKey === "unreadable")
+    return { ...around, credential: { state: "unreadable", file: "privateKey" } };
+  if (certificate === "unreadable")
+    return { ...around, credential: { state: "unreadable", file: "certificate" } };
   const privateKeyMode = privateKey ? await modeOf(files.privateKey) : null;
   if (privateKey && certificate)
     return {
-      directoryMode,
+      ...around,
       credential: certificate.checkPrivateKey(privateKey)
-        ? { state: "pair", certificate, privateKeyMode }
-        : { state: "mismatch" },
+        ? { state: "pair", certificate, privateKey, privateKeyMode }
+        : { state: "mismatch", certificate, privateKey },
     };
   if (privateKey)
-    return { directoryMode, credential: { state: "keyOnly", privateKey, privateKeyMode } };
-  if (certificate) return { directoryMode, credential: { state: "certificateOnly" } };
-  return { directoryMode, credential: { state: "none" } };
+    return { ...around, credential: { state: "keyOnly", privateKey, privateKeyMode } };
+  if (certificate) return { ...around, credential: { state: "certificateOnly" } };
+  return { ...around, credential: { state: "none" } };
 }
 
-const ownerOnly = (mode: number | null) => mode === null || (mode & 0o077) === 0;
-export const restrictsToOwner = ownerOnly;
+// True when a rotation was interrupted while its files were being moved into place: the
+// current key and certificate do not match, and one of them is already the new pair's.
+export function interruptedRotation(secrets: LocalSecrets): boolean {
+  const { credential, pending } = secrets;
+  if (credential.state !== "mismatch" || !pending) return false;
+  return (
+    pending.certificate.checkPrivateKey(credential.privateKey) ||
+    pending.certificate.raw.equals(credential.certificate.raw)
+  );
+}
 
 async function temporaryFile(path: string, content: string, mode: number): Promise<string> {
   const temporary = join(dirname(path), `.${randomBytes(6).toString("hex")}.tmp`);
@@ -247,7 +330,8 @@ async function temporaryFile(path: string, content: string, mode: number): Promi
   } finally {
     await handle.close();
   }
-  // The mode given to open is reduced by the umask; set it exactly.
+  // The mode given to open is reduced by the umask; set it exactly. Windows has no such modes:
+  // there the folder's access control list decides.
   if (process.platform !== "win32") await chmod(temporary, mode);
   return temporary;
 }
@@ -255,6 +339,12 @@ async function temporaryFile(path: string, content: string, mode: number): Promi
 async function removeQuietly(path: string) {
   await unlink(path).catch(() => {});
 }
+
+const exists = (path: string) =>
+  lstat(path).then(
+    () => true,
+    () => false,
+  );
 
 // Puts a finished temporary file in place. Without `replace` an existing file is never
 // overwritten: the hard link fails if the name is taken.
@@ -269,8 +359,7 @@ async function place(temporary: string, path: string, replace: boolean) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST")
       throw new Error(`${path} already exists. Pass --rotate-certificate to replace it.`);
     // A file system without hard links: check, then rename.
-    const existing = await lstat(path).catch(() => null);
-    if (existing)
+    if (await exists(path))
       throw new Error(`${path} already exists. Pass --rotate-certificate to replace it.`);
     await rename(temporary, path);
     return;
@@ -278,29 +367,43 @@ async function place(temporary: string, path: string, replace: boolean) {
   await removeQuietly(temporary);
 }
 
-export async function prepareSecretsDirectory(directory: string) {
+// Creates the secrets directory, owner-only, when it is missing. An existing directory's
+// permissions are changed only by an explicit step of the plan (see plan.ts), because they may
+// carry an access control list the administrator set on purpose.
+export async function ensureSecretsDirectory(directory: string) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32" && !ownerOnly(await modeOf(directory)))
-    await chmod(directory, 0o700);
 }
 
-// Writes the key (0600) and certificate (0644). Both are written to temporary files first and
-// the key is put in place before the certificate, so an interruption leaves at worst a key
-// without its certificate, which a re-run certifies again. The key is never overwritten unless
-// `replaceKey` (--rotate-certificate).
+export interface WriteModes {
+  // 0600 normally; 0640 when the directory has a default ACL, so the entries it hands down are
+  // not masked off (with an ACL the group bits are the mask, not the owning group).
+  privateKey: number;
+  certificate: number;
+}
+export const ownerModes: WriteModes = { privateKey: 0o600, certificate: 0o644 };
+
+// Writes a first pair, or a certificate for a key that is already there. Both are written to
+// temporary files first and the key is put in place before the certificate, so an interruption
+// leaves at worst a key without its certificate, which a re-run certifies again. An existing key
+// is never overwritten: replacing a working pair is a rotation (writePending, then
+// promotePending).
 export async function writeCredential(
   files: CertificateFiles,
   credential: { privateKeyPem: string | null; certificatePem: string },
-  options: { replaceKey: boolean },
+  modes: WriteModes = ownerModes,
 ) {
-  await prepareSecretsDirectory(files.directory);
+  await ensureSecretsDirectory(files.directory);
   const key = credential.privateKeyPem
-    ? await temporaryFile(files.privateKey, credential.privateKeyPem, 0o600)
+    ? await temporaryFile(files.privateKey, credential.privateKeyPem, modes.privateKey)
     : null;
   let certificate: string | null = null;
   try {
-    certificate = await temporaryFile(files.certificate, credential.certificatePem, 0o644);
-    if (key) await place(key, files.privateKey, options.replaceKey);
+    certificate = await temporaryFile(
+      files.certificate,
+      credential.certificatePem,
+      modes.certificate,
+    );
+    if (key) await place(key, files.privateKey, false);
     await place(certificate, files.certificate, true);
   } finally {
     if (key) await removeQuietly(key);
@@ -308,7 +411,53 @@ export async function writeCredential(
   }
 }
 
-// Tightens a private key file that is readable by others.
-export async function restrictPrivateKey(files: CertificateFiles) {
-  if (process.platform !== "win32") await chmod(files.privateKey, 0o600);
+// A rotation's new pair, written beside the working one under .new names. The working pair is
+// not touched, so if the upload fails Prism365 keeps signing in with it.
+export async function writePending(
+  files: CertificateFiles,
+  credential: NewCredential,
+  modes: WriteModes = ownerModes,
+) {
+  await ensureSecretsDirectory(files.directory);
+  const key = await temporaryFile(files.pendingKey, credential.privateKeyPem, modes.privateKey);
+  let certificate: string | null = null;
+  try {
+    certificate = await temporaryFile(
+      files.pendingCertificate,
+      credential.certificatePem,
+      modes.certificate,
+    );
+    await rename(key, files.pendingKey);
+    await rename(certificate, files.pendingCertificate);
+  } finally {
+    await removeQuietly(key);
+    if (certificate) await removeQuietly(certificate);
+  }
+}
+
+// Moves a rotation's new pair into place once it is on the registration, keeping the replaced
+// pair under .previous names until the administrator removes it. Each file is first linked to
+// its .previous name and then replaced in one rename, so the working name always holds a file.
+// It can be run again after an interruption and carries on where it stopped; an interruption
+// between the key and the certificate leaves a mismatched pair that interruptedRotation spots.
+export async function promotePending(files: CertificateFiles) {
+  for (const [pending, current, previous] of [
+    [files.pendingKey, files.privateKey, files.previousKey],
+    [files.pendingCertificate, files.certificate, files.previousCertificate],
+  ] as const) {
+    if (!(await exists(pending))) continue;
+    if ((await exists(current)) && !(await exists(previous))) await link(current, previous);
+    await rename(pending, current);
+  }
+}
+
+// Removes a rotation's new pair that never reached the registration.
+export async function discardPending(files: CertificateFiles) {
+  await removeQuietly(files.pendingKey);
+  await removeQuietly(files.pendingCertificate);
+}
+
+// Tightens one file or directory to its owner, when the plan decided to.
+export async function restrictToOwner(path: string, mode: number) {
+  if (process.platform !== "win32") await chmod(path, mode);
 }

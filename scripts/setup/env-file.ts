@@ -76,14 +76,47 @@ export function assertEnvValue(key: string, value: string) {
     );
 }
 
+export class EnvFileError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EnvFileError";
+  }
+}
+
+// A quoted value that does not close on its own line goes on over the next lines, which a
+// line-by-line edit would mistake for assignments of their own. Such files are refused.
+function multiLineKeys(text: string): string[] {
+  const keys: string[] = [];
+  for (const line of lines(text)) {
+    const match = ASSIGNMENT.exec(content(line).body);
+    const raw = match?.[4]?.trimStart() ?? "";
+    const quote = raw[0];
+    if (
+      match?.[2] &&
+      (quote === '"' || quote === "'" || quote === "`") &&
+      raw.indexOf(quote, 1) < 0
+    )
+      keys.push(match[2]);
+  }
+  return keys;
+}
+
 // Sets the managed keys. A key already assigned is changed where it is (every assignment of it,
 // so a duplicate further down cannot undo it); a key only present as a commented example
 // (`# KEY=...`) gets its line right after that comment; anything else is added at the end.
+// Managed keys are always written as plain KEY=value, the one form every reader of the file
+// agrees on (scripts/docker-live.sh reads `^KEY=` with sed); an inline comment on such a line
+// moves to its own line just above it.
 export function mergeEnv(
   text: string,
   values: ManagedValues,
 ): { text: string; changes: EnvChange[] } {
   for (const key of MANAGED_KEYS) assertEnvValue(key, values[key]);
+  const multiLine = multiLineKeys(text);
+  if (multiLine.length > 0)
+    throw new EnvFileError(
+      `The settings file has a value that runs over several lines (${multiLine.join(", ")}). The setup cannot change it safely line by line. Put that value on one line, or set the Entra settings by hand (docs/SETUP.md, Manual setup).`,
+    );
   const before = readEnv(text);
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const output = lines(text);
@@ -94,9 +127,11 @@ export function mergeEnv(
     const key = match?.[2] as ManagedKey | undefined;
     if (!match || !key || !(MANAGED_KEYS as readonly string[]).includes(key)) continue;
     assigned.add(key);
-    const { value, suffix } = splitValue(match[4] ?? "");
-    if (value === values[key]) continue;
-    output[index] = `${match[1]}${key}${match[3]}${values[key]}${suffix}${end}`;
+    const { suffix } = splitValue(match[4] ?? "");
+    const comment = suffix.trim().startsWith("#") ? suffix.trim() : "";
+    const plain = `${key}=${values[key]}${end || eol}`;
+    if (body === `${key}=${values[key]}`) continue;
+    output[index] = comment ? `${comment}${end || eol}${plain}` : plain;
   }
   const appended: string[] = [];
   for (const key of MANAGED_KEYS) {

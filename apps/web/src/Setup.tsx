@@ -5,7 +5,7 @@ import {
   setupStatusSchema,
 } from "@prism365/contracts";
 import { useCallback, useEffect, useState } from "react";
-import { readJson } from "./common.tsx";
+import { post, readJson } from "./common.tsx";
 
 // The first-run checklist on the Microsoft access page: what this installation has set up and
 // what it has not, each with its fix (docs/SETUP.md). "Check with Microsoft" adds one small test
@@ -28,21 +28,26 @@ function LiveSetupChecklist({ session }: { session: PrismSession }) {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [error, setError] = useState("");
   const [probing, setProbing] = useState(false);
-  const load = useCallback(async (probe: boolean, signal?: AbortSignal) => {
-    try {
-      setStatus(
-        await readJson(
-          `/api/v1/setup/status${probe ? "?probe=1" : ""}`,
-          (value) => setupStatusSchema.parse(value),
-          signal ? { signal } : {},
-        ),
-      );
-      setError("");
-    } catch (loadError) {
-      if (signal?.aborted) return;
-      setError(loadError instanceof Error ? loadError.message : "The checklist could not load.");
-    }
-  }, []);
+  // The status is a plain read; checking with Microsoft is a POST, so it carries the session's
+  // CSRF value like every other action.
+  const load = useCallback(
+    async (probe: boolean, signal?: AbortSignal) => {
+      try {
+        setStatus(
+          await readJson(
+            probe ? "/api/v1/setup/probe" : "/api/v1/setup/status",
+            (value) => setupStatusSchema.parse(value),
+            probe ? post(session) : signal ? { signal } : {},
+          ),
+        );
+        setError("");
+      } catch (loadError) {
+        if (signal?.aborted) return;
+        setError(loadError instanceof Error ? loadError.message : "The checklist could not load.");
+      }
+    },
+    [session],
+  );
   useEffect(() => {
     const controller = new AbortController();
     void load(false, controller.signal);
