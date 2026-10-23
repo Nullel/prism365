@@ -16,6 +16,8 @@ with earlier runs and exported. Nothing runs on a schedule, and no audit changes
 | MFA registration (`mfa.registration`) | Who has no strong method registered, which admins lack MFA, who relies on text or calls? | `AuditLog.Read.All`, a role such as Reports Reader, Security Reader, Security Administrator or Global Reader |
 | Guest accounts (`guests.review`) | Which invitations were never accepted, which guests never signed in or went quiet, from which domains? | `User.Read.All`; sign-in dates as above, or invitation states only |
 | License capacity (`licenses.capacity`) | Which products have no seats left, more assigned than owned, an expired or suspended subscription, or unassigned seats? | `LicenseAssignment.Read.All`, a role such as Directory Readers, Global Reader or License Administrator |
+| Conditional Access policies (`identity.conditional-access`) | Which policies exist and what do they require and leave out? Does any enabled policy block legacy authentication or ask administrators for MFA? | `Policy.Read.All`, a role such as Global Reader, Security Reader, Security Administrator or Conditional Access Administrator, Microsoft Entra ID P1; `User.Read.All` and `LicenseAssignment.Read.All` add detail |
+| Risky users (`identity.risky-users`) | Which accounts does Microsoft Entra ID Protection mark as at risk or compromised, how high, and has the risk been dealt with? | `IdentityRiskyUser.Read.All`, a role such as Global Reader, Security Reader, Security Operator or Security Administrator, Microsoft Entra ID P2 |
 
 `LicenseAssignment.Read.All`, when granted, also gives the account audits license names instead
 of Microsoft's product IDs.
@@ -66,7 +68,10 @@ The audits use the read packs the rest of Prism365 uses. With the sign-in audit 
 up (`directory.users.read`, `user.licenses.read`, `audit.signins.read`), every audit is
 available. The MFA audit reads `reports/authenticationMethods/userRegistrationDetails` through
 its own pack, `reports.authentication-methods.read`, which uses the same `AuditLog.Read.All`; an
-installation that enabled `audit.signins.read` needs nothing more. A pack's permission must be
+installation that enabled `audit.signins.read` needs nothing more. The identity audits
+use two more packs: `identity.conditional-access.read` (`Policy.Read.All`) and
+`identity.risk.read` (`IdentityRiskyUser.Read.All`); the Conditional Access audit also uses
+`directory.users.read` and `tenant.licenses.read` when they are granted. A pack's permission must be
 both enabled in `ENABLED_READ_FEATURES` and granted by the session. The page says which is
 missing and links to **Grant access**.
 
@@ -181,3 +186,124 @@ Saving the scope writes an access-ledger entry, `audits.scope.changed`, with the
 and the time, before the scope is saved. It does not name them. The scope needs no Microsoft
 permission. The run's scope and domain counts are two columns of `prism365_audit_run`, added in
 place by migration 004.
+
+## 10. Identity audits
+
+Both audits in the Identity group read endpoints that Microsoft limits to one request per second
+for each tenant, and the same limit covers Conditional Access policies, named locations, risky
+users and risk detections together. Microsoft answers a request over the limit with HTTP 429 and
+no `Retry-After`, which leaves the Graph client to guess at a wait of half a second, one second
+and two seconds. So these audits space their own requests: the first goes straight out and each
+later one to these endpoints waits 1.1 seconds. A Conditional Access run that needs named locations
+takes a little over a second longer for it, and a risky users run waits once per page of 500. The
+wait stops the moment the run's time limit passes. Two of these audits running at the same time
+share the limit and can still be answered with a 429; the client retries, and a run that is still
+refused ends as throttled. Sources: [throttling limits](https://learn.microsoft.com/en-us/graph/throttling-limits).
+
+### Conditional Access policies
+
+Reads `GET /identity/conditionalAccess/policies` with the `identity.conditional-access.read` pack
+(`Policy.Read.All`). The request sets no page size, because Microsoft does not document a maximum,
+and follows the continuation link. It reads `GET /identity/conditionalAccess/namedLocations` only
+when a policy points at a named location, to show the location by name. With `directory.users.read`
+granted it looks up the display name of each excluded user, one request per user and at most 50
+users, asking for the name fields only. With `tenant.licenses.read` granted and an empty policy
+list, it reads the tenant's subscriptions to say whether any of them includes Microsoft Entra ID P1
+(the `AAD_PREMIUM` service plan, which the P2 product also carries). Not scoped: a row is a policy.
+
+One row per policy:
+
+- Policy and State: On, Report only or Off. A state this version does not know is shown as Unknown
+  and counted in none of the three tiles.
+- Applies to: all users, or counts of users, groups and roles (with names for the common administrator
+  roles), guests and external users with their types, or workload identities.
+- Leaves out: excluded users, groups and roles as counts, with the users' names when the session
+  has granted `User.Read.All`. An account Microsoft no longer has is counted as deleted or unknown.
+- Apps: all apps, Office 365, Microsoft admin portals, a count of specific apps, user actions, and
+  how many apps are excluded.
+- Conditions: client app types, platforms, locations by their named-location name, and sign-in,
+  user and service principal risk levels. Conditions that match everything are left out.
+- Grant: block, or what must be satisfied, with "one of" when the operator is OR. An authentication
+  strength shows by name.
+- Session: sign-in frequency, persistent browser, app enforced restrictions, Conditional Access App
+  Control and disabled resilience defaults.
+- Modified, and Created (hidden), plus counts of excluded users, groups and roles (hidden).
+
+Views are Enabled, Report only, Off, Blocks legacy authentication, Requires MFA and Has exclusions.
+
+Tiles:
+
+- Policies enabled, Policies in report-only and Policies off.
+- No enabled policy blocks legacy authentication (critical, shown only when true). A policy counts
+  when it is on, applies to all users, lists both Exchange ActiveSync and other clients as client
+  app types, and blocks. A report-only policy, a policy for some users and a policy for one of the
+  two client types do not count. A block on all client apps does not count either, because it is
+  not aimed at legacy clients and another condition usually narrows it.
+- No enabled policy requires MFA for administrators (warning, shown only when true). A policy
+  counts when it is on, its grant includes MFA or an authentication strength, it covers all users or
+  the Global Administrator role (template ID `62e90394-69f5-4237-9190-012177145e10`), and it does
+  not exclude that role.
+- Users excluded from MFA policies: the distinct users excluded from at least one policy that is
+  on and requires MFA. Break-glass (emergency access) accounts are often here on purpose, so the
+  tile asks for a check, not a fix. The run's notes say the same, because a tile has no help text.
+
+An empty policy list gets a note that says whether the tenant has Entra ID P1, does not, or could
+not be checked. Without proof that Conditional Access is available, the two "No enabled policy"
+tiles are left out, because a tenant that cannot have a policy has not missed one.
+
+What it cannot see:
+
+- Report-only policies do not enforce, so every check leaves them out.
+- The checks do not weigh apps, locations, risk levels or exclusions. A policy for all users that
+  excludes most of them still counts, and Has exclusions and Leaves out are where to look. A grant
+  with the operator OR counts as requiring MFA even though another listed control can satisfy it.
+- Policies refer to roles by role template ID. Prism365 names sixteen common administrator roles
+  and counts the others. It does not say who is in an excluded group or holds an excluded role.
+- Security defaults are not Conditional Access policies and are not read. When they are on,
+  Microsoft blocks legacy authentication and asks administrators for MFA, so a missing policy may not
+  leave the tenant open.
+- Nothing is evaluated: there is no what-if, and no sign-in is matched to a policy.
+- Microsoft does not document the page size, whether a tenant without P1 gets an error or an empty
+  list, or how a list of guest types is returned (a comma-separated string or an array). The audit
+  reads both forms of the guest types and treats an empty list as above.
+
+A policy Prism365 cannot read is left out, counted in a note, and makes the run partial. If the
+named locations cannot be read the policies are listed with locations unnamed, and the run is
+partial.
+
+### Risky users
+
+Reads `GET /identityProtection/riskyUsers?$top=500` with the `identity.risk.read` pack
+(`IdentityRiskyUser.Read.All`), a page of 500 at a time (Microsoft's documented maximum) with a
+wait between pages, up to 10,000 users. Microsoft documents that this API needs Microsoft Entra ID
+P2; what a P1 tenant receives is not documented, so both a refusal and an empty list say "Risky user
+data in Microsoft Graph needs Microsoft Entra ID P2." Scoped by the account's domain, with the
+Domain column and the scope notes of section 9.
+
+One row per risky user: the user (linked to the person's page; the row's ID is the user's object
+ID), risk level (High, Medium, Low, Hidden or None), risk state (At risk, Confirmed compromised,
+Remediated, Dismissed, Confirmed safe or None), risk detail as words, when Microsoft last updated
+the risk and how many days ago, and whether Microsoft is still processing the user. Users Microsoft
+lists as deleted are left out and counted in a note.
+
+Views are At risk (at risk or confirmed compromised), High risk (high level and still at risk),
+Remediated or dismissed, and All.
+
+Tiles:
+
+- Confirmed compromised (critical when above zero).
+- High risk, still at risk (critical when above zero).
+- Medium risk, still at risk (warning when above zero).
+- Remediated or dismissed in the last 30 days, by the date Microsoft last updated the risk.
+- High risk or compromised outside the scope (critical, shown only when above zero). A scope
+  never hides these silently, for the reason the MFA audit gives for administrators without MFA.
+
+What it cannot see:
+
+- Microsoft keeps a risky user until the risk is remediated, so an old entry stays listed until
+  someone closes it.
+- Hidden means the account is not covered by ID Protection, so Microsoft reports no risk for it.
+- The results are Microsoft's detections. Prism365 adds none, reads no risk detections or risky
+  sign-ins, and does not say why Microsoft rated a user.
+- The risk detail values Microsoft sends only on request are not asked for. If a tenant sends one
+  anyway it is shown in words.
