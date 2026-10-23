@@ -1,6 +1,6 @@
+import type { AiProvider } from "@prism365/ai";
 import { MemoryStateStore } from "@prism365/storage";
 import { describe, expect, it, vi } from "vitest";
-import type { AiProvider } from "@prism365/ai";
 import { createApp } from "../src/app.ts";
 import type { AppConfig, IdentityConfig } from "../src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../src/identity.ts";

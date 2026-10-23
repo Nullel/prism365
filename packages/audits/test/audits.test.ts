@@ -7,15 +7,16 @@ import {
   type AuditContext,
   activityOf,
   auditDefinition,
+  auditReadScope,
   builtInAudits,
   type DirectoryUser,
+  domainCounts,
   guestAccountsAudit,
   guestDomain,
   inactiveAccountsAudit,
   licenseCapacityAudit,
   licenseReclaimAudit,
   mfaRegistrationAudit,
-  domainCounts,
   principalDomain,
   scopeNote,
   strongestMethod,
@@ -1035,5 +1036,27 @@ describe("what the audit scope leaves out", () => {
     expect(inactive.rows).toEqual([]);
     expect(inactive.domains?.map((item) => item.domain)).toContain("example.invalid");
     expect(inactive.notes.join(" ")).toContain(`${users.length} accounts in other domains`);
+  });
+});
+
+describe("what a run may read", () => {
+  it("opens only enabled optional packs, and only the permissions enabled packs carry", () => {
+    // LicenseAssignment.Read.All is granted for the enabled per-user licence pack, but the
+    // inactive audit's optional tenant licence pack is off: the shared permission must not open it.
+    const off = auditReadScope(
+      inactiveAccountsAudit,
+      ["directory.users.read", "audit.signins.read", "user.licenses.read"],
+      ["User.Read.All", "AuditLog.Read.All", "LicenseAssignment.Read.All"],
+    );
+    expect(off.packs).not.toContain("tenant.licenses.read");
+    expect(off.granted).not.toContain("LicenseAssignment.Read.All");
+    expect(off.granted).toEqual(["User.Read.All", "AuditLog.Read.All"]);
+    const on = auditReadScope(
+      inactiveAccountsAudit,
+      ["directory.users.read", "audit.signins.read", "tenant.licenses.read"],
+      ["User.Read.All", "AuditLog.Read.All", "LicenseAssignment.Read.All"],
+    );
+    expect(on.packs).toContain("tenant.licenses.read");
+    expect(on.granted).toContain("LicenseAssignment.Read.All");
   });
 });

@@ -1,5 +1,5 @@
 import { GraphHttpClient } from "@prism365/graph";
-import { ModuleScheduler, upsertAttention, defaultAttentionPreferences } from "@prism365/modules";
+import { defaultAttentionPreferences, ModuleScheduler, upsertAttention } from "@prism365/modules";
 import { MemoryStateStore, PGliteModuleDatabase } from "@prism365/storage";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.ts";
@@ -60,6 +60,7 @@ beforeAll(async () => {
   const registry = createModuleRegistry(config);
   const database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     graphClient: (getAccessToken) =>

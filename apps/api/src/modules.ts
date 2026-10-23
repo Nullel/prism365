@@ -1,10 +1,5 @@
-import {
-  type CollectionCredential,
-  CredentialUnavailableError,
-  ModuleRegistry,
-  ModuleScheduler,
-  type SchedulerEvent,
-} from "@prism365/modules";
+import { mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import { GraphHttpClient } from "@prism365/graph";
 import {
   createMessageCenterModule,
@@ -12,12 +7,17 @@ import {
 } from "@prism365/module-service-health";
 import { createSigninsAuditModule } from "@prism365/module-signins-audit";
 import {
+  type CollectionCredential,
+  CredentialUnavailableError,
+  ModuleRegistry,
+  ModuleScheduler,
+  type SchedulerEvent,
+} from "@prism365/modules";
+import {
   type ModuleDatabase,
   PGliteModuleDatabase,
   PostgresModuleDatabase,
 } from "@prism365/storage";
-import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { AppConfig } from "./config.ts";
 import { digest, type IdentityService, type IdentitySession } from "./identity.ts";
 
@@ -167,6 +167,7 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
     });
   }
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     // Background reads tolerate slower Graph queries and longer throttling waits than the
