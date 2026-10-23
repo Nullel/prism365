@@ -140,6 +140,7 @@ beforeAll(async () => {
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   const seen = failingItems(database);
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database: seen,
     graphClient: (getAccessToken) => new GraphHttpClient({ getAccessToken }),
@@ -461,6 +462,11 @@ describe("receipt import", () => {
       [receipt(randomUUID(), [item({ userId: null, userPrincipalName: null })]), "needs a userId"],
       [{ ...receipt(randomUUID(), [item()]), extra: true }, 'does not read: "extra"'],
       [receipt(randomUUID(), []), "items is empty"],
+      // Past year 9999 once stored, which would break every later list of receipts.
+      [
+        receipt(randomUUID(), [item()], { performedAt: "9999-12-31T23:59:59-14:00" }),
+        "between the years 2000 and 2099",
+      ],
       ["not json", "not valid JSON"],
       ["", "not valid JSON"],
     ];

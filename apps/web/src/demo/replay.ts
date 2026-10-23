@@ -11,12 +11,24 @@ import {
   type PersonRecord,
   type PersonSigninPage,
   type AttentionSettings,
+  type AuditQuery,
   type AuditSettings,
   auditScopeSchema,
   attentionPreferencesSchema,
   auditCsv,
+  buildHandoff,
+  canonicalJson,
   findingStateSchema,
+  type Handoff,
+  type HandoffList,
+  type HandoffRecord,
+  handoffFileName,
+  hasPersonColumn,
   queryAuditRows,
+  type ReceiptSummary,
+  receiptProblem,
+  receiptSchema,
+  type StoredReceiptItem,
 } from "@prism365/contracts";
 
 // The portfolio demo has no server. `installReplay` swaps `window.fetch` for a shim that answers
@@ -142,6 +154,14 @@ export function shiftTimestamps<T>(value: T, days: number): T {
 // State
 // ---------------------------------------------------------------------------------------------
 
+// A receipt imported in this page: its summary, its items, and its canonical form, which tells
+// the same receipt sent again from a different one.
+interface SimulatedReceipt {
+  summary: ReceiptSummary;
+  items: StoredReceiptItem[];
+  canonical: string;
+}
+
 interface SimulatedRun {
   id: string;
   auditId: string;
@@ -160,6 +180,9 @@ export interface DemoState {
   auditSettings: AuditSettings | null;
   collection: CollectionStatus | null;
   runs: SimulatedRun[];
+  // Handoffs exported and receipts imported in this page, newest first.
+  handoffs: HandoffRecord[];
+  receipts: SimulatedReceipt[];
 }
 
 type Json = Record<string, unknown>;
@@ -198,6 +221,8 @@ export function createDemoState(fixtures: Fixtures, now: () => Date = () => new 
     auditSettings: bodyOf<AuditSettings>(responses, "GET /api/v1/settings/audits"),
     collection: modules ? { ...modules.collection } : null,
     runs: [],
+    handoffs: [],
+    receipts: [],
   };
 }
 
@@ -520,15 +545,9 @@ function startRun(state: DemoState, auditId: string): DemoResponse {
   return json(202, { run: runSummary(simulated(state, run)), started: true });
 }
 
-// The CSV the server would send for the same query: what the page shows, built here from the
-// rows and the audit's own definition.
-function exportCsv(state: DemoState, id: string, url: URL): DemoResponse {
-  const detail = runDetail(state, id);
-  const definition = bodyOf<AuditCatalog>(state.responses, `GET ${API}/audits`)?.audits.find(
-    (entry) => entry.definition.id === detail?.auditId,
-  )?.definition;
-  if (!detail || !definition || detail.status !== "succeeded")
-    return json(404, { error: "run_not_found", message: "That run has no results." });
+// The view, filters, search and sort an export names, read the way the server reads them, so the
+// CSV and the handoff of one view hold the same rows here too.
+function exportQuery(url: URL): AuditQuery {
   const query = url.searchParams;
   const facets = Object.fromEntries(
     [...query.entries()]
@@ -536,14 +555,30 @@ function exportCsv(state: DemoState, id: string, url: URL): DemoResponse {
       .map(([key, value]) => [key.slice(2), value]),
   );
   const sort = query.get("sort");
-  const rows = queryAuditRows(definition, detail.rows, {
+  return {
     view: query.get("view"),
     facets,
     search: query.get("search") ?? "",
     sort: sort
       ? { column: sort, direction: query.get("direction") === "asc" ? "asc" : "desc" }
       : null,
-  });
+  };
+}
+
+function runDefinition(state: DemoState, detail: AuditRunDetail | null) {
+  return bodyOf<AuditCatalog>(state.responses, `GET ${API}/audits`)?.audits.find(
+    (entry) => entry.definition.id === detail?.auditId,
+  )?.definition;
+}
+
+// The CSV the server would send for the same query: what the page shows, built here from the
+// rows and the audit's own definition.
+function exportCsv(state: DemoState, id: string, url: URL): DemoResponse {
+  const detail = runDetail(state, id);
+  const definition = runDefinition(state, detail);
+  if (!detail || !definition || detail.status !== "succeeded")
+    return json(404, { error: "run_not_found", message: "That run has no results." });
+  const rows = queryAuditRows(definition, detail.rows, exportQuery(url));
   return {
     status: 200,
     contentType: "text/csv; charset=utf-8",
@@ -552,6 +587,148 @@ function exportCsv(state: DemoState, id: string, url: URL): DemoResponse {
       "Content-Disposition": `attachment; filename="prism365-${detail.auditId}-${detail.startedAt.slice(0, 10)}.csv"`,
     },
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Handoffs
+// ---------------------------------------------------------------------------------------------
+
+// The handoff the recording exported. Its tenant and administrator stand in for the ones a
+// server would put in a new export; without it, the demo has no handoff to give.
+function recordedHandoff(state: DemoState): Handoff | null {
+  for (const [key, hit] of Object.entries(state.responses))
+    if (key.includes("/handoff.json") && hit.status === 200) return hit.body as Handoff;
+  return null;
+}
+
+function handoffList(state: DemoState): HandoffList {
+  const base = bodyOf<HandoffList>(state.responses, `GET ${API}/handoffs`);
+  return {
+    handoffs: [...state.handoffs, ...(base?.handoffs ?? [])].slice(0, 100),
+    receipts: [
+      ...state.receipts.map((receipt) => receipt.summary),
+      ...(base?.receipts ?? []),
+    ].slice(0, 100),
+  };
+}
+
+// The document the server would send for the same query, built from the recorded rows with the
+// shared builder, and listed on the Handoffs page like a real export.
+function exportHandoff(state: DemoState, id: string, url: URL): DemoResponse {
+  const detail = runDetail(state, id);
+  const definition = runDefinition(state, detail);
+  if (!detail || !definition || detail.status !== "succeeded")
+    return json(404, { error: "run_not_found", message: "That run has no results." });
+  if (!hasPersonColumn(definition))
+    return json(404, {
+      error: "no_accounts",
+      message: "This audit lists no accounts, so it has nothing to hand off.",
+    });
+  const recorded = recordedHandoff(state);
+  if (!recorded) return unavailable();
+  const query = exportQuery(url);
+  const columns = url.searchParams.get("columns");
+  const handoff = buildHandoff({
+    id: newId(),
+    generatedAt: state.now().toISOString(),
+    tenantId: recorded.tenantId,
+    generatedBy: recorded.generatedBy,
+    definition,
+    run: detail,
+    query,
+    rows: queryAuditRows(definition, detail.rows, query),
+    columns: columns === null ? null : columns.split(",").filter(Boolean),
+  });
+  const { source } = handoff;
+  state.handoffs.unshift({
+    id: handoff.id,
+    auditId: source.auditId,
+    auditTitle: source.auditTitle,
+    runId: source.runId,
+    view: source.view,
+    filtered: source.search !== "" || Object.keys(source.facets).length > 0,
+    items: handoff.items.length,
+    generatedAt: handoff.generatedAt,
+    generatedBy: { id: recorded.generatedBy.actorId, name: recorded.generatedBy.name },
+  });
+  return {
+    status: 200,
+    contentType: "application/json; charset=utf-8",
+    body: `${JSON.stringify(handoff, null, 2)}\n`,
+    headers: {
+      "Content-Disposition": `attachment; filename="${handoffFileName(detail.auditId, detail.startedAt)}"`,
+    },
+  };
+}
+
+// An import checked as the server checks it and kept for this page: the same receipt again is
+// answered as before, a different one under the same id is refused.
+function importReceipt(state: DemoState, body: unknown): DemoResponse {
+  const parsed = receiptSchema.safeParse(body);
+  if (!parsed.success)
+    return json(400, { error: "invalid_receipt", message: receiptProblem(body, parsed.error) });
+  const receipt = parsed.data;
+  const canonical = canonicalJson(receipt);
+  const list = handoffList(state);
+  const kept = state.receipts.find((item) => item.summary.id === receipt.id);
+  if (kept && kept.canonical !== canonical)
+    return json(409, {
+      error: "receipt_conflict",
+      message:
+        "A different receipt with this id was already imported. A kept receipt is never changed: the tool should send a correction as a new receipt with its own id.",
+    });
+  const recorded = list.receipts.find((item) => item.id === receipt.id);
+  if (recorded) return json(200, { receipt: clone(recorded), imported: false });
+  const handoff = receipt.handoffId
+    ? list.handoffs.find((item) => item.id === receipt.handoffId)
+    : null;
+  if (handoff === undefined)
+    return json(400, {
+      error: "unknown_handoff",
+      message:
+        "handoffId is not a handoff exported from this Prism365. Check that the receipt answers a handoff from this tenant, or send null.",
+    });
+  const count = (status: string) => receipt.items.filter((item) => item.status === status).length;
+  const summary: ReceiptSummary = {
+    id: receipt.id,
+    handoff: handoff
+      ? {
+          id: handoff.id,
+          auditId: handoff.auditId,
+          generatedAt: handoff.generatedAt,
+          items: handoff.items,
+        }
+      : null,
+    tool: receipt.tool,
+    performedAt: new Date(receipt.performedAt).toISOString(),
+    performedBy: receipt.performedBy,
+    importedAt: state.now().toISOString(),
+    items: receipt.items.length,
+    done: count("done"),
+    failed: count("failed"),
+    skipped: count("skipped"),
+  };
+  state.receipts.unshift({
+    summary,
+    items: receipt.items.map((item, position) => ({ position, ...item })),
+    canonical,
+  });
+  return json(201, { receipt: clone(summary), imported: true });
+}
+
+function receiptPage(state: DemoState, id: string, url: URL): DemoResponse | null {
+  const kept = state.receipts.find((item) => item.summary.id === id.toLowerCase());
+  if (!kept) return null;
+  const after = Number(url.searchParams.get("after") ?? "-1");
+  const requested = Number(url.searchParams.get("limit") ?? "200");
+  const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 200, 1), 500);
+  const rest = kept.items.filter((item) => item.position > (Number.isFinite(after) ? after : -1));
+  const items = rest.slice(0, limit);
+  return json(200, {
+    receipt: clone(kept.summary),
+    items: clone(items),
+    next: rest.length > limit ? (items.at(-1)?.position ?? null) : null,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -588,6 +765,11 @@ function handleGet(state: DemoState, path: string, url: URL, request: DemoReques
     answer = getRun(state, second);
   else if (first === "audit-runs" && second && third === "export.csv" && segments.length === 3)
     answer = exportCsv(state, second, url);
+  else if (first === "audit-runs" && second && third === "handoff.json" && segments.length === 3)
+    answer = exportHandoff(state, second, url);
+  else if (path === "/handoffs") answer = json(200, handoffList(state));
+  else if (first === "receipts" && second && segments.length === 2)
+    answer = receiptPage(state, second, url);
   return answer ?? fromRecording(state, request);
 }
 
@@ -667,6 +849,7 @@ function handlePost(state: DemoState, path: string, body: unknown): DemoResponse
   if (path === "/collection/stop") return setCollection(state, false);
   if (first === "audits" && second && third === "runs" && segments.length === 3)
     return startRun(state, second);
+  if (path === "/receipts") return importReceipt(state, body);
   if (path === "/auth/logout") return json(200, { signedOut: true });
   return unavailable();
 }

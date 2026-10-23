@@ -159,7 +159,8 @@ function evidenceValue(cell: AuditCell | undefined): HandoffEvidenceValue {
   if (typeof cell === "boolean") return cell;
   if (typeof cell === "number") return Number.isFinite(cell) ? cell : null;
   if (typeof cell === "string") return bounded(cell, 2_000);
-  if (Array.isArray(cell)) return bounded(cell.join("; "), 2_000);
+  // A list as the page reads it, one value after another; an empty one is no value.
+  if (Array.isArray(cell)) return cell.length > 0 ? bounded(cell.join("; "), 2_000) : null;
   return bounded(cell.name ?? cell.principal, 2_000);
 }
 
@@ -267,6 +268,16 @@ export function handoffFileName(auditId: string, runStartedAt: string): string {
 const receiptText = (min: number, max: number) =>
   z.string().trim().max(max).transform(cleanText).pipe(z.string().min(min));
 
+// When the tool did the work. Bounded to plausible years: PostgreSQL refuses some dates the
+// format allows (year 0) and moves others past year 9999, which no ISO timestamp can show.
+const performedAt = time.refine(
+  (value) => {
+    const at = Date.parse(value);
+    return at >= Date.UTC(2000, 0, 1) && at < Date.UTC(2100, 0, 1);
+  },
+  { message: "is not between the years 2000 and 2099" },
+);
+
 export const receiptActionSchema = z.string().regex(/^[a-z][a-z0-9.-]{1,79}$/);
 export const receiptStatusSchema = z.enum(["done", "failed", "skipped"]);
 export type ReceiptStatus = z.infer<typeof receiptStatusSchema>;
@@ -293,7 +304,7 @@ export const receiptSchema = z.strictObject({
   // The handoff this receipt answers, or null for actions taken without one.
   handoffId: guid.nullable(),
   tool: z.strictObject({ name: receiptText(1, 80), version: receiptText(1, 40) }),
-  performedAt: time,
+  performedAt,
   // The operator, as the tool names them.
   performedBy: receiptText(1, 200),
   items: z.array(receiptItemSchema).min(1).max(MAX_RECEIPT_ITEMS),
@@ -351,8 +362,9 @@ export function receiptProblem(input: unknown, error: z.ZodError): string {
   if (issue.code === "invalid_type" && value === undefined) return `${where} is missing.`;
   if (issue.code === "invalid_type")
     return `${where} should be a ${issue.expected}${nullableFields.has(field) ? " or null" : ""}.`;
+  // The tool's own text is echoed only short, so a message never grows with what was sent.
   if (issue.code === "unrecognized_keys")
-    return `${where} has a field Prism365 does not read: "${issue.keys[0] ?? ""}". Check the receipt's format and version.`;
+    return `${where} has a field Prism365 does not read: "${cleanText((issue.keys[0] ?? "").slice(0, 80))}". Check the receipt's format and version.`;
   if (issue.code === "too_big")
     return issue.origin === "array"
       ? `${where} has more than ${issue.maximum} entries.`
@@ -365,7 +377,9 @@ export function receiptProblem(input: unknown, error: z.ZodError): string {
     if (field === "format")
       return `This is not a Prism365 receipt: format should be "${RECEIPT_FORMAT}".`;
     if (field === "version")
-      return `This receipt is version ${String(value)}. This Prism365 reads version 1.`;
+      return typeof value === "number" && Number.isFinite(value)
+        ? `This receipt is version ${value}. This Prism365 reads version 1.`
+        : "This receipt has no version Prism365 reads. This Prism365 reads version 1.";
     if (field === "status") return `${where} should be done, failed or skipped.`;
     return `${where} has a value Prism365 does not read.`;
   }
@@ -377,6 +391,7 @@ export function receiptProblem(input: unknown, error: z.ZodError): string {
   }
   if (issue.code === "custom" && field === "userId")
     return `${pathText(path.slice(0, -1))} needs a userId or a userPrincipalName.`;
+  if (issue.code === "custom" && field === "performedAt") return `${where} ${issue.message}.`;
   return `${where} is not valid.`;
 }
 

@@ -49,6 +49,13 @@ says.
 The Graph client refuses every write, and every permission Prism365 asks
 for is tied to one feature.
 
+### Prism365 and action tools
+
+Prism365 sees; a separate tool acts. From an audit's results you export a handoff, the list of
+accounts to act on with the reasons, for your offboarding or lifecycle tool. The receipt that
+tool sends back is imported and shown on each person's page as the tool's report
+([formats](docs/handoff.md)); Prism365 never calls the tool and shares no credentials with it.
+
 ## How it is built
 
 TypeScript throughout: a Fastify API, a React and Vite front end, and zod contracts shared by
@@ -89,7 +96,7 @@ HTTPS, and each feature's permissions.
 
 ## Documentation
 
-[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Sign-in audit](docs/modules/signins-audit.md),
+[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
 [Service health](docs/modules/service-health.md), [Module runtime](docs/MODULES.md),
 [Permissions](docs/PERMISSIONS.md), [Privacy](docs/PRIVACY.md), [Architecture](docs/ARCHITECTURE.md),
 [Roadmap](docs/ROADMAP.md), and the decision records in [docs/decisions](docs/decisions).

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   type AuditRow,
@@ -289,6 +290,12 @@ describe("receipt v1", () => {
       [receipt({ handoffId: "not-a-guid" }), false],
       [receipt({ performedAt: "2026-10-22" }), false],
       [receipt({ performedAt: "2026-10-22T14:30:00" }), false],
+      // Dates PostgreSQL refuses, or stores past year 9999, never reach it.
+      [receipt({ performedAt: "0000-01-01T00:00:00Z" }), false],
+      [receipt({ performedAt: "9999-12-31T23:59:59-14:00" }), false],
+      [receipt({ performedAt: "1999-12-31T23:59:59Z" }), false],
+      [receipt({ performedAt: "2000-01-01T00:00:00Z" }), true],
+      [receipt({ performedAt: "2099-12-31T23:59:59+02:00" }), true],
       [receipt({ format: "prism365.handoff" }), false],
       [receipt({ version: 2 }), false],
     ];
@@ -348,6 +355,9 @@ describe("receipt v1", () => {
     expect(problem({ ...receipt(), extra: 1 })).toBe(
       'The receipt has a field Prism365 does not read: "extra". Check the receipt\'s format and version.',
     );
+    // What the tool sent is echoed only short.
+    expect(problem({ ...receipt(), ["x".repeat(10_000)]: 1 }).length).toBeLessThan(200);
+    expect(problem(receipt({ version: "x".repeat(10_000) })).length).toBeLessThan(200);
     const { performedBy: _performedBy, ...missing } = receipt();
     expect(problem(missing)).toBe("performedBy is missing.");
     expect(problem(receipt({}, { action: "Bad" }))).toMatch(
@@ -366,6 +376,9 @@ describe("receipt v1", () => {
       "performedAt is not a date and time with a time zone, such as 2026-10-22T14:30:00Z.",
     );
     expect(problem(receipt({ handoffId: 7 }))).toBe("handoffId should be a string or null.");
+    expect(problem(receipt({ performedAt: "1970-01-01T00:00:00Z" }))).toBe(
+      "performedAt is not between the years 2000 and 2099.",
+    );
   });
 
   it("digests the same receipt the same way whatever its key order", () => {
@@ -385,5 +398,18 @@ describe("receipt v1", () => {
   it("turns an action slug into a readable label", () => {
     expect(actionLabel("account.sign-in-blocked")).toBe("Account sign in blocked");
     expect(actionLabel("license.removed")).toBe("License removed");
+  });
+});
+
+describe("docs/handoff.md", () => {
+  it("gives a complete example of each format that parses", async () => {
+    const text = await readFile(new URL("../../../docs/handoff.md", import.meta.url), "utf8");
+    const examples = [...text.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) =>
+      JSON.parse(match[1] ?? ""),
+    );
+    expect(examples).toHaveLength(2);
+    const [handoffExample, receiptExample] = examples;
+    expect(handoffSchema.parse(handoffExample).items.length).toBeGreaterThan(0);
+    expect(receiptSchema.parse(receiptExample).handoffId).toBe(handoffExample.id);
   });
 });

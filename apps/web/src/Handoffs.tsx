@@ -58,6 +58,26 @@ export async function readReceiptFile(file: {
   }
 }
 
+// Saves a handoff through fetch rather than a plain link, so a refusal (a deleted run, an audit
+// with no accounts) shows as a message on the page instead of a saved error file.
+export async function downloadHandoff(url: string, target: Document = document): Promise<void> {
+  const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(body?.message ?? `Request failed with HTTP ${response.status}.`);
+  }
+  const name =
+    /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ??
+    "prism365-handoff.json";
+  const link = target.createElement("a");
+  link.href = URL.createObjectURL(await response.blob());
+  link.download = name;
+  target.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1_000);
+}
+
 function viewText(handoff: HandoffRecord): string {
   const view = handoff.view?.label ?? "Every row";
   return handoff.filtered ? `${view}, filtered` : view;
