@@ -129,17 +129,28 @@ const entities: Record<string, string> = {
   nbsp: " ",
 };
 
+// Removes tags until nothing changes, so taking one tag out can never leave another behind.
+function withoutTags(text: string): string {
+  let previous: string;
+  let current = text;
+  do {
+    previous = current;
+    current = current.replace(/<[^>]+>/g, "");
+  } while (current !== previous);
+  return current;
+}
+
 // Microsoft's post and message bodies are HTML. Prism365 shows text only: tags become line breaks
 // or nothing, and nothing from the body is ever rendered as markup.
 export function plainText(html: string | null | undefined, limit = 4_000): string {
   if (!html) return "";
   // Only the start of a long body can survive the limit, so only that much is processed.
-  return clean(html.slice(0, limit * 6 + 2_000))
+  const marked = clean(html.slice(0, limit * 6 + 2_000))
     .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
-    .replace(/<li[^>]*>/gi, "• ")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<li[^>]*>/gi, "• ");
+  return withoutTags(marked)
     .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (match, code: string) => {
       const point = code.startsWith("#x")
         ? Number.parseInt(code.slice(2), 16)

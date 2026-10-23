@@ -364,14 +364,15 @@ export function typeOf(userType: string | null): string {
 }
 
 // A provider value as a row tag. Tags are short lowercase slugs; anything else is dropped
-// rather than failing the run.
+// rather than failing the run. The first replace leaves no two dashes in a row, so each end
+// has at most one to trim, and no pattern has a run to backtrack over.
 export function tagOf(value: string | null): string[] {
   const slug = (value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+    .replace(/^-|-$/g, "")
     .slice(0, 40)
-    .replace(/-+$/, "");
+    .replace(/-$/, "");
   return slug ? [slug] : [];
 }
 

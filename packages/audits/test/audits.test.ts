@@ -19,6 +19,7 @@ import {
   principalDomain,
   scopeNote,
   strongestMethod,
+  tagOf,
 } from "../src/index.ts";
 
 // Synthetic tenant data only: invented names, example.invalid domains, made-up SKU IDs.
@@ -339,6 +340,23 @@ describe("how inactivity is counted", () => {
     expect(strongestMethod(["mobilePhone", "softwareOneTimePasscode"], false)).toBe("App or token");
     expect(strongestMethod(["email"], true)).toBe("Passwordless");
     expect(strongestMethod(["email", "securityQuestion"], false)).toBe("None");
+  });
+});
+
+describe("row tags", () => {
+  it("turns provider values into short lowercase slugs", () => {
+    expect(tagOf("Mobile  Phone (SMS)!")).toEqual(["mobile-phone-sms"]);
+    expect(tagOf("--Member--")).toEqual(["member"]);
+    expect(tagOf(`${"a".repeat(39)} b`)).toEqual(["a".repeat(39)]);
+    expect(tagOf(null)).toEqual([]);
+    expect(tagOf("!!! ---")).toEqual([]);
+  });
+
+  it("handles long runs of separators in one pass", () => {
+    const value = `${"-".repeat(100_000)}x${" -".repeat(100_000)}`;
+    const started = performance.now();
+    expect(tagOf(value)).toEqual(["x"]);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });
 

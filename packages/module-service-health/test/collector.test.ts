@@ -459,4 +459,15 @@ describe("Microsoft post text", () => {
     expect(sections.get("user impact")).toBe("Users can't join meetings.");
     expect(sections.get("workaround")).toBe("Use the web client.\nOr the phone.");
   });
+
+  it("leaves no tag behind when tags are nested or split", () => {
+    for (const html of [
+      "<scr<b>ipt>alert(1)</scr<b>ipt>",
+      "<<i>script>alert(1)<</i>/script>",
+      "<<<b>>>text<<</b>>>",
+      "<p<p>>text</p</p>>",
+    ]) {
+      expect(plainText(html)).not.toMatch(/<[a-z!/]/i);
+    }
+  });
 });
