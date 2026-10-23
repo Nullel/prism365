@@ -39,7 +39,7 @@ This table groups the intended scope for review.
 | `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Risky users audit; Entra ID P2; Global Reader, Security Reader, Security Operator or Security Administrator; 1 request per second per tenant, shared with Conditional Access; not targeted for China |
 | `security.score.read` | Graph | `SecurityEvents.Read.All` | Experimental | Applicable subscriptions; not targeted for China |
 | `security.incidents.read` | Graph | `SecurityIncident.Read.All` | Experimental | Defender entitlement and security role; not targeted for China |
-| `devices.intune.read` | Graph | `DeviceManagementManagedDevices.Read.All` | Experimental | Active Intune license and role |
+| `devices.intune.read` | Graph | `DeviceManagementManagedDevices.Read.All` | Experimental | Active Intune license and role; read by the Managed devices audit |
 | `purview.entra.read` | Graph/Purview | `AuditLogsQuery-Entra.Read.All` | Experimental | Purview Audit availability, roles, query limits, and retention |
 | `audit.activity-feed.read` | Management Activity | `ActivityFeed.Read` | Future | Unified audit enabled and content subscription started |
 | `exchange.configuration.read` | Exchange Online PowerShell | `Exchange.ManageAsApp` | Future | Certificate/federation plus narrow Exchange RBAC |

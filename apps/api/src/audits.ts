@@ -323,6 +323,7 @@ export class AuditRunner {
         granted: new Set(input.granted),
         signal: controller.signal,
         scope: input.scope,
+        tenantId,
       });
       work.catch(() => {});
       const result = resultSchema.parse(cleaned(await Promise.race([work, stopped])));
