@@ -1,8 +1,8 @@
-import { type PrismSession, sessionSchema } from "@prism365/contracts";
+import { type PersonListItem, type PrismSession, sessionSchema } from "@prism365/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { hibpLink, People } from "../src/People.tsx";
+import { hibpLink, People, PersonRow } from "../src/People.tsx";
 import { runLine } from "../src/SigninAudit.tsx";
 
 function session(overrides: Partial<PrismSession> = {}): PrismSession {
@@ -51,6 +51,43 @@ describe("people view", () => {
     expect(profile).toContain('aria-label="Breadcrumb"');
     expect(profile).toContain("Reading Microsoft");
     expect(profile).toContain("Every sign-in");
+  });
+});
+
+describe("people list row", () => {
+  const item: PersonListItem = {
+    userId: "44444444-4444-4444-8444-444444444444",
+    userPrincipalName: "avery@example.invalid",
+    displayName: "Avery Stone",
+    lastSignIn: "2026-10-22T19:44:01.000Z",
+    lastSuccess: "2026-10-22T19:44:01.000Z",
+    signIns: 12,
+    failures: 1,
+    countries: 2,
+    openFindings: 0,
+  };
+  const row = (value: PersonListItem) =>
+    renderToStaticMarkup(
+      createElement(
+        "table",
+        null,
+        createElement("tbody", null, createElement(PersonRow, { item: value, onSelect: () => {} })),
+      ),
+    );
+
+  it("keeps the address out of the button that opens the person, and lets it be copied", () => {
+    const html = row(item);
+    const opener = html.match(/<button class="people-name"[^>]*>(.*?)<\/button>/)?.[1] ?? "";
+    expect(opener).toContain("Avery Stone");
+    expect(opener).not.toContain("avery@example.invalid");
+    expect(html).toMatch(/<span class="copy-line__text">avery@example\.invalid<\/span>/);
+    expect(html).toContain('aria-label="Copy avery@example.invalid"');
+  });
+
+  it("has no copy button for an account without an address", () => {
+    const html = row({ ...item, userPrincipalName: null });
+    expect(html).toContain("Avery Stone");
+    expect(html).not.toContain("Copy ");
   });
 });
 

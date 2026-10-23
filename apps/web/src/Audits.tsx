@@ -4,6 +4,7 @@ import {
   type AuditCell,
   type AuditColumn,
   type AuditDefinition,
+  type AuditRow,
   type AuditRun,
   type AuditRunDetail,
   type AuditSettings,
@@ -19,8 +20,9 @@ import {
   queryAuditRows,
 } from "@prism365/contracts";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { day, number, post, readJson, when } from "./common.tsx";
-import { DownloadIcon } from "./icons.tsx";
+import { AccountName, day, number, post, readJson, when } from "./common.tsx";
+import { CopyButton, useCopy } from "./CopyButton.tsx";
+import { CheckIcon, CopyIcon, DownloadIcon } from "./icons.tsx";
 
 // Audits: checks an administrator runs when they need them. The catalog lists every audit with
 // its last result; an audit's page shows a run as a table the audit describes itself, so a new
@@ -406,6 +408,43 @@ function isPerson(
   return typeof cell === "object" && cell !== null && !Array.isArray(cell);
 }
 
+// A value that is, whole, one email address. Text columns that hold one get a copy button.
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isEmail(cell: AuditCell | undefined): cell is string {
+  return typeof cell === "string" && EMAIL.test(cell);
+}
+
+// The address to copy for a row: its first email-valued text cell (a guest's real address, which
+// the #EXT# principal name is not), otherwise the account's user principal name. Takes every
+// column of the audit, shown or hidden.
+function rowEmail(columns: readonly AuditColumn[], row: AuditRow): string | null {
+  for (const column of columns) {
+    const cell = row.cells[column.key];
+    if (column.kind === "text" && isEmail(cell)) return cell;
+  }
+  for (const column of columns) {
+    const cell = row.cells[column.key];
+    if (column.kind === "person" && isPerson(cell) && cell.principal?.trim())
+      return cell.principal.trim();
+  }
+  return null;
+}
+
+// One address per row, in the order of the rows, each address once (letter case aside). Rows with
+// no address are left out.
+export function rowEmails(columns: readonly AuditColumn[], rows: readonly AuditRow[]): string[] {
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  for (const row of rows) {
+    const email = rowEmail(columns, row);
+    if (!email || seen.has(email.toLowerCase())) continue;
+    seen.add(email.toLowerCase());
+    emails.push(email);
+  }
+  return emails;
+}
+
 const alertValues = new Set([
   "Disabled",
   "Not accepted",
@@ -428,13 +467,12 @@ function CellValue({
   if (column.kind === "person") {
     const person = isPerson(cell) ? cell : { name: null, principal: null };
     const name = person.name ?? person.principal ?? "Unnamed account";
-    return personId ? (
-      <button className="people-name" type="button" onClick={() => onOpenPerson(personId)}>
-        <strong className="people-name__name">{name}</strong>
-        {person.principal && person.principal !== name ? <span>{person.principal}</span> : null}
-      </button>
-    ) : (
-      <strong className="people-name__name">{name}</strong>
+    return (
+      <AccountName
+        name={name}
+        principal={person.principal}
+        onOpen={personId ? () => onOpenPerson(personId) : null}
+      />
     );
   }
   if (cell === null || cell === undefined || cell === "")
@@ -466,6 +504,13 @@ function CellValue({
     return <span className={cell < 0 ? "audit-negative" : undefined}>{number.format(cell)}</span>;
   if (column.kind === "enum" && typeof cell === "string" && alertValues.has(cell))
     return <span className="person-tag person-tag--alert">{cell}</span>;
+  if (column.kind === "text" && isEmail(cell))
+    return (
+      <span className="copy-line">
+        <span className="copy-line__text">{cell}</span>
+        <CopyButton text={cell} />
+      </span>
+    );
   return <>{String(cell)}</>;
 }
 
@@ -523,7 +568,39 @@ export function exportHref(
   return `/api/v1/audit-runs/${encodeURIComponent(run.id)}/export.csv?${params.toString()}`;
 }
 
-function ResultTable({
+// Copies the address of every row the current view, search and filters leave, not only the rows
+// the page shows so far. The label says how many were copied, then goes back.
+function CopyEmailsButton({ emails }: { emails: readonly string[] }) {
+  const { status, copy } = useCopy(2_000);
+  // The count at the moment of copying, so a filter change does not rewrite the confirmation.
+  const [count, setCount] = useState(0);
+  const label =
+    status === "copied"
+      ? `Copied ${plural(count, "email", "emails")}`
+      : status === "failed"
+        ? "Copy failed"
+        : "Copy emails";
+  return (
+    <>
+      <button
+        className="button button--secondary"
+        type="button"
+        disabled={emails.length === 0}
+        onClick={() => {
+          setCount(emails.length);
+          void copy(emails.join("\n"));
+        }}
+      >
+        {status === "copied" ? <CheckIcon /> : <CopyIcon />} {label}
+      </button>
+      <span className="visually-hidden" aria-live="polite">
+        {status === "idle" ? "" : label}
+      </span>
+    </>
+  );
+}
+
+export function ResultTable({
   definition,
   run,
   onOpenPerson,
@@ -547,6 +624,13 @@ function ResultTable({
   const rows = useMemo(
     () => queryAuditRows(definition, run.rows, { view, facets, search, sort }),
     [definition, run.rows, view, facets, search, sort],
+  );
+  // Every column counts here, shown or not: a guest's Email column can be hidden and still be
+  // the address to copy.
+  const hasPeople = definition.columns.some((column) => column.kind === "person");
+  const emails = useMemo(
+    () => (hasPeople ? rowEmails(definition.columns, rows) : []),
+    [definition.columns, hasPeople, rows],
   );
   const queryKey = JSON.stringify([view, facets, search, sort]);
   const limit = page.key === queryKey ? page.limit : PAGE_ROWS;
@@ -638,6 +722,7 @@ function ResultTable({
                 ))}
               </div>
             </details>
+            {hasPeople ? <CopyEmailsButton emails={emails} /> : null}
             <a
               className="button button--secondary"
               href={exportHref(run, { view, search, sort, facets })}

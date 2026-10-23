@@ -2421,16 +2421,63 @@ a.button {
   color: var(--text);
   font-weight: 600;
 }
-.people-name span {
-  color: var(--text-3);
-  font-size: var(--text-xs);
-  font-weight: 400;
-  overflow-wrap: anywhere;
-}
 .people-name:hover .people-name__name {
   color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+/* An account in a table: the name button over the address, which is plain text beside its copy
+   button. The address lives outside .people-name, so nothing there styles it by accident. */
+.account-cell {
+  display: grid;
+  gap: 1px;
+  justify-items: start;
+}
+/* Table cells do not wrap, so the address stays whole and the column grows to fit it. Letting it
+   break anywhere would size the column for a broken address and slide the text under the button. */
+.copy-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.copy-line__text {
+  white-space: nowrap;
+  user-select: text;
+}
+.copy-line--address {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+/* The button is 24px for the pointer and the finger, but takes only a line's height in the table. */
+.copy-button {
+  display: inline-flex;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  margin: -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  background: none;
+  cursor: pointer;
+}
+.copy-button svg {
+  width: 14px;
+  height: 14px;
+}
+.copy-button:hover,
+.copy-button:focus-visible {
+  color: var(--accent);
+}
+.copy-button.is-copied {
+  color: var(--success);
+}
+.copy-button.is-failed {
+  color: var(--danger);
 }
 .person-header {
   padding: 0;

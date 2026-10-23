@@ -4,6 +4,7 @@ import {
   type PersonDirectory,
   personDirectorySchema,
   type PersonList,
+  type PersonListItem,
   personListSchema,
   personLookupSchema,
   type PersonRecord,
@@ -13,7 +14,7 @@ import {
   type PrismSession,
 } from "@prism365/contracts";
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
-import { day, FindingItem, number, place, post, readJson, when } from "./common.tsx";
+import { AccountName, day, FindingItem, number, place, post, readJson, when } from "./common.tsx";
 import { ShieldIcon } from "./icons.tsx";
 
 // People: every account that signs in, and one page per account with everything Prism365 knows
@@ -203,37 +204,46 @@ function PeopleList({ onSelect }: { onSelect: (userId: string) => void }) {
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr key={item.userId}>
-                  <th scope="row">
-                    <button
-                      className="people-name"
-                      type="button"
-                      onClick={() => onSelect(item.userId)}
-                    >
-                      <strong className="people-name__name">
-                        {item.displayName ?? item.userPrincipalName ?? item.userId}
-                      </strong>
-                      {item.userPrincipalName ? <span>{item.userPrincipalName}</span> : null}
-                    </button>
-                  </th>
-                  <td>{when(item.lastSignIn)}</td>
-                  <td>{number.format(item.signIns)}</td>
-                  <td>{number.format(item.failures)}</td>
-                  <td>{number.format(item.countries)}</td>
-                  <td>
-                    {item.openFindings > 0 ? (
-                      <span className="person-tag person-tag--alert">{item.openFindings}</span>
-                    ) : (
-                      "0"
-                    )}
-                  </td>
-                </tr>
+                <PersonRow key={item.userId} item={item} onSelect={onSelect} />
               ))}
             </tbody>
           </table>
         )}
       </section>
     </section>
+  );
+}
+
+// One account in the list: the name opens the person; the address beside it is text to select,
+// with a button to copy it.
+export function PersonRow({
+  item,
+  onSelect,
+}: {
+  item: PersonListItem;
+  onSelect: (userId: string) => void;
+}) {
+  return (
+    <tr>
+      <th scope="row">
+        <AccountName
+          name={item.displayName ?? item.userPrincipalName ?? item.userId}
+          principal={item.userPrincipalName}
+          onOpen={() => onSelect(item.userId)}
+        />
+      </th>
+      <td>{when(item.lastSignIn)}</td>
+      <td>{number.format(item.signIns)}</td>
+      <td>{number.format(item.failures)}</td>
+      <td>{number.format(item.countries)}</td>
+      <td>
+        {item.openFindings > 0 ? (
+          <span className="person-tag person-tag--alert">{item.openFindings}</span>
+        ) : (
+          "0"
+        )}
+      </td>
+    </tr>
   );
 }
 

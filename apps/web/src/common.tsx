@@ -1,7 +1,9 @@
 import type { Finding, FindingState, PrismSession } from "@prism365/contracts";
+import { CopyButton } from "./CopyButton.tsx";
 import { LockIcon } from "./icons.tsx";
 
-// Helpers and the finding card shared by the sign-in audit and people views.
+// Helpers, the finding card and the account name shared by the sign-in audit, audits and people
+// views.
 
 export const stateLabels: Record<FindingState, string> = {
   open: "Open",
@@ -188,5 +190,47 @@ export function FindingItem({
         </p>
       ) : null}
     </article>
+  );
+}
+
+// An account in a table: the name, which opens the person's page when there is one, and the user
+// principal name. The address is plain text beside its own copy button, outside the name button,
+// so it can be selected, copied in one click, and neither opens the person nor loses the click.
+// When the name already is the address, or there is no page to open, there is no second line and
+// the copy button follows the name.
+export function AccountName({
+  name,
+  principal,
+  onOpen,
+}: {
+  name: string;
+  principal: string | null;
+  onOpen: (() => void) | null;
+}) {
+  const label = <strong className="people-name__name">{name}</strong>;
+  const title = onOpen ? (
+    <button className="people-name" type="button" onClick={onOpen}>
+      {label}
+    </button>
+  ) : (
+    label
+  );
+  const address = principal?.trim() ? principal : null;
+  if (!address) return title;
+  if (!onOpen || address === name)
+    return (
+      <span className="copy-line">
+        {title}
+        <CopyButton text={address} />
+      </span>
+    );
+  return (
+    <div className="account-cell">
+      {title}
+      <span className="copy-line copy-line--address">
+        <span className="copy-line__text">{address}</span>
+        <CopyButton text={address} />
+      </span>
+    </div>
   );
 }

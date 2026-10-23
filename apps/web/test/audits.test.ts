@@ -1,6 +1,9 @@
 import {
   type AuditCatalog,
+  type AuditColumn,
+  type AuditRow,
   type AuditRun,
+  type AuditRunDetail,
   type AuditSettings,
   auditDefinitionSchema,
 } from "@prism365/contracts";
@@ -13,7 +16,9 @@ import {
   AuditScopeSection,
   ago,
   exportHref,
+  ResultTable,
   RunScopeTags,
+  rowEmails,
   runHeadline,
   scopeLimit,
   scopeSummary,
@@ -276,5 +281,215 @@ describe("the scope a run used", () => {
     // The saved scope did not load, or the run was made by an older version that did not record it.
     expect(tags(null, null)).toBe("");
     expect(tags(null, ["a.example"], 2)).toBe("");
+  });
+});
+
+const column = (
+  key: string,
+  kind: AuditColumn["kind"],
+  overrides: Partial<AuditColumn> = {},
+): AuditColumn => ({
+  key,
+  label: key,
+  kind,
+  facet: false,
+  hidden: false,
+  help: null,
+  empty: null,
+  ...overrides,
+});
+
+const memberRow = (key: string, name: string, principal: string | null): AuditRow => ({
+  key,
+  personId: `user-${key}`,
+  tags: [],
+  cells: { person: { name, principal } },
+});
+
+describe("rowEmails", () => {
+  const people = [column("person", "person")];
+
+  it("gives a member's user principal name, in the order of the rows", () => {
+    const rows = [
+      memberRow("2", "Blake Reed", "blake@example.invalid"),
+      memberRow("1", "Avery Stone", "avery@example.invalid"),
+    ];
+    expect(rowEmails(people, rows)).toEqual(["blake@example.invalid", "avery@example.invalid"]);
+  });
+
+  it("prefers a guest's Email cell to its #EXT# principal name", () => {
+    const columns = [column("person", "person"), column("email", "text")];
+    const guest: AuditRow = {
+      key: "g1",
+      personId: "user-g1",
+      tags: [],
+      cells: {
+        person: {
+          name: "Casey Lin",
+          principal: "casey.lin_partner.example#EXT#@tenant.example.invalid",
+        },
+        email: "casey.lin@partner.example",
+      },
+    };
+    expect(rowEmails(columns, [guest])).toEqual(["casey.lin@partner.example"]);
+  });
+
+  it("reads the Email cell even when the person has no column to show it in", () => {
+    // A hidden column is still part of the definition, so the address is not lost.
+    const columns = [column("person", "person"), column("email", "text", { hidden: true })];
+    const row: AuditRow = {
+      ...memberRow("1", "Casey Lin", "casey#EXT#@tenant.example.invalid"),
+      cells: {
+        person: { name: "Casey Lin", principal: "casey#EXT#@tenant.example.invalid" },
+        email: "casey@partner.example",
+      },
+    };
+    expect(rowEmails(columns, [row])).toEqual(["casey@partner.example"]);
+  });
+
+  it("falls back to the principal name when the Email cell is empty or not an address", () => {
+    const columns = [column("person", "person"), column("email", "text")];
+    const rows = ["", null, "not an address", "two@example.invalid three@example.invalid"].map(
+      (value, index) => ({
+        ...memberRow(String(index), "Someone", `user${index}@example.invalid`),
+        cells: {
+          person: { name: "Someone", principal: `user${index}@example.invalid` },
+          email: value,
+        },
+      }),
+    );
+    expect(rowEmails(columns, rows)).toEqual([
+      "user0@example.invalid",
+      "user1@example.invalid",
+      "user2@example.invalid",
+      "user3@example.invalid",
+    ]);
+  });
+
+  it("drops duplicates, whatever their letter case, and rows without an address", () => {
+    const rows = [
+      memberRow("1", "Avery Stone", "avery@example.invalid"),
+      memberRow("2", "No address", null),
+      memberRow("3", "Blank address", "  "),
+      memberRow("4", "Avery again", "Avery@Example.invalid"),
+      memberRow("5", "Blake Reed", "blake@example.invalid"),
+      { key: "6", personId: null, tags: [], cells: {} },
+    ];
+    expect(rowEmails(people, rows)).toEqual(["avery@example.invalid", "blake@example.invalid"]);
+  });
+
+  it("is empty when no row has an address", () => {
+    expect(rowEmails(people, [])).toEqual([]);
+    expect(rowEmails(people, [memberRow("1", "No address", null)])).toEqual([]);
+  });
+});
+
+describe("audit result table copy buttons", () => {
+  const columns = [
+    column("person", "person", { label: "Guest" }),
+    column("email", "text", { label: "Email" }),
+    column("department", "text", { label: "Department" }),
+  ];
+  const guestDefinition = auditDefinitionSchema.parse({
+    ...definition,
+    id: "guests.review",
+    columns,
+  });
+  const detail = (rows: AuditRow[], extra: Partial<typeof guestDefinition> = {}) =>
+    renderToStaticMarkup(
+      createElement(ResultTable, {
+        definition: { ...guestDefinition, ...extra },
+        run: { ...run, summary: [], rows } as AuditRunDetail,
+        onOpenPerson: () => {},
+      }),
+    );
+  const guest: AuditRow = {
+    key: "g1",
+    personId: "user-g1",
+    tags: [],
+    cells: {
+      person: {
+        name: "Casey Lin",
+        principal: "casey.lin_partner.example#EXT#@tenant.example.invalid",
+      },
+      email: "casey.lin@partner.example",
+      department: "Platform team",
+    },
+  };
+
+  it("shows the account address outside the button that opens the person", () => {
+    const html = detail([guest]);
+    const opener = html.match(/<button class="people-name"[^>]*>(.*?)<\/button>/)?.[1] ?? "";
+    expect(opener).toContain("Casey Lin");
+    expect(opener).not.toContain("#EXT#");
+    expect(html).toMatch(
+      /<span class="copy-line__text">casey\.lin_partner\.example#EXT#@tenant\.example\.invalid<\/span>/,
+    );
+    expect(html).toContain(
+      'aria-label="Copy casey.lin_partner.example#EXT#@tenant.example.invalid"',
+    );
+  });
+
+  it("puts a copy button on an email-valued text cell and on no other text", () => {
+    const html = detail([guest]);
+    expect(html).toMatch(
+      /<span class="copy-line__text">casey\.lin@partner\.example<\/span><button[^>]*aria-label="Copy casey\.lin@partner\.example"/,
+    );
+    expect(html).toContain("Platform team");
+    expect(html).not.toContain("Copy Platform team");
+    // The account's address and the Email cell: two copy buttons for the one row.
+    expect(html.match(/aria-label="Copy /g)).toHaveLength(2);
+  });
+
+  it("offers Copy emails, before Export CSV, once there is an address to copy", () => {
+    const html = detail([guest, { ...guest, key: "g2", personId: "user-g2" }]);
+    expect(html).toMatch(
+      /<button class="button button--secondary" type="button"><svg[^>]*>.*?<\/svg> Copy emails<\/button>/,
+    );
+    expect(html.indexOf("Copy emails")).toBeLessThan(html.indexOf("Export CSV"));
+    expect(html).not.toContain("Copied");
+    expect(html).not.toContain("Copy failed");
+  });
+
+  it("disables Copy emails when no row has an address", () => {
+    const html = detail([
+      {
+        key: "n1",
+        personId: "user-n1",
+        tags: [],
+        cells: {
+          person: { name: "No address", principal: null },
+        },
+      },
+    ]);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*><svg[^>]*>.*?<\/svg> Copy emails<\/button>/);
+  });
+
+  it("has no Copy emails button, and no copy button, in a table without a person column", () => {
+    const html = renderToStaticMarkup(
+      createElement(ResultTable, {
+        definition: auditDefinitionSchema.parse({
+          ...definition,
+          columns: [column("email", "text"), column("product", "text")],
+          defaultSort: { column: "product", direction: "asc" },
+        }),
+        run: {
+          ...run,
+          summary: [],
+          rows: [
+            {
+              key: "1",
+              personId: null,
+              tags: [],
+              cells: { email: "ops@example.invalid", product: "Plan" },
+            },
+          ],
+        } as AuditRunDetail,
+        onOpenPerson: () => {},
+      }),
+    );
+    expect(html).not.toContain("Copy emails");
+    // An email-valued cell still gets its own button.
+    expect(html).toContain('aria-label="Copy ops@example.invalid"');
   });
 });
