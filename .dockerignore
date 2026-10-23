@@ -1,15 +1,67 @@
+# Patterns without a leading **/ match only at the top of the build context, unlike .gitignore.
+# Everything that can hold tenant data or keys is matched at any depth, and the Dockerfile
+# refuses to build if any still gets through.
 .git
-node_modules
 **/node_modules
 **/dist
-coverage
-.env
-.env.*
+**/coverage
+**/.[Ee][Nn][Vv]
+**/.[Ee][Nn][Vv].*
+**/.[Ee][Nn][Vv]-*
+**/*.[Ee][Nn][Vv]
+**/.[Nn][Pp][Mm][Rr][Cc]
 !.env.example
-*.pem
-*.pfx
-*.p12
-*.key
-*.log
-.DS_Store
+**/*.[Pp][Ee][Mm]
+**/*.[Pp][Ff][Xx]
+**/*.[Pp]12
+**/*.[Kk][Ee][Yy]
+**/[Ii][Dd]_[Rr][Ss][Aa]*
+**/[Ii][Dd]_[Dd][Ss][Aa]*
+**/[Ii][Dd]_[Ee][Cc][Dd][Ss][Aa]*
+**/[Ii][Dd]_[Ee][Dd]25519*
+**/.[Ee][Nn][Vv][Rr][Cc]
+**/*.[Dd][Uu][Mm][Pp]
+**/*.[Dd][Uu][Mm][Pp].*
+# Plain-SQL dumps (pg_dump's default format), compressed or not. The core migrations are the only
+# SQL the image needs.
+**/*.[Ss][Qq][Ll]
+**/*.[Ss][Qq][Ll].*
+!packages/storage/migrations/001-state.sql
+!packages/storage/migrations/002-modules.sql
+!packages/storage/migrations/003-attention.sql
+!packages/storage/migrations/004-audit-runs.sql
+# Backups in other formats.
+**/*.[Bb][Aa][Cc][Kk][Uu][Pp]
+**/*.[Bb][Aa][Kk]
+**/*.[Pp][Gg][Dd][Uu][Mm][Pp]
+**/*.[Cc][Uu][Ss][Tt][Oo][Mm]
+# pg_dump's directory format: toc.dat and one .dat file per table, optionally compressed.
+**/*.[Dd][Aa][Tt]
+**/*.[Ll][Zz]4
+# Archives can hold any of the above.
+**/*.[Tt][Aa][Rr]
+**/*.[Tt][Aa][Rr].*
+**/*.[Tt][Gg][Zz]
+**/*.[Zz][Ii][Pp]
+**/*.7[Zz]
+**/*.[Gg][Zz]
+**/*.[Zz][Ss][Tt]
+**/*.[Rr][Aa][Rr]
+**/*.[Xx][Zz]
+**/*.[Bb][Zz]2
+# Audit exports.
+**/*.[Cc][Ss][Vv]
+# A PGlite or PostgreSQL data directory is not ignored by name: its PG_VERSION and prism365.lock
+# files reach the build context so the Dockerfile's guard can see them and refuse to build.
+**/*.log
+**/.DS_Store
 work
+**/[Ss][Ee][Cc][Rr][Ee][Tt][Ss]
+**/[Dd][Aa][Tt][Aa]
+**/[Bb][Aa][Cc][Kk][Uu][Pp]
+**/[Bb][Aa][Cc][Kk][Uu][Pp][Ss]
+**/.claude
+# The portfolio demo (its recorder and recorded data) is not part of the server image.
+apps/web/demo
+apps/web/dist-demo
+scripts/demo

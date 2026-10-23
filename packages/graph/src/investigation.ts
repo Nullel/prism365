@@ -7,7 +7,12 @@ import {
   userInvestigationSchema,
 } from "@prism365/contracts";
 import { z } from "zod";
-import { GraphBoundaryError, type GraphHttpClient, GraphRequestError } from "./client.ts";
+import {
+  GraphBoundaryError,
+  type GraphHttpClient,
+  GraphRequestError,
+  GraphRetryDeferredError,
+} from "./client.ts";
 
 // Microsoft Graph v1.0 documentation verified 2026-10-13:
 // https://learn.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0
@@ -21,7 +26,12 @@ const licenseContext = {
   permission: "LicenseAssignment.Read.All",
 } as const;
 const signInContext = { feature: "audit.signins.read", permission: "AuditLog.Read.All" } as const;
-const nullableText = z.string().max(500).nullable().optional();
+// Long provider text is truncated to the display limit, never a reason to reject the page.
+const nullableText = z
+  .string()
+  .transform((value) => value.slice(0, 500))
+  .nullable()
+  .optional();
 
 const providerProfileSchema = z
   .object({
@@ -105,10 +115,19 @@ function sectionFailure(error: unknown): {
         "Microsoft denied access. Check administrator role, consent, feature licensing, and tenant restrictions; a 403 alone cannot identify the cause.",
     };
   }
+  // A fixed reason code (never provider text) so an administrator can tell a slow query from an
+  // oversized page or a throttle without reading server logs.
+  const reason =
+    error instanceof GraphRetryDeferredError
+      ? "throttled by Microsoft"
+      : error instanceof GraphRequestError
+        ? `HTTP ${error.status}`
+        : error instanceof GraphBoundaryError
+          ? error.reason.replaceAll("_", " ")
+          : "unexpected error";
   return {
     state: "providerUnavailable",
-    message:
-      "This section could not be read from Microsoft. Retry later; no missing data has been treated as inactivity.",
+    message: `This section could not be read from Microsoft (${reason}). Retry later; no missing data has been treated as inactivity.`,
   };
 }
 
@@ -214,9 +233,22 @@ export async function investigateUser(options: {
       const result = await options.client.getCollection(
         `auditLogs/signIns?${query}`,
         signInContext,
-        { schema: providerSignInSchema, maxPages: 4, maxRecords: 100 },
+        {
+          schema: z.unknown(),
+          maxPages: 4,
+          maxRecords: 100,
+        },
       );
-      const data = result.items
+      // Each record is checked on its own; one unreadable record is left out and reported
+      // instead of hiding every sign-in in the window.
+      let skipped = 0;
+      const records = result.items.flatMap((item) => {
+        const parsed = providerSignInSchema.safeParse(item);
+        if (parsed.success) return [parsed.data];
+        skipped += 1;
+        return [];
+      });
+      const data = records
         .map((entry) => {
           const timestamp = Date.parse(entry.createdDateTime);
           if (
@@ -245,16 +277,22 @@ export async function investigateUser(options: {
           });
         })
         .sort((a, b) => Date.parse(b.createdDateTime) - Date.parse(a.createdDateTime));
+      const notes = [
+        ...(result.complete
+          ? []
+          : ["Showing at most 100 sign-ins from four pages; additional events may exist."]),
+        ...(skipped > 0
+          ? [
+              `${skipped} sign-in record${skipped === 1 ? "" : "s"} could not be read and ${skipped === 1 ? "is" : "are"} not shown.`,
+            ]
+          : []),
+      ];
       return {
         state: "available",
-        ...(result.complete
-          ? {}
-          : {
-              message: "Showing at most 100 sign-ins from four pages; additional events may exist.",
-            }),
+        ...(notes.length > 0 ? { message: notes.join(" ") } : {}),
         data,
         window,
-        complete: result.complete,
+        complete: result.complete && skipped === 0,
       };
     } catch (error) {
       return { ...sectionFailure(error), data: [], window, complete: false };

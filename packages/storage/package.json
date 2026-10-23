@@ -8,10 +8,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json",
-    "migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts"
+    "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@electric-sql/pglite": "0.5.11",
+    "libpg-query": "17.7.4",
     "pg": "8.23.1"
   },
   "devDependencies": {

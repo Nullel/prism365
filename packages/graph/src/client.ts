@@ -21,6 +21,23 @@ export interface GraphClientOptions {
   maxRetryWaitMilliseconds?: number;
 }
 
+export interface CollectionOptions {
+  maxPages?: number;
+  maxRecords?: number;
+  // Epoch milliseconds after which no further page is requested.
+  deadline?: number;
+  // Stops paging, and the request in flight, when aborted.
+  signal?: AbortSignal;
+}
+
+export interface CollectionResult<T> {
+  items: T[];
+  // false when more records exist than were read: a record or page cap, or the deadline.
+  complete: boolean;
+  // Set when paging stopped because the caller's deadline passed.
+  stopped?: "deadline";
+}
+
 export class GraphRequestError extends Error {
   readonly status: number;
   readonly requestId: string | undefined;
@@ -41,10 +58,34 @@ export class GraphRetryDeferredError extends GraphRequestError {
   }
 }
 
+// Fixed reason codes, safe to log: they never carry a tenant value or provider message.
+export type GraphBoundaryReason =
+  | "configuration"
+  | "pack"
+  | "cloud"
+  | "method"
+  | "endpoint"
+  | "credential"
+  | "redirect"
+  | "timeout"
+  | "shape"
+  | "retry_budget"
+  | "pagination"
+  | "continuation"
+  | "item"
+  | "page_limit"
+  | "host"
+  | "content_type"
+  | "size"
+  | "empty"
+  | "json";
+
 export class GraphBoundaryError extends Error {
-  constructor(message: string) {
+  readonly reason: GraphBoundaryReason;
+  constructor(message: string, reason: GraphBoundaryReason = "configuration") {
     super(message);
     this.name = "GraphBoundaryError";
+    this.reason = reason;
   }
 }
 
@@ -61,24 +102,30 @@ function boundedInteger(value: number, min: number, max: number, label: string):
 }
 
 // Paths and declared features must agree even if the supplied token has broader consent.
+// Matching ignores case: Graph treats path segments case-insensitively and its continuation
+// links do not always keep the casing of the request (auditLogs/signIns comes back as signins).
 const allowedPaths: Record<GraphFeatureId, RegExp> = {
-  profile: /^\/v1\.0\/me\/?$/,
-  "directory.users.read": /^\/v1\.0\/users(?:\/[^/]+|\([^/]+\))?\/?$/,
-  "user.licenses.read": /^\/v1\.0\/users(?:\/[^/]+|\([^/]+\))\/licenseDetails\/?$/,
-  "tenant.licenses.read": /^\/v1\.0\/subscribedSkus\/?$/,
+  profile: /^\/v1\.0\/me\/?$/i,
+  // The user list, one user, or one user's manager.
+  "directory.users.read": /^\/v1\.0\/users(?:(?:\/[^/]+|\([^/]+\))(?:\/manager)?)?\/?$/i,
+  "user.licenses.read": /^\/v1\.0\/users(?:\/[^/]+|\([^/]+\))\/licenseDetails\/?$/i,
+  "tenant.licenses.read": /^\/v1\.0\/subscribedSkus\/?$/i,
   "service.health.read":
-    /^\/v1\.0\/admin\/serviceAnnouncement\/(?:healthOverviews|issues)(?:\/[^/]+)?\/?$/,
-  "audit.signins.read": /^\/v1\.0\/auditLogs\/(?:signIns|directoryAudits)(?:\/[^/]+)?\/?$/,
+    /^\/v1\.0\/admin\/serviceAnnouncement\/(?:healthOverviews|issues)(?:\/[^/]+)?\/?$/i,
+  "service.messages.read": /^\/v1\.0\/admin\/serviceAnnouncement\/messages(?:\/[^/]+)?\/?$/i,
+  "audit.signins.read": /^\/v1\.0\/auditLogs\/(?:signIns|directoryAudits)(?:\/[^/]+)?\/?$/i,
+  "reports.authentication-methods.read":
+    /^\/v1\.0\/reports\/authenticationMethods\/userRegistrationDetails(?:\/[^/]+)?\/?$/i,
   "identity.conditional-access.read":
-    /^\/v1\.0\/identity\/conditionalAccess\/policies(?:\/[^/]+)?\/?$/,
-  "identity.risk.read": /^\/v1\.0\/identityProtection\/riskyUsers(?:\/[^/]+)?\/?$/,
-  "reports.usage.read": /^\/v1\.0\/reports\/get[A-Za-z0-9]+\([^/]+\)\/?$/,
-  "reports.settings.read": /^\/v1\.0\/admin\/reportSettings\/?$/,
+    /^\/v1\.0\/identity\/conditionalAccess\/policies(?:\/[^/]+)?\/?$/i,
+  "identity.risk.read": /^\/v1\.0\/identityProtection\/riskyUsers(?:\/[^/]+)?\/?$/i,
+  "reports.usage.read": /^\/v1\.0\/reports\/get[A-Za-z0-9]+\([^/]+\)\/?$/i,
+  "reports.settings.read": /^\/v1\.0\/admin\/reportSettings\/?$/i,
   "security.score.read":
-    /^\/v1\.0\/security\/(?:secureScores|secureScoreControlProfiles)(?:\/[^/]+)?\/?$/,
-  "security.incidents.read": /^\/v1\.0\/security\/incidents(?:\/[^/]+)?\/?$/,
-  "devices.intune.read": /^\/v1\.0\/deviceManagement\/managedDevices(?:\/[^/]+)?\/?$/,
-  "purview.entra.read": /^\/v1\.0\/security\/auditLog\/queries(?:\/[^/]+(?:\/records)?)?\/?$/,
+    /^\/v1\.0\/security\/(?:secureScores|secureScoreControlProfiles)(?:\/[^/]+)?\/?$/i,
+  "security.incidents.read": /^\/v1\.0\/security\/incidents(?:\/[^/]+)?\/?$/i,
+  "devices.intune.read": /^\/v1\.0\/deviceManagement\/managedDevices(?:\/[^/]+)?\/?$/i,
+  "purview.entra.read": /^\/v1\.0\/security\/auditLog\/queries(?:\/[^/]+(?:\/records)?)?\/?$/i,
 };
 
 export class GraphHttpClient {
@@ -100,7 +147,8 @@ export class GraphHttpClient {
     this.#timeout = boundedInteger(
       options.requestTimeoutMilliseconds ?? 10_000,
       100,
-      30_000,
+      // Sign-in log queries can take well over 30 seconds; background readers need the room.
+      120_000,
       "requestTimeoutMilliseconds",
     );
     this.#maxResponseBytes = boundedInteger(
@@ -140,36 +188,51 @@ export class GraphHttpClient {
     if (pack.source !== "microsoftGraph" || pack.permission !== context.permission) {
       throw new GraphBoundaryError(
         "The Graph request permission does not match its declared feature pack.",
+        "pack",
       );
     }
     if (!(pack.clouds as readonly MicrosoftCloud[]).includes(this.#cloud)) {
       throw new GraphBoundaryError(
         `Feature ${context.feature} is not supported in the selected Microsoft cloud (${this.#cloud}).`,
+        "cloud",
       );
     }
     const method = (init.method ?? "GET").toUpperCase();
     if ((method !== "GET" && method !== "HEAD") || init.body != null) {
       throw new GraphBoundaryError(
         `Microsoft Graph ${method} requests are disabled by the read-only boundary.`,
+        "method",
       );
     }
     const target = this.#resolveTarget(pathOrNextLink);
     if (!allowedPaths[context.feature].test(target.pathname)) {
-      throw new GraphBoundaryError("Graph endpoint does not belong to its declared feature pack.");
+      throw new GraphBoundaryError(
+        "Graph endpoint does not belong to its declared feature pack.",
+        "endpoint",
+      );
     }
+    // A caller's signal (an audit's time limit, a collector run ending) stops the request and
+    // any retry; the request's own timeout still applies.
+    const { signal: external, ...requestInit } = init;
     let waited = 0;
     for (let attempt = 0; attempt <= this.#maxRetries; attempt += 1) {
+      external?.throwIfAborted();
       const controller = new AbortController();
+      const forward = () => controller.abort(external?.reason);
+      external?.addEventListener("abort", forward, { once: true });
       let timer: ReturnType<typeof setTimeout> | undefined;
       const operation = async () => {
         const token = await this.#getAccessToken();
         if (!token || controller.signal.aborted)
-          throw new GraphBoundaryError("Graph credentials are unavailable or the request expired.");
-        const headers = new Headers(init.headers);
+          throw new GraphBoundaryError(
+            "Graph credentials are unavailable or the request expired.",
+            "credential",
+          );
+        const headers = new Headers(requestInit.headers);
         headers.set("Accept", "application/json");
         headers.set("Authorization", `Bearer ${token}`);
         const response = await this.#fetch(target, {
-          ...init,
+          ...requestInit,
           method,
           headers,
           redirect: "manual",
@@ -179,6 +242,7 @@ export class GraphHttpClient {
           await response.body?.cancel();
           throw new GraphBoundaryError(
             "Graph redirects are disabled; this resource needs a reviewed download adapter.",
+            "redirect",
           );
         }
         if (!response.ok || response.status === 204 || method === "HEAD") {
@@ -194,19 +258,26 @@ export class GraphHttpClient {
           new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => {
               controller.abort();
-              reject(new GraphBoundaryError("Graph request exceeded its time budget."));
+              reject(new GraphBoundaryError("Graph request exceeded its time budget.", "timeout"));
             }, this.#timeout);
           }),
         ]);
+      } catch (error) {
+        if (external?.aborted) throw external.reason;
+        throw error;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
+        external?.removeEventListener("abort", forward);
       }
       const { response, value } = result;
       if (response.ok) {
         if (!schema) return value;
         const parsed = schema.safeParse(value);
         if (!parsed.success)
-          throw new GraphBoundaryError("Microsoft Graph returned an invalid response shape.");
+          throw new GraphBoundaryError(
+            "Microsoft Graph returned an invalid response shape.",
+            "shape",
+          );
         return parsed.data;
       }
       const requestId = response.headers.get("request-id") ?? undefined;
@@ -220,52 +291,67 @@ export class GraphHttpClient {
       }
       throw new GraphRequestError(response.status, requestId);
     }
-    throw new GraphBoundaryError("Graph retry budget exhausted.");
+    throw new GraphBoundaryError("Graph retry budget exhausted.", "retry_budget");
   }
 
   getCollection(
     path: string,
     context: GraphRequestContext,
-    options?: { maxPages?: number; maxRecords?: number },
-  ): Promise<{ items: unknown[]; complete: boolean }>;
+    options?: CollectionOptions,
+  ): Promise<CollectionResult<unknown>>;
   getCollection<T>(
     path: string,
     context: GraphRequestContext,
-    options: { schema: z.ZodType<T>; maxPages?: number; maxRecords?: number },
-  ): Promise<{ items: T[]; complete: boolean }>;
+    options: CollectionOptions & { schema: z.ZodType<T> },
+  ): Promise<CollectionResult<T>>;
   async getCollection(
     path: string,
     context: GraphRequestContext,
-    options: { schema?: z.ZodType; maxPages?: number; maxRecords?: number } = {},
-  ): Promise<{ items: unknown[]; complete: boolean }> {
+    options: CollectionOptions & { schema?: z.ZodType } = {},
+  ): Promise<CollectionResult<unknown>> {
     const maxPages = boundedInteger(options.maxPages ?? 100, 1, 100, "maxPages");
     const maxRecords = boundedInteger(options.maxRecords ?? 10_000, 1, 10_000, "maxRecords");
     const items: unknown[] = [];
     const seen = new Set<string>();
     let next: string | undefined = path;
     for (let pageNumber = 0; next && pageNumber < maxPages; pageNumber += 1) {
+      options.signal?.throwIfAborted();
+      // A page is not started past the caller's deadline, so one slow collection cannot carry a
+      // run past the point where it can still save its place. What was read is returned, marked
+      // as stopped, so the caller can keep it.
+      if (pageNumber > 0 && options.deadline !== undefined && Date.now() > options.deadline)
+        return { items, complete: false, stopped: "deadline" };
       const target = this.#resolveTarget(next).href;
       if (seen.has(target))
-        throw new GraphBoundaryError("Graph pagination repeated a continuation link.");
+        throw new GraphBoundaryError(
+          "Graph pagination repeated a continuation link.",
+          "pagination",
+        );
       seen.add(target);
       const page: z.infer<typeof collectionSchema> = await this.request(
         next,
         context,
-        {},
+        options.signal ? { signal: options.signal } : {},
         collectionSchema,
       );
       const continuationLink = page["@odata.nextLink"];
       if (continuationLink) {
         const continuation = this.#resolveTarget(continuationLink);
         if (!allowedPaths[context.feature].test(continuation.pathname))
-          throw new GraphBoundaryError("Graph continuation escaped its declared feature pack.");
+          throw new GraphBoundaryError(
+            "Graph continuation escaped its declared feature pack.",
+            "continuation",
+          );
       }
       for (const raw of page.value) {
         if (items.length >= maxRecords) return { items, complete: false };
         if (options.schema) {
           const parsed = options.schema.safeParse(raw);
           if (!parsed.success)
-            throw new GraphBoundaryError("Microsoft Graph returned an invalid collection item.");
+            throw new GraphBoundaryError(
+              "Microsoft Graph returned an invalid collection item.",
+              "item",
+            );
           items.push(parsed.data);
         } else items.push(raw);
       }
@@ -292,7 +378,10 @@ export class GraphHttpClient {
   ): Promise<unknown[]> {
     const result = await this.getCollection(path, context, options);
     if (!result.complete)
-      throw new GraphBoundaryError("Graph pagination exceeded its page or record safety limit.");
+      throw new GraphBoundaryError(
+        "Graph pagination exceeded its page or record safety limit.",
+        "page_limit",
+      );
     return result.items;
   }
 
@@ -305,7 +394,7 @@ export class GraphHttpClient {
       target.password ||
       target.hash
     )
-      throw new GraphBoundaryError("Graph URL escaped the configured v1.0 host boundary.");
+      throw new GraphBoundaryError("Graph URL escaped the configured v1.0 host boundary.", "host");
     return target;
   }
 }
@@ -316,15 +405,18 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
     "application/json"
   ) {
     await response.body?.cancel();
-    throw new GraphBoundaryError("Microsoft Graph returned an unsupported response content type.");
+    throw new GraphBoundaryError(
+      "Microsoft Graph returned an unsupported response content type.",
+      "content_type",
+    );
   }
   const length = response.headers.get("Content-Length");
   if (length && Number(length) > maxBytes) {
     await response.body?.cancel();
-    throw new GraphBoundaryError("Microsoft Graph response exceeded the size budget.");
+    throw new GraphBoundaryError("Microsoft Graph response exceeded the size budget.", "size");
   }
   if (!response.body)
-    throw new GraphBoundaryError("Microsoft Graph returned an empty JSON response.");
+    throw new GraphBoundaryError("Microsoft Graph returned an empty JSON response.", "empty");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -334,7 +426,7 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
       if (chunk.done) break;
       size += chunk.value.byteLength;
       if (size > maxBytes)
-        throw new GraphBoundaryError("Microsoft Graph response exceeded the size budget.");
+        throw new GraphBoundaryError("Microsoft Graph response exceeded the size budget.", "size");
       chunks.push(chunk.value);
     }
   } finally {
@@ -350,7 +442,7 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
   try {
     return z.json().parse(JSON.parse(new TextDecoder().decode(bytes)));
   } catch {
-    throw new GraphBoundaryError("Microsoft Graph returned invalid JSON.");
+    throw new GraphBoundaryError("Microsoft Graph returned invalid JSON.", "json");
   }
 }
 

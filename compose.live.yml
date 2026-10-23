@@ -1,0 +1,39 @@
+# Live, persistent local install, layered on compose.yml. Run it through
+# scripts/docker-live.sh, which supplies .env.docker and the live profile.
+#
+#   proxy    HTTPS on https://localhost:8443 (Caddy, local certificate)
+#   app      Prism365, reachable only through the proxy
+#   db       PostgreSQL; the "database" volume keeps sessions, sign-ins and findings
+#   migrate  one-time schema and module migrations before the app starts
+services:
+  app:
+    ports: !reset []
+    environment:
+      SIGNINS_EXPECTED_COUNTRIES: ${SIGNINS_EXPECTED_COUNTRIES:-}
+      SIGNINS_TRUSTED_NETWORKS: ${SIGNINS_TRUSTED_NETWORKS:-}
+      SIGNINS_TIME_ZONE: ${SIGNINS_TIME_ZONE:-}
+      # Caddy is the only client and replaces any X-Forwarded-For a browser sends.
+      TRUST_PROXY_HOPS: "1"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  proxy:
+    image: caddy:2
+    profiles: [live]
+    ports:
+      - "127.0.0.1:${PRISM_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./deploy/local/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

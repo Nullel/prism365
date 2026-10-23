@@ -18,7 +18,7 @@
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
     "dev:api": "npm run dev --workspace @prism365/api",
     "dev:web": "npm run dev --workspace @prism365/web",
-    "db:migrate": "npm run migrate --workspace @prism365/storage",
+    "db:migrate": "npm run migrate --workspace @prism365/api",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",

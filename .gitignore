@@ -14,3 +14,7 @@ secrets/
 *.pfx
 *.p12
 *.key
+.claude/
+data/
+backups/
+deploy/local/*.crt
