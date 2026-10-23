@@ -138,6 +138,7 @@ async function main() {
   // after the clock catches up, follows the newest sign-ins the way a running install would.
   let clock = new Date(anchor.getTime() - 3 * HOUR);
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     now: () => clock,

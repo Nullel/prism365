@@ -2,6 +2,7 @@ import { type AuditDefinition, auditDefinitionSchema } from "@prism365/contracts
 import { type GraphFeatureId, permissionPacks } from "@prism365/graph";
 import { appConsentsAudit } from "./app-consents.ts";
 import { licenseCapacityAudit } from "./capacity.ts";
+import { conditionalAccessAudit } from "./conditional-access.ts";
 import type { Audit } from "./definition.ts";
 import { managedDevicesAudit } from "./devices.ts";
 import { guestAccountsAudit } from "./guests.ts";
@@ -9,12 +10,16 @@ import { inactiveAccountsAudit } from "./inactive.ts";
 import { m365AppUsageAudit } from "./m365-app-usage.ts";
 import { mfaRegistrationAudit } from "./mfa.ts";
 import { licenseReclaimAudit } from "./reclaim.ts";
+import { riskyUsersAudit } from "./risky-users.ts";
 
+export { conditionalAccessAudit, createConditionalAccessAudit } from "./conditional-access.ts";
 export * from "./definition.ts";
 export * from "./directory.ts";
+export { methodLabel, strongestMethod } from "./mfa.ts";
+export * from "./paced-read.ts";
+export { createRiskyUsersAudit, riskyUsersAudit } from "./risky-users.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
-export { strongestMethod, methodLabel } from "./mfa.ts";
 export {
   guestAccountsAudit,
   inactiveAccountsAudit,
@@ -40,7 +45,7 @@ export {
   managedDevicesAudit,
   ownershipLabel,
 } from "./devices.ts";
-export { firstAccepted, pause, readPages } from "./graph-pages.ts";
+export { firstAccepted, readPages } from "./graph-pages.ts";
 export {
   createM365AppUsageAudit,
   lastActivityOf,
@@ -57,6 +62,8 @@ export const builtInAudits: readonly Audit[] = [
   mfaRegistrationAudit,
   guestAccountsAudit,
   licenseCapacityAudit,
+  conditionalAccessAudit,
+  riskyUsersAudit,
   managedDevicesAudit,
   appConsentsAudit,
   m365AppUsageAudit,
@@ -85,6 +92,23 @@ export function auditDefinition(audit: Audit): AuditDefinition {
       (permission) => !permissions.includes(permission),
     ),
   });
+}
+
+// What one run may read: the audit's required packs plus only the optional packs the operator
+// enabled, and only the granted permissions those packs carry. Several packs share a permission
+// (AuditLog.Read.All serves sign-ins, directory audits and MFA registration), so a permission
+// granted for one enabled pack must not open another pack the operator left off.
+export function auditReadScope(
+  audit: Audit,
+  enabledPacks: readonly string[],
+  grantedScopes: readonly string[],
+): { packs: GraphFeatureId[]; granted: string[] } {
+  const enabled = new Set(enabledPacks);
+  const packs = [
+    ...new Set([...audit.packs, ...audit.optionalPacks.filter((pack) => enabled.has(pack))]),
+  ];
+  const carried = new Set(permissionsOf(packs.filter((pack) => enabled.has(pack))));
+  return { packs, granted: grantedScopes.filter((scope) => carried.has(scope)) };
 }
 
 export function findAudit(id: string): Audit | undefined {

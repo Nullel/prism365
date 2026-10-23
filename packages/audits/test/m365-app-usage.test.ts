@@ -7,7 +7,6 @@ import {
   lastActivityOf,
   MAX_USAGE_ACCOUNTS,
   m365AppUsageAudit,
-  pause,
   usageOf,
 } from "../src/index.ts";
 import {
@@ -343,14 +342,6 @@ describe("Microsoft 365 app usage", () => {
       setTimeout(() => controller.abort(new Error("stopped")), 30);
       await expect(running).rejects.toThrow("stopped");
       expect(performance.now() - started).toBeLessThan(2_000);
-    });
-
-    it("pauses for zero time and checks the signal", async () => {
-      const controller = new AbortController();
-      await expect(pause(0, controller.signal)).resolves.toBeUndefined();
-      controller.abort(new Error("stopped"));
-      await expect(pause(0, controller.signal)).rejects.toThrow("stopped");
-      await expect(pause(10, controller.signal)).rejects.toThrow("stopped");
     });
   });
 

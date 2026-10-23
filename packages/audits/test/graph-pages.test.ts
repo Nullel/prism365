@@ -40,6 +40,18 @@ describe("reading pages by hand", () => {
     expect(ctx.requests).toHaveLength(2);
   });
 
+  it("accepts a null continuation link as the end of the list", async () => {
+    const route: Route = (url) =>
+      url.pathname === "/v1.0/servicePrincipals"
+        ? Response.json({ value: items.slice(0, 3), "@odata.nextLink": null })
+        : undefined;
+    const read = await readPages(context(route), application, "servicePrincipals", {
+      maxRecords: 100,
+    });
+    expect(read.items).toHaveLength(3);
+    expect(read.complete).toBe(true);
+  });
+
   it("stops at the page limit", async () => {
     const ctx = fake(appConsentsAudit, list);
     const read = await readPages(ctx.context, application, "servicePrincipals", {

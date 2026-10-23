@@ -5,14 +5,16 @@ import {
 } from "@prism365/graph";
 import { z } from "zod";
 import type { AuditContext } from "./definition.ts";
+import { abortablePause } from "./paced-read.ts";
 
 // Paging by hand, for the audits that must count their requests, pause between pages or keep
-// what they read when Microsoft asks them to slow down. The Graph client underneath still checks
+// what they read when Microsoft asks them to slow down. (paced-read.ts spaces every request for the
+// endpoints with a strict per-second limit; these audits need a budget and a partial result.) The Graph client underneath still checks
 // every page against the endpoint allowlist of the read pack it is asked with.
 
 export const pageSchema = z.object({
   value: z.array(z.unknown()).max(1_000),
-  "@odata.nextLink": z.string().max(16_384).optional(),
+  "@odata.nextLink": z.string().max(16_384).nullish(),
 });
 
 export interface PagedRead {
@@ -32,23 +34,6 @@ export interface PageOptions {
   pageDelayMilliseconds?: number;
 }
 
-// Waits, and stops waiting the moment the run is stopped. A delay of zero only checks the signal.
-export function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  if (milliseconds <= 0) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const stop = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", stop);
-      resolve();
-    }, milliseconds);
-    signal.addEventListener("abort", stop, { once: true });
-  });
-}
-
 // Follows a collection page by page. Throttling after the first page keeps what was read and
 // says so; on the first page there is nothing to keep, so the error goes to the caller.
 export async function readPages(
@@ -65,7 +50,8 @@ export async function readPages(
     context.signal.throwIfAborted();
     if (pages >= maxPages || (options.allow && !options.allow()))
       return { items, complete: false, throttled: false };
-    if (pages > 0) await pause(options.pageDelayMilliseconds ?? 0, context.signal);
+    const delay = options.pageDelayMilliseconds ?? 0;
+    if (pages > 0 && delay > 0) await abortablePause(delay, context.signal);
     let page: z.output<typeof pageSchema>;
     try {
       page = await context.graph.get(next, request, pageSchema);
@@ -79,7 +65,7 @@ export async function readPages(
       if (items.length >= options.maxRecords) return { items, complete: false, throttled: false };
       items.push(record);
     }
-    next = page["@odata.nextLink"];
+    next = page["@odata.nextLink"] ?? undefined;
     if (items.length >= options.maxRecords && next)
       return { items, complete: false, throttled: false };
   }

@@ -114,18 +114,18 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
     /^\/v1\.0\/admin\/serviceAnnouncement\/(?:healthOverviews|issues)(?:\/[^/]+)?\/?$/i,
   "service.messages.read": /^\/v1\.0\/admin\/serviceAnnouncement\/messages(?:\/[^/]+)?\/?$/i,
   "audit.signins.read": /^\/v1\.0\/auditLogs\/signIns(?:\/[^/]+)?\/?$/i,
-  "audit.directory.read": /^\/v1\.0\/auditLogs\/directoryAudits(?:\/[^/]+)?\/?$/i,
+  "audit.directory.read": /^\/v1\.0\/auditLogs\/directoryAudits(?:\/[A-Za-z0-9._:-]+)?\/?$/i,
   "reports.authentication-methods.read":
     /^\/v1\.0\/reports\/authenticationMethods\/userRegistrationDetails(?:\/[^/]+)?\/?$/i,
   "identity.conditional-access.read":
-    /^\/v1\.0\/identity\/conditionalAccess\/(?:policies|namedLocations)(?:\/[^/]+)?\/?$/i,
+    /^\/v1\.0\/identity\/conditionalAccess\/(?:policies|namedLocations)(?:\/[A-Za-z0-9._:-]+)?\/?$/i,
   // Enterprise applications, one of them, or the application permissions granted to one.
   "directory.applications.read":
-    /^\/v1\.0\/servicePrincipals(?:\/[^/]+(?:\/appRoleAssignments)?)?\/?$/i,
+    /^\/v1\.0\/servicePrincipals(?:\/[A-Za-z0-9._:-]+(?:\/appRoleAssignments)?)?\/?$/i,
   "directory.permission-grants.read": /^\/v1\.0\/oauth2PermissionGrants\/?$/i,
   "identity.risk.read": /^\/v1\.0\/identityProtection\/riskyUsers(?:\/[^/]+)?\/?$/i,
-  // The Microsoft 365 apps report is the one usage report v1.0 returns as JSON; the others answer
-  // with a redirect to a CSV download, which this client refuses.
+  // The per-user Microsoft 365 apps report, which v1.0 documents as answering in JSON. The other
+  // per-user detail reports answer with a redirect to a CSV download, which this client refuses.
   "reports.usage.read": /^\/v1\.0\/reports\/getM365AppUserDetail\(period='D(?:7|30|90|180)'\)\/?$/i,
   "reports.settings.read": /^\/v1\.0\/admin\/reportSettings\/?$/i,
   "security.score.read":
@@ -215,6 +215,17 @@ export class GraphHttpClient {
     if (!allowedPaths[context.feature].test(target.pathname)) {
       throw new GraphBoundaryError(
         "Graph endpoint does not belong to its declared feature pack.",
+        "endpoint",
+      );
+    }
+    // $expand pulls related objects into the response, so it could reach data the pack's paths
+    // deliberately leave out (an application's owners, a user's group memberships). Nothing in
+    // Prism365 uses it; it is refused rather than allowlisted per pack.
+    // Graph also accepts query options without the "$" prefix on some endpoints.
+    const expands = (key: string) => key.trim().toLowerCase().replace(/^\$/, "") === "expand";
+    if ([...target.searchParams.keys()].some(expands)) {
+      throw new GraphBoundaryError(
+        "Graph $expand is not allowed by the read boundary.",
         "endpoint",
       );
     }

@@ -193,8 +193,10 @@ operator's delegated session, with no scheduler and no new storage:
 | Recent activity | open service issues plus failed-sign-in spikes | the two above | |
 
 Usage reports (`Reports.Read.All`) need a download adapter first: `GraphHttpClient` rejects
-every 3xx by design, and every `reports/get*` function answers 302 with a pre-authenticated
-CSV URL. That adapter (allow-listed redirect host, bounded CSV parse) is its own task.
+every 3xx by design, and most `reports/get*` functions answer 302 with a pre-authenticated
+CSV URL. The per-user Microsoft 365 apps report (`getM365AppUserDetail`) is the exception: v1.0
+documents a JSON answer, and the Microsoft 365 app usage audit reads only that report. An adapter
+for the CSV reports (allow-listed redirect host, bounded CSV parse) is still its own task.
 
 Deliverable: `/v1/dashboard/summary` returns live data in live mode, `MetricCard` reads
 `metric.state` instead of the hard-coded "Demo" chip, and the placeholder section goes away.
