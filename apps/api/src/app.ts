@@ -321,6 +321,10 @@ export function createApp(options: AppOptions = {}) {
     )
       return;
     const session = await sessionFor(request);
+    // The setup checklist also answers without a session, so an installation that cannot sign
+    // anyone in yet can still say what is missing. It then tells no more than /v1/session; a
+    // signed-in request goes through every check below like any other.
+    if (!session && pathname === "/v1/setup/status") return;
     if (!session)
       return reply.status(401).send({
         error: "authentication_required",

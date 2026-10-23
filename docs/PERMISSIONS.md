@@ -61,6 +61,25 @@ and granted scopes, then reports source-specific failures; it does not yet imple
 role/license/service probes. A provider 403 is classified as uncertain, not automatically missing
 consent. See [Compatibility](COMPATIBILITY.md).
 
+## The setup script
+
+`npm run setup` (`scripts/setup/`, see [Setup](SETUP.md)) is the only code in the repository
+that writes to Microsoft, and only when an administrator runs it and confirms its plan. It signs
+in with a device code through Microsoft's public client for the Microsoft Graph command line
+tools (`14d82eec-204b-4c2f-b7e8-296a70dab67e`), asking for delegated `Application.ReadWrite.All`
+and `User.Read`, and keeps the token in memory only. With it, it creates or updates Prism365's
+own registration and service principal and adds a certificate. It never grants consent to that
+registration, never creates a secret, and never asks for an application permission.
+That `Application.ReadWrite.All` is the one exception to the rule below against `*.ReadWrite.*`
+permissions: it belongs to Microsoft's tool, for the length of one setup run, and is never on
+Prism365's registration or held by the running app.
+
+The registration it makes requests, as delegated Microsoft Graph permissions, `openid`,
+`profile`, `offline_access` and `User.Read` for sign-in (MSAL asks for the first three on every
+sign-in, and `offline_access` is what keeps a session and collection going), plus the permission
+of each pack in its feature list. The runtime still uses only the packs in
+`ENABLED_READ_FEATURES`.
+
 ## Not approved for the MVP
 
 - Any `*.ReadWrite.*` permission.
