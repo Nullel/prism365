@@ -4,3 +4,4 @@ export * from "./csv.ts";
 export * from "./investigation.ts";
 export * from "./permissions.ts";
 export * from "./person.ts";
+export * from "./roles.ts";

@@ -98,7 +98,10 @@ last sign-in dates, account state, license names and, for the MFA audit, registe
 (never the phone numbers or keys themselves). The Account activity audit adds, for each account,
 the dates and counts of its recent use of mail, Teams, OneDrive and SharePoint, its mailbox and
 OneDrive sizes, and the names of its groups and directory roles. It never stores message or file
-content, and the counts are not a measure of anyone's work. The newest 10 successful and 5 failed runs per
+content, and the counts are not a measure of anyone's work. The Privileged roles audit stores who
+holds each directory role, how and until when, with the holder's name and sign-in name or, for a
+group, its ID. The Passwords audit stores each member account's password change date and whether
+it has the never-expires or weak-password setting, never a password or a hash. The Groups and Teams audit stores each group's name, kind and dates and, for Microsoft 365 groups, teams and role-assignable groups, the names of up to five owners with a count of all owners; it never reads members. The Mailbox storage audit stores each mailbox's sign-in name, display name, sizes, quotas and item counts, never message content. The newest 10 successful and 5 failed runs per
 audit are kept and older ones deleted. Starting a run, opening a result and exporting it each write an access-ledger
 entry that names the audit and the run, not an account. A downloaded CSV is outside Prism365's
 retention and should be handled like the directory export it is.
@@ -127,6 +130,23 @@ deleted, receipt items included, a batch at a time after each new handoff or rec
 a handoff stays while a kept receipt answers it.
 Exporting, importing and reading them each write an access-ledger entry with ids and counts, not
 names or the tool's text.
+
+## Alerts
+
+Alerts (`docs/alerts.md`, ADR-0011) send data out of the server, to the operator's own mail relay
+or to a webhook an administrator names; never through Microsoft. By default an alert holds its
+title, severity, counts, the subject's label (which can be a person's name) and a link back. A
+destination's "include details" switch adds a finding's summary and evidence fields. A full IP
+address leaves only for email, whose recipients must be in `ALERT_EMAIL_DOMAINS`, with details on;
+everywhere else addresses are cut to their network. A scheduled export attaches the audit's CSV,
+every column included, only to email with details on, up to 5 MB. The weekly summary holds
+counts only.
+
+Prism365 keeps no copy of what it sends. The delivery log holds where each delivery went, what
+sent it, how many items it covered and how it went, for 90 days, with short digests of the
+subjects for quiet periods. Webhook addresses and signing secrets are stored encrypted; email
+recipients are stored as typed. Every change and every delivery writes an access-ledger entry
+with ids and counts.
 
 ## Retention defaults
 

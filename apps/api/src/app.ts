@@ -118,6 +118,8 @@ import {
   type SupportedReadFeature,
   supportedReadFeatures,
 } from "./config.ts";
+import { DeliveryService, type DeliveryServiceOptions } from "./delivery.ts";
+import { buildDigest, digestSectionsRead } from "./digest.ts";
 import { demoDashboard } from "./demo-data.ts";
 import {
   digest,
@@ -128,9 +130,11 @@ import {
 } from "./identity.ts";
 import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
 import { registerAuditInsightRoutes } from "./routes/audit-insights.ts";
+import { registerCanaryRoutes } from "./routes/canaries.ts";
 import { registerChangeRoutes } from "./routes/changes.ts";
 import { RouteBoundaryError, type RouteContext } from "./routes/context.ts";
-import { registerDigestRoutes } from "./routes/digest.ts";
+import { registerDeliveryRoutes } from "./routes/delivery.ts";
+import { digestUnavailable, registerDigestRoutes } from "./routes/digest.ts";
 import { registerHandoffRoutes } from "./routes/handoffs.ts";
 import { registerSetupRoutes } from "./routes/setup.ts";
 
@@ -148,6 +152,20 @@ export interface AppOptions {
   auditSchedule?: Pick<
     AuditSchedulerOptions,
     "now" | "intervalMilliseconds" | "startDelayMilliseconds" | "timers" | "log"
+  >;
+  // Transports, clock and timers for alert delivery. Tests pass fakes; nothing here can change
+  // which addresses a webhook may reach.
+  delivery?: Pick<
+    DeliveryServiceOptions,
+    | "lookup"
+    | "connect"
+    | "mailSender"
+    | "now"
+    | "timers"
+    | "retryDelaysMilliseconds"
+    | "flushDelayMilliseconds"
+    | "checkIntervalMilliseconds"
+    | "log"
   >;
 }
 
@@ -1241,6 +1259,52 @@ export function createApp(options: AppOptions = {}) {
       if (event.type === "collection.unbound") auditSchedule.collectionEnded();
     });
   }
+  // Alerts: rules over findings, audit results and collection, sent to the operator's own mail
+  // relay or a webhook. Off every request path: the sink only buffers, and audit and scheduler
+  // events only start work that nothing waits for.
+  const delivery =
+    modules && identity
+      ? new DeliveryService({
+          tenantId: identity.tenantId,
+          database: modules.database,
+          store,
+          origin: config.origin,
+          config: config.delivery ?? { email: { smtp: null, domains: [] }, webhookPorts: [] },
+          encryptionKey: config.encryptionKey ?? null,
+          collection: () => modules.scheduler.status(),
+          modules: () =>
+            modules.registry.list().map((module) => ({ id: module.id, title: module.title })),
+          timeZone: config.signinsAudit?.timeZone ?? "UTC",
+          // The This week digest, read the way its page reads it, for the weekly summary.
+          weeklyDigest: {
+            build: (sql, now) =>
+              buildDigest(sql, {
+                tenantId: identity.tenantId,
+                now,
+                days: 7,
+                collecting: modules.scheduler.status().state === "collecting",
+                modules: modules.registry.list().map((module) => ({
+                  id: module.id,
+                  title: module.title,
+                  collectors: module.collectors.map(({ id, title }) => ({ id, title })),
+                })),
+                unavailable: digestUnavailable(modules.registry, config.enabledFeatures),
+              }),
+            datasets: () =>
+              digestSectionsRead(digestUnavailable(modules.registry, config.enabledFeatures)),
+          },
+          ...options.delivery,
+        })
+      : null;
+  const detachDelivery: (() => void)[] = [];
+  if (delivery && modules) {
+    detachDelivery.push(
+      modules.scheduler.addSink(delivery.sink),
+      modules.scheduler.subscribe((event) => delivery.onSchedulerEvent(event)),
+    );
+    if (audits) detachDelivery.push(audits.subscribe((event) => delivery.onAuditStored(event)));
+    delivery.start();
+  }
   const auditsUnavailable = {
     error: "audits_unavailable",
     message: "Audits need live mode with module storage, and a signed-in administrator.",
@@ -1512,12 +1576,15 @@ export function createApp(options: AppOptions = {}) {
     sessionGraph: routeGraph,
     auditAvailability,
     collectingAdmin: () => (collecting ? { actorId: collecting.actorId } : null),
+    delivery,
   };
   registerChangeRoutes(app, routes);
   registerAuditInsightRoutes(app, routes);
   registerDigestRoutes(app, routes);
   registerSetupRoutes(app, routes);
   registerHandoffRoutes(app, routes);
+  registerCanaryRoutes(app, routes);
+  registerDeliveryRoutes(app, routes);
 
   app.get("/v1/dashboard/summary", async (_request, reply) => {
     if (config.mode === "demo") return demoDashboard;
@@ -1799,6 +1866,10 @@ export function createApp(options: AppOptions = {}) {
   });
 
   app.addHook("onClose", async () => {
+    // No alert is taken from here on; deliveries still waiting are recorded as interrupted
+    // while the database is open.
+    for (const detach of detachDelivery) detach();
+    await delivery?.stop();
     // No scheduled audit starts from here on.
     auditSchedule?.stop();
     // Audits first: an interrupted run is recorded before the database closes.

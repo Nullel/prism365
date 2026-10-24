@@ -40,6 +40,23 @@ describe("module registry", () => {
     expect(() => new ModuleRegistry().register({ ...valid(), packs: [] })).toThrow("at least one");
   });
 
+  it("lets a module declare saved settings, but only in its own namespace", () => {
+    const withSettings = (settings: string[]): PrismModule => ({ ...valid(), settings });
+    expect(() => new ModuleRegistry().register(withSettings(["test.canaries"]))).not.toThrow();
+    // Another feature's setting, a bare word, odd casing and a repeat are all refused.
+    for (const bad of [
+      ["attention"],
+      ["audits.scope"],
+      ["other.canaries"],
+      ["test"],
+      ["Test.Canaries"],
+      ["test.canaries", "test.canaries"],
+    ])
+      expect(() => new ModuleRegistry().register(withSettings(bad)), bad.join()).toThrow(
+        ModuleDefinitionError,
+      );
+  });
+
   it("bounds collector cadence and timeout", () => {
     const collector = valid().collectors[0];
     if (!collector) throw new Error("fixture collector missing");

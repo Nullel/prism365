@@ -190,6 +190,10 @@ describe("audits API", () => {
       "apps.consents",
       "usage.m365-apps",
       "accounts.activity",
+      "directory.privileged-roles",
+      "accounts.passwords",
+      "groups.teams",
+      "mail.mailbox-storage",
     ]);
     // Reads this installation has not enabled are named, so the page says what to add.
     expect(by("devices.managed")).toMatchObject({
@@ -211,6 +215,19 @@ describe("audits API", () => {
       enable: [],
     });
     expect(by("licenses.reclaim")?.state).toBe("available");
+    expect(by("accounts.passwords")?.state).toBe("available");
+    expect(by("directory.privileged-roles")).toMatchObject({
+      state: "not_enabled",
+      enable: ["directory.roles.read"],
+    });
+    expect(by("groups.teams")).toMatchObject({
+      state: "not_enabled",
+      enable: ["directory.groups.read"],
+    });
+    expect(by("mail.mailbox-storage")).toMatchObject({
+      state: "not_enabled",
+      enable: ["reports.usage.read"],
+    });
     expect(by("licenses.capacity")).toMatchObject({
       state: "not_enabled",
       enable: ["tenant.licenses.read"],

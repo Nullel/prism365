@@ -1,5 +1,5 @@
 import { type AuditRow, cleanText } from "@prism365/contracts";
-import { GraphRequestError } from "@prism365/graph";
+import { GLOBAL_ADMINISTRATOR_ROLE_ID, GraphRequestError, privilegedRoles } from "@prism365/graph";
 import { z } from "zod";
 import type { Audit, AuditContext } from "./definition.ts";
 import { createPacer, type Pacer, type Pause, readPaced } from "./paced-read.ts";
@@ -34,25 +34,16 @@ const NAME_BATCH = 8;
 const SHOWN_NAMES = 5;
 
 // Role template IDs, which is how policies name roles. Only the roles a policy for administrators
-// usually lists; the IDs are from Microsoft Entra's built-in roles reference, checked 2026-10-22:
+// usually lists: the privileged roles every audit shares (@prism365/graph, which cites Microsoft's
+// built-in roles reference) and four more that are not on that list. The IDs of those four are
+// from the same reference, checked 2026-10-22:
 // https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/permissions-reference
-const GLOBAL_ADMINISTRATOR = "62e90394-69f5-4237-9190-012177145e10";
+const GLOBAL_ADMINISTRATOR = GLOBAL_ADMINISTRATOR_ROLE_ID;
 const roleNames = new Map<string, string>([
-  [GLOBAL_ADMINISTRATOR, "Global Administrator"],
-  ["e8611ab8-c189-46e8-94e1-60213ab1f814", "Privileged Role Administrator"],
-  ["194ae4cb-b126-40b2-bd5b-6091b380977d", "Security Administrator"],
-  ["29232cdf-9323-42fd-ade2-1d097af3e4de", "Exchange Administrator"],
-  ["f28a1f50-f6e7-4571-818b-6a12f2af6b6c", "SharePoint Administrator"],
-  ["fe930be7-5e62-47db-91af-98c3a49a38b1", "User Administrator"],
-  ["b1be1c3e-b65d-4f19-8427-f6fa0d97feb9", "Conditional Access Administrator"],
-  ["9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3", "Application Administrator"],
-  ["158c047a-c907-4556-b7ef-446551a6b5f7", "Cloud Application Administrator"],
+  ...privilegedRoles,
   ["729827e3-9c14-49f7-bb1b-9608f156bbb8", "Helpdesk Administrator"],
-  ["c4e39bd9-1100-46d3-8c65-fb160da0071f", "Authentication Administrator"],
-  ["7be44c8a-adaf-4e2a-84d6-ab2649e08a13", "Privileged Authentication Administrator"],
   ["966707d0-3269-4727-9be2-8c3a10f19b9d", "Password Administrator"],
   ["b0f54661-2d74-4c50-afa3-1ec803f12efe", "Billing Administrator"],
-  ["3a2c62db-5318-420d-8d74-23affee5d9d5", "Intune Administrator"],
   ["69091246-20e8-4a56-aa4d-066075b2a7a8", "Teams Administrator"],
 ]);
 

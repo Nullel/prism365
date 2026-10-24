@@ -6,6 +6,7 @@ import {
   listFindings,
   ModuleRegistry,
   ModuleScheduler,
+  type PrismModule,
   setFindingState,
 } from "@prism365/modules";
 import { PGliteModuleDatabase } from "@prism365/storage";
@@ -15,6 +16,7 @@ import {
   defaultSigninsAuditConfig,
   type SigninsAuditConfig,
   summarizeSignins,
+  writeCanaries,
 } from "../src/index.ts";
 
 // Each scenario opens PGlite inside the test; on a loaded machine that cold start alone can pass
@@ -150,13 +152,14 @@ let failBefore: number | null = null;
 async function setup(
   overrides: Partial<SigninsAuditConfig> = {},
   graphOptions: { requestTimeoutMilliseconds?: number } = {},
+  decorate: (module: PrismModule) => PrismModule = (module) => module,
 ) {
   const config: SigninsAuditConfig = {
     ...defaultSigninsAuditConfig,
     backfillDays: 3,
     ...overrides,
   };
-  const registry = new ModuleRegistry().register(createSigninsAuditModule(config));
+  const registry = new ModuleRegistry().register(decorate(createSigninsAuditModule(config)));
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   scheduler = new ModuleScheduler({
     enabledPacks: registry.list().flatMap((module) => [...module.packs]),
@@ -883,5 +886,149 @@ describe("sign-in audit collector", () => {
       await poll();
     }
     expect(await count("user_id LIKE 'user-new-%'")).toBeGreaterThanOrEqual(2);
+  });
+
+  describe("canary accounts", () => {
+    const decoy = {
+      userId: "canary-1",
+      principal: "decoy.account@example.invalid",
+      addedAt: "2026-10-22T11:00:00.000Z",
+      addedBy: actorId,
+    };
+    const mark = (...accounts: (typeof decoy)[]) =>
+      database.tenant(tenantId, (sql) => writeCanaries(sql, tenantId, { accounts }, actorId));
+    const used = async () =>
+      (await findings()).filter((item) => item.ruleId === "signin.canary-used");
+    const attempt = (at: Date, overrides: Record<string, unknown> = {}) =>
+      signIn(at, {
+        userId: "canary-1",
+        userPrincipalName: "Decoy.Account@example.invalid",
+        userDisplayName: "Decoy Account",
+        ipAddress: "203.0.113.44",
+        location: amsterdam,
+        status: { errorCode: 50126, failureReason: "Invalid username or password." },
+        ...overrides,
+      });
+
+    it("opens a critical finding in the run that reads the attempt, and leaves other accounts alone", async () => {
+      await setup();
+      await poll();
+      await mark(decoy);
+      records.push(attempt(minutesAgo(3)), signIn(minutesAgo(2)));
+      await poll();
+      const [found, ...others] = await used();
+      expect(others).toEqual([]);
+      expect(found).toMatchObject({
+        severity: "critical",
+        state: "open",
+        occurrences: 1,
+        subject: { kind: "person", id: "canary-1", label: "Decoy Account" },
+      });
+      const evidence = (found?.evidence ?? []) as { fields: Record<string, unknown> }[];
+      expect(evidence[0]?.fields).toMatchObject({
+        result: "failure",
+        errorCode: 50126,
+        ip: "203.0.113.44",
+        app: "Office 365 Exchange Online",
+      });
+      // The ordinary account that signed in during the same run has no finding.
+      expect((await findings()).filter((item) => item.subject.id === "user-1")).toEqual([]);
+    });
+
+    it("counts up within a UTC day, opens a new finding the next day, and fires on a success", async () => {
+      clock = new Date("2026-10-22T23:50:00Z");
+      await setup();
+      await poll();
+      await mark(decoy);
+      records.push(attempt(minutesAgo(3)));
+      await poll();
+      records.push(attempt(minutesAgo(2), { status: { errorCode: 0, failureReason: null } }));
+      await poll();
+      let found = await used();
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatchObject({ occurrences: 2, severity: "critical" });
+      const evidence = (found[0]?.evidence ?? []) as { fields: Record<string, unknown> }[];
+      expect(evidence[0]?.fields).toMatchObject({ result: "success", errorCode: 0 });
+
+      // After midnight UTC the same account opens a new finding.
+      records.push(attempt(minutesAgo(2)));
+      await poll();
+      found = await used();
+      expect(found.map((item) => item.occurrences).sort()).toEqual([1, 2]);
+    });
+
+    it("also reads the history loaded on the first run", async () => {
+      await setup();
+      await mark(decoy);
+      records.push(attempt(new Date(start.getTime() - 30 * 3_600_000)));
+      await poll();
+      expect(await used()).toMatchObject([{ occurrences: 1, severity: "critical" }]);
+    });
+
+    it("matches a sign-in with no user id by the account's sign-in name", async () => {
+      await setup();
+      await poll();
+      await mark({ ...decoy, userId: "canary-2", principal: "Old.Mailbox@example.invalid" });
+      records.push(
+        attempt(minutesAgo(3), { userId: "", userPrincipalName: "OLD.MAILBOX@example.invalid" }),
+      );
+      await poll();
+      expect(await used()).toMatchObject([{ subject: { id: "canary-2" } }]);
+    });
+
+    it("does not look back: an attempt already read before the account was marked stays quiet", async () => {
+      await setup();
+      await poll();
+      records.push(attempt(minutesAgo(3)));
+      await poll();
+      await mark(decoy);
+      await poll();
+      expect(await used()).toEqual([]);
+    });
+
+    it("reads the list once per run, however many windows the run reads", async () => {
+      let runsStarted = 0;
+      let reads = 0;
+      await setup({}, {}, (module) => ({
+        ...module,
+        collectors: module.collectors.map((collector) => ({
+          ...collector,
+          run: (context) => {
+            runsStarted += 1;
+            return collector.run({
+              ...context,
+              settings: {
+                get: (key) => {
+                  reads += 1;
+                  return context.settings.get(key);
+                },
+              },
+            });
+          },
+        })),
+      }));
+      // Three days of history are read in many windows.
+      await poll();
+      expect(await count()).toBe(18);
+      expect(runsStarted).toBeGreaterThan(0);
+      expect(reads).toBe(runsStarted);
+    });
+
+    it("keeps collecting when the stored list is damaged", async () => {
+      await setup();
+      await poll();
+      await database.tenant(tenantId, (sql) =>
+        sql.query(
+          `INSERT INTO prism365_preference (tenant_id, key, value, updated_at, updated_by)
+           VALUES ($1,'signins.canaries','{"accounts":"no"}'::jsonb,now(),$2)`,
+          [tenantId, actorId],
+        ),
+      );
+      records.push(attempt(minutesAgo(3)));
+      await poll();
+      expect(await used()).toEqual([]);
+      const [run] = await runs();
+      expect(run).toMatchObject({ status: "succeeded" });
+    });
   });
 });

@@ -491,6 +491,7 @@ describe("handoff export", () => {
       [
         "accounts.activity",
         "accounts.inactive",
+        "accounts.passwords",
         "guests.review",
         "identity.risky-users",
         "licenses.reclaim",
@@ -500,6 +501,7 @@ describe("handoff export", () => {
     for (const id of [
       "devices.managed",
       "apps.consents",
+      "directory.privileged-roles",
       "identity.conditional-access",
       "licenses.capacity",
       "usage.m365-apps",

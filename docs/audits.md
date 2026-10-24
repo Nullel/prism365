@@ -24,6 +24,10 @@ changes the tenant.
 | App consents (`apps.consents`) | Which applications hold permissions here, which are unverified or hold high-risk permissions, and where did an administrator consent for everyone? | `Application.Read.All` and a role such as Directory Readers or Application Administrator; `Directory.Read.All` adds delegated consents |
 | Microsoft 365 app usage (`usage.m365-apps`) | Which accounts used none of Outlook, Word, Excel, PowerPoint, OneNote or Teams in 90 days, and which use only Teams, only the web or only a phone? | `Reports.Read.All` and Reports Reader or a service administrator role; `ReportSettings.Read.All` tells whether names are concealed |
 | Account activity (`accounts.activity`) | Is this account really unused, and does anyone depend on it? One row per account with sign-ins, mail, Teams, OneDrive and SharePoint use, mailbox size, licenses, groups and directory roles, and a verdict (section 16). | `User.Read.All`, `AuditLog.Read.All`, Microsoft Entra ID P1 or P2, a role such as Reports Reader, Security Reader or Global Reader; `Reports.Read.All` with Reports Reader or a service administrator role adds the workload columns, `ReportSettings.Read.All` tells whether names are concealed, `LicenseAssignment.Read.All` names the licenses |
+| Privileged roles (`directory.privileged-roles`) | Who holds Global Administrator and the other administrator roles, permanently, for a time, after an activation or only as eligible, and which holders are disabled accounts, guests or apps (section 17)? | `RoleManagement.Read.Directory` and a role such as Global Reader or Privileged Role Administrator; Microsoft Entra ID P2 or ID Governance for eligible and time-bound roles; `User.Read.All`, `Application.Read.All` and `AuditLog.Read.All` add names and MFA registration |
+| Passwords (`accounts.passwords`) | How old is each member account's password, which accounts are set never to expire or to skip the strong password rule, and when do passwords expire (section 18)? | `User.Read.All`; `Domain.Read.All` with a role such as Global Reader or Directory Readers adds expiry dates |
+| Groups and Teams (`groups.teams`) | Which groups and teams have no owner, only disabled owners, a single owner, no use for 90 days or an expiry date close, and who owns the rest (section 19)? | `Group.Read.All` and a role such as Global Reader or Directory Readers; `Reports.Read.All` with Reports Reader or Teams Administrator adds team usage, `ReportSettings.Read.All` tells whether names are concealed |
+| Mailbox storage (`mail.mailbox-storage`) | Which mailboxes are full or close to it, against the warning, send and send-and-receive quotas, and does the mailbox have an archive (section 20)? | `Reports.Read.All` and Reports Reader or Exchange Administrator; `ReportSettings.Read.All` tells whether names are concealed |
 
 `LicenseAssignment.Read.All`, when granted, also gives the account audits license names instead
 of Microsoft's product IDs.
@@ -763,3 +767,321 @@ Tiles:
 - Whether Microsoft's field shapes match its pages: the dates, counts and yes or no values are
   documented as fields but not their spelling, so a value Prism365 cannot read shows as No data and
   is counted in a note.
+
+## 17. Privileged roles
+
+`directory.privileged-roles` answers "who can administer this tenant, and how did they get to?"
+It lists every directory role assignment, one row for a holder, a role, a scope and a way of
+holding it, and says which of them need a second look: a Global Administrator who holds the role
+for good, a disabled account, a guest or an app that still holds a privileged role. Roles are
+tenant-wide, so it does not use the account scope (section 9) and does not offer Export for action.
+It reports what the directory says about who holds a role. It does not say whether anyone should.
+
+### What it reads
+
+Graph v1.0, checked 2026-10-24. The first two reads are required; the pack is `directory.roles.read`
+(`RoleManagement.Read.Directory`, lists only).
+
+1. `roleManagement/directory/roleDefinitions`, for the role names.
+2. `roleManagement/directory/roleAssignments`, the assignments in effect.
+3. `roleAssignmentScheduleInstances` and `roleEligibilityScheduleInstances` under the same path:
+   the active and eligible assignments Privileged Identity Management (PIM) keeps, with their start
+   and end dates, how the holder got the role (`memberType`: Direct, Group or Inherited) and, for
+   active ones, whether they were assigned or activated. Microsoft documents no page size for any of
+   the four lists, so none is sent and the continuation links are followed, up to 5,000 records a list.
+4. With `User.Read.All` and `Application.Read.All`, the holders' names, in batches of 15 with
+   `$filter=id in (...)`: accounts first, then service principals for the IDs that were not accounts.
+   An ID neither names is shown as Group or other with its ID, because this audit reads no groups.
+   A refused lookup never fails the run. At most 1,000 holders are named.
+5. With `AuditLog.Read.All` (the MFA registration pack), the authentication methods report the MFA
+   audit uses, but only when an account holds a role.
+
+The two PIM lists need Microsoft Entra ID P2 or ID Governance, and Global Reader or Privileged Role
+Administrator. Directory Readers can read assignments and definitions only. When Microsoft answers
+either PIM list with 403 or 400, the run goes on with the assignments in effect, is partial, and a
+note says that eligible and time-bound roles need PIM and a role that can read it.
+
+### How a role is held
+
+One row per holder, role, scope and way of holding it.
+
+- Permanent: an active assignment with no end date.
+- Time-bound: an active assignment with an end date.
+- Activated: an eligible role that was switched on and is in effect until its end.
+- Eligible and Eligible time-bound: the holder can activate the role but does not hold it now.
+- Active: Microsoft lists the assignment as in effect, but no PIM record names it, so Prism365 cannot
+  say whether it is permanent. This is what every row shows when PIM could not be read.
+
+An active instance names the assignment it belongs to (`roleAssignmentOriginId` is the assignment's
+`id`), so the two are one row and not two. Read twice by different routes, the same holder, role,
+scope and kind is one row and keeps the direct route. Scope shows Tenant for `/` and otherwise the
+scope's ID. A role is privileged when its template ID is on the shared list of twelve built-in
+administrator roles (`packages/graph/src/roles.ts`, also used by the directory change rules and the
+Conditional Access audit). Custom roles and the other built-in roles are listed, not flagged.
+
+### Columns
+
+Holder, Holder type (User, Guest, Service principal, Group or other), Role, Privileged, How held,
+Through, Scope, Starts, Ends, Account enabled, and MFA registered (empty unless the report was
+read; accounts only). Holder type, Role, How held and Through can be used as filters.
+
+### Views and tiles
+
+The default view is Privileged roles. Others: All roles, Global Administrators (in effect now),
+Permanent, Disabled accounts, Guests and Service principals, the last four limited to privileged
+roles.
+
+- Global Administrators: the accounts that hold the role now, counted once however they hold it.
+  A warning above 4 or below 2, from Microsoft's advice to keep fewer than five Global
+  Administrators and at least two emergency access accounts
+  (https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/best-practices and
+  https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/security-emergency-access).
+  The note adds how many more can activate the role. Whether Microsoft counts eligible accounts in
+  its advice is not stated, so the tile does not.
+- Privileged role holders: accounts, apps and groups with a privileged role of any kind.
+- Permanent privileged assignments: assignments, not holders. When PIM could not be read the tile
+  says so and shows 0, because the answer is unknown.
+- Disabled accounts, Guests and Service principals with a privileged role: holders of each kind.
+
+### What it cannot see
+
+- Members of a group that holds a role. The group is one row; its members appear only when PIM lists
+  them with a Group route.
+- Whether an empty end date means a permanent assignment. Microsoft's documentation does not say
+  so; Prism365 reads it that way.
+- A custom role's privileges, and any built-in role that is not on the shared list.
+- Holders beyond the first 5,000 records of a list, or the first 1,000 named. The run is partial.
+- Role assignments at an administrative unit or application scope are listed with their scope ID
+  but not explained.
+
+## 18. Passwords
+
+`accounts.passwords` answers "how old are our passwords, and which accounts are set so that age
+never catches up with them?" One row per member account: when the password last changed, how many
+days ago, what the account's domain says about expiry, when the password expires, whether the
+account is set never to expire or to skip the strong password rule, and a status. It uses the
+account scope (section 9), has the Domain column and offers Export for action ([Handoffs](handoff.md)).
+Guests are not listed; a note counts them, because their passwords belong to their own organisation.
+
+### What it reads
+
+Graph v1.0, checked 2026-10-24. Only the first read is required.
+
+1. Every user, with `$select` naming `lastPasswordChangeDateTime` and `passwordPolicies` (Microsoft
+   returns both only when they are selected) beside the fields the other account audits read
+   (`User.Read.All`). Sign-in dates are not requested.
+2. With `Domain.Read.All` (the `directory.domains.read` pack), `GET /domains`: each domain's
+   `passwordValidityPeriodInDays` and `passwordNotificationWindowInDays`. Microsoft documents a
+   problem with `$top` on this list, so it is never sent. A domain that leaves the lifetime unset
+   gets Microsoft's default of 90 days and one that leaves the window unset gets 14 days.
+   2147483647 days is how Microsoft stores "never expires". A refusal leaves the expiry columns
+   unknown and makes the run partial.
+
+`passwordPolicies` is a comma-separated list; `DisablePasswordExpiration` and `DisableStrongPassword`
+are read from it whatever their order or spacing.
+
+### Status
+
+The first rule that fits, for each account.
+
+1. Strong password not required: the account has `DisableStrongPassword`.
+2. Expired: the expiry date has passed.
+3. Expires soon: the expiry date is within the domain's notification window.
+4. Unreadable date: the change date is malformed, before 2000 or more than a day ahead of the clock.
+   Such an account is never called Never changed and never counted in an age range.
+5. Never changed: no change date.
+6. Older than 90 days, 180 days or 1 year: the largest of the three ages the password has passed.
+   The views pick one age, so the status never depends on which view is open.
+7. OK.
+
+The expiry date is the last change plus the domain's lifetime, worked out by Prism365; Microsoft does
+not return it. An account has no expiry date when it is synced from on-premises (shown as Managed
+on-premises, because the on-premises policy decides), has `DisablePasswordExpiration`, sits on a
+domain that never expires, sits on a domain Microsoft did not list or sent unreadably, or when
+domains were not read.
+
+### Columns
+
+Account, Enabled, Source (Cloud or On-premises), Last changed, Password age, Expiry policy, Expires
+on, Never expires for this account, Strong password not required, Status, and hidden by default
+Domain and Created. Enabled, Source, Expiry policy and Status can be used as filters.
+
+### Views and tiles
+
+Views: Older than 1 year (the default), Older than 180 days, Older than 90 days, All member accounts,
+Strong password not required, Never expires, Expired, Expires soon, and Enabled, never changed. The
+age views include every older password.
+
+Tiles: Member accounts, Strong password not required, Never expires (the account setting), Older
+than 1 year, Expired, Expires soon (only when domains were read) and Enabled, never changed.
+
+### What it cannot see
+
+- On-premises password policies, and the cloud policy for synced accounts when Microsoft's
+  `EnforceCloudPasswordPolicyForPasswordSyncedUsers` setting applies it. Prism365 does not read that
+  setting, so synced accounts have no expiry date here.
+- Accounts that sign in without a password, with a passkey or Windows Hello for example. Their old
+  password date means little.
+- A fine-grained password policy, or a password policy set anywhere other than the user and the
+  domain.
+- Whether a password is weak. The audit sees the setting that allows one, not the password.
+
+## 19. Groups and Teams
+
+`groups.teams` answers "which groups and teams have nobody looking after them?" One row per group:
+its kind and a status, visibility, how many owners it has and how many are enabled, the first five
+owner names, when it was created, expires and was renewed, whether it can be given a directory role
+and whether it is synced from on-premises. With the Teams activity report each team also shows its
+last activity, active users, guests and active channels. The audit does not use the account scope
+(section 9), because a group has no sign-in name to sort by domain, and it offers no export for
+action ([Handoffs](handoff.md)): its rows are groups, not accounts.
+
+### What it reads
+
+Graph v1.0, checked 2026-10-24. Only the first read is required.
+
+1. `GET /groups`, with `$select` naming the fields below and `$top=999` (`Group.Read.All`, the
+   `directory.groups.read` pack). Up to 20,000 groups are read; past that the run says so and is
+   partial. The fields are `groupTypes`, `mailEnabled`, `securityEnabled`,
+   `resourceProvisioningOptions`, `visibility`, `expirationDateTime`, `renewedDateTime`,
+   `isAssignableToRole`, `onPremisesSyncEnabled` and `createdDateTime`. Teams are told apart on the
+   client, because the server filter may need advanced query headers and Prism365 sends none.
+2. `GET /groups/{object id}/owners` with `$select=id,displayName,userPrincipalName,accountEnabled`,
+   for Microsoft 365 groups, teams and groups that can be given a directory role, and for no other
+   kind. At most 3,000 owner lists are read in a run, four at a time, teams first and then the
+   oldest groups. The rest show Owners not read and the run is partial. Microsoft throttling, or a
+   refusal, stops the reading and keeps what was read.
+3. With `Reports.Read.All`, `GET /reports/getTeamsTeamActivityDetail(period='D90')`, once. It is
+   matched to groups by Team Id, which is the group's object ID, with the headers matched by name
+   and without regard to letter case. A team's name in the report is never used: the row shows the
+   group's own display name. With `ReportSettings.Read.All` the privacy setting is read when the
+   report's team identifiers look like hashes, only to say so correctly.
+
+Nothing else is read: no members, no `/teams` call and no SharePoint site. Members cannot be
+reached with this read pack.
+
+### Kind
+
+The first that fits. Team: the group's provisioning options include Team. Microsoft 365 group: its
+group types include Unified. Dynamic security group: its group types include DynamicMembership.
+Mail-enabled security group: mail-enabled and a security group. Security group: a security group.
+Distribution list: everything else. A few old unused teams lack the provisioning option and show as
+Microsoft 365 groups; a note counts the ones the Teams report lists.
+
+### Status
+
+The first that fits, for each group.
+
+1. No owners: the owner list was read and is empty.
+2. Only disabled owners: every owner is an account Microsoft says is disabled. An owner whose state
+   is not given, such as an app, stops a group from being called this.
+3. One owner: a team with exactly one owner.
+4. Inactive 90 days: a team that has a row in the Teams report and either no activity date or one
+   more than 90 days old.
+5. Expires within 30 days: the expiry date is at most 30 days away, or already past.
+6. Owners not read: owners were due and Prism365 did not get them.
+7. No usage data: a team the Teams report does not list, or the report was not read.
+8. OK.
+
+The tiles count the conditions, not the statuses, so a team with no owners that is also inactive is
+counted in both. The Teams report lags by 24 to 72 hours and sometimes by several days.
+
+### Columns
+
+Group, Kind, Status, Visibility, Owners, Enabled owners, Owner names, Created, Expires, Role-assignable,
+Last activity, Active users, Guests and Active channels, and hidden by default Renewed and Synced from
+on-premises. Kind, Status and Visibility can be used as filters.
+
+### Views and tiles
+
+Views: All groups (the default), No owners, Only disabled owners, Teams with one owner, Teams with
+guests, Inactive teams, Public teams, Expiring within 30 days, Role-assignable groups, Owners not
+read, No usage data and Teams.
+
+Tiles: Groups and teams with no owners (every group whose owners were read and found none, which
+adds role-assignable security groups to Microsoft 365 groups and teams), Groups with only disabled
+owners, Teams with one owner, Teams with guests, Inactive teams, Public teams, Groups expiring in 30
+days and Role-assignable groups. Without the Teams report the guest and inactive tiles say so and
+show 0.
+
+### What it cannot see
+
+- Members: who is in a group, how many people, or which guests. The Guests column is the Teams
+  report's count for a team.
+- Owners of security groups and distribution lists, which are not read.
+- A team whose group lacks the provisioning option, which counts as a Microsoft 365 group.
+- Whether an owner is an active person. An enabled account can belong to someone who left.
+- Not confirmed with Microsoft: that `$select` is accepted on the owner list and that an owner who
+  is an app returns the user fields; whether concealment hides Team Id in the Teams report (a
+  report whose team identifiers all look like hashes is treated as concealed and nothing is
+  matched); whether an empty activity date means no activity in the period.
+
+## 20. Mailbox storage
+
+`mail.mailbox-storage` answers "which mailboxes are about to stop working?" One row per mailbox:
+its sign-in name, display name and recipient type, how much it holds, its three quotas, how close it
+is to the prohibit send quota, items, deleted items, whether it has an archive, its last activity and
+a status. It uses the account scope (section 9) and has the Domain column. It offers no export for
+action ([Handoffs](handoff.md)): the report names mailboxes, not accounts.
+
+### What it reads
+
+Graph v1.0, checked 2026-10-24. One read: `GET /reports/getMailboxUsageDetail(period='D90')`
+(`Reports.Read.All`, the `reports.usage.read` pack) through the usage report reader (ADR-0010), once.
+Nothing is joined to the directory: the report names a mailbox by sign-in name and carries no object
+ID, so rows do not link to a person page. With `ReportSettings.Read.All` the privacy setting is
+read.
+
+Headers are matched by name and without regard to letter case. The sign-in name and the storage
+used are required; every other column is optional, and one the report lacks reads as unknown. The
+Recipient Type column is in Microsoft's current page but not in older copies. A row marked deleted is
+left out and counted in a note.
+
+A byte is a byte and a gigabyte here is 1,073,741,824 bytes. Sizes are shown in gigabytes to one
+decimal, and rows are ordered by the bytes.
+
+### Status
+
+The first that fits, for each mailbox. Reaching a quota counts as being over it.
+
+1. Cannot send or receive: at or over the prohibit send and receive quota.
+2. Cannot send: at or over the prohibit send quota.
+3. Quota unknown: the report gives no warning quota (and neither of the first two applies). A quota
+   that is blank, 0 or unreadable counts as missing.
+4. Over warning: at or over the warning quota.
+5. Near full: 90 percent of the warning quota or more.
+6. Near full, no archive: 80 percent of the warning quota or more, for a mailbox the report says has
+   no archive. An archive that is not stated is not called missing.
+7. OK.
+
+### When names are concealed
+
+When Microsoft conceals names, or the sign-in names in the report look like hashes, there are no rows
+to show: Prism365 does not match, show or store a name it cannot read, and does not unmask anything.
+The tiles still count the whole report. The audit scope cannot be applied to hashes, and the run says
+so.
+
+### Columns
+
+Mailbox, Display name, Recipient type, Status, Used, Warning quota, Prohibit send quota, Prohibit send
+and receive quota, Percent of prohibit send quota, Items, Deleted items, Has archive, Last activity,
+and Domain, with Items, Deleted items and Domain hidden by default. Recipient type, Status and Domain can
+be used as filters.
+
+### Views and tiles
+
+Views: All mailboxes (the default), Cannot send or receive, Cannot send, Over warning, Near full, Near
+full without an archive and Quota unknown. A mailbox that is OK is in none of the problem views.
+
+Tiles: Cannot send or receive, Cannot send, Over warning, Near full, Near full without an archive and
+Total storage used in gigabytes. Under a scope they count the mailboxes in it.
+
+### What it cannot see
+
+- Mail that has not reached the report. It lags by 24 to 72 hours and sometimes by several days, so a
+  mailbox can be fuller than shown.
+- A quota set for one mailbox that the report does not state, a litigation hold, or an archive's own
+  quota. The audit judges the primary mailbox against the quotas the report gives.
+- What a Recipient Type value looks like: Microsoft's page names the column and does not list its
+  values, so the audit shows whatever the report says.
+- Whether a mailbox is shared or a room when the report has no Recipient Type column.

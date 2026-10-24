@@ -10,6 +10,7 @@ import {
   signinSummarySchema,
 } from "@prism365/contracts";
 import { useCallback, useEffect, useId, useState } from "react";
+import { CanaryPanel } from "./Canary.tsx";
 import { countryName, FindingItem, number, post, readJson, stateLabels, when } from "./common.tsx";
 import { ActivityIcon, ShieldIcon } from "./icons.tsx";
 
@@ -456,6 +457,7 @@ export function SigninAudit({
           </ul>
         )}
       </section>
+      <CanaryPanel session={session} {...(onOpenPerson ? { onOpenPerson } : {})} />
       <p className="signin-coverage">
         Sign-in records are security evidence, not a measure of anyone's work.
       </p>

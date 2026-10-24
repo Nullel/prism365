@@ -176,12 +176,20 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
   "directory.applications.read":
     /^\/v1\.0\/servicePrincipals(?:\/[A-Za-z0-9._:-]+(?:\/appRoleAssignments)?)?\/?$/i,
   "directory.permission-grants.read": /^\/v1\.0\/oauth2PermissionGrants\/?$/i,
+  // The four role lists, never one item or a navigation: definitions, active assignments, and the
+  // Privileged Identity Management instances (active and eligible) behind them.
+  "directory.roles.read":
+    /^\/v1\.0\/roleManagement\/directory\/(?:roleDefinitions|roleAssignments|roleAssignmentScheduleInstances|roleEligibilityScheduleInstances)\/?$/i,
+  // The group list, or one group's owners by its object ID (a GUID). Members are left out.
+  "directory.groups.read":
+    /^\/v1\.0\/groups(?:\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/owners)?\/?$/i,
+  "directory.domains.read": /^\/v1\.0\/domains\/?$/i,
   "identity.risk.read": /^\/v1\.0\/identityProtection\/riskyUsers(?:\/[^/]+)?\/?$/i,
-  // The per-user usage reports, by period only (no date= form). getM365AppUserDetail also answers
-  // in JSON through request(); every one of them answers with a redirect to a CSV download, which
-  // only getReport() follows (ADR-0010).
+  // The per-user usage reports and the per-team Teams activity report, by period only (no date=
+  // form). getM365AppUserDetail also answers in JSON through request(); every one of them answers
+  // with a redirect to a CSV download, which only getReport() follows (ADR-0010).
   "reports.usage.read":
-    /^\/v1\.0\/reports\/get(?:M365AppUserDetail|Office365ActiveUserDetail|EmailActivityUserDetail|TeamsUserActivityUserDetail|OneDriveActivityUserDetail|OneDriveUsageAccountDetail|SharePointActivityUserDetail|MailboxUsageDetail)\(period='D(?:7|30|90|180)'\)\/?$/i,
+    /^\/v1\.0\/reports\/get(?:M365AppUserDetail|Office365ActiveUserDetail|EmailActivityUserDetail|TeamsUserActivityUserDetail|OneDriveActivityUserDetail|OneDriveUsageAccountDetail|SharePointActivityUserDetail|MailboxUsageDetail|TeamsTeamActivityDetail)\(period='D(?:7|30|90|180)'\)\/?$/i,
   "reports.settings.read": /^\/v1\.0\/admin\/reportSettings\/?$/i,
   "security.score.read":
     /^\/v1\.0\/security\/(?:secureScores|secureScoreControlProfiles)(?:\/[^/]+)?\/?$/i,

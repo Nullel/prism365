@@ -1,5 +1,5 @@
 import type { SyntheticTenant } from "../tenant.ts";
-import { guid, SYNTHETIC_TENANT_ID } from "../tenant.ts";
+import { guid, idFilter, SYNTHETIC_TENANT_ID } from "../tenant.ts";
 import type { DemoGraphExtension } from "./types.ts";
 
 // Enterprise applications for the synthetic tenant, the application permissions granted to them
@@ -247,8 +247,11 @@ export const applications: DemoGraphExtension = (request, tools) => {
     world = build(request.tenant);
     built.set(request.tenant, world);
   }
-  if (path === "servicePrincipals")
-    return tools.page(request.url, world.principals, request.select);
+  if (path === "servicePrincipals") {
+    const only = idFilter(request.url);
+    const listed = only ? world.principals.filter((item) => only.has(item.id)) : world.principals;
+    return tools.page(request.url, listed, request.select);
+  }
   if (path === "oauth2PermissionGrants") return tools.page(request.url, world.grants, null);
   const assigned = /^servicePrincipals\/([^/]+)\/appRoleAssignments$/.exec(path);
   if (assigned)

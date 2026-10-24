@@ -50,6 +50,69 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
       await expect(db().verify()).resolves.toBeUndefined();
     });
 
+    it("keeps alert destinations and deliveries to their tenant, in their shape", async () => {
+      const destination = randomUUID();
+      const addWebhook = (tenant: string, owner: string, id = destination) =>
+        db().tenant(tenant, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_destination (tenant_id, id, kind, label, host, recipients, secret,
+               key_id, include_details, created_at, created_by)
+             VALUES ($1,$2,'generic','Synthetic hook','hooks.example',NULL,$3,'0123456789abcdef',
+                     false,now(),$4)`,
+            [owner, id, Buffer.from("synthetic-ciphertext"), randomUUID()],
+          ),
+        );
+      await expect(addWebhook(tenantA, tenantB)).rejects.toMatchObject({ code: "42501" });
+      await addWebhook(tenantA, tenantA);
+      await addWebhook(tenantB, tenantB);
+      const seen = await db().tenant(tenantA, (sql) =>
+        sql.query<{ tenant_id: string }>("SELECT tenant_id FROM prism365_destination"),
+      );
+      expect(seen.rows.map((row) => row.tenant_id)).toEqual([tenantA]);
+      // A webhook needs its encrypted secret; email has recipients and no secret.
+      await expect(
+        db().tenant(tenantA, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_destination (tenant_id, id, kind, label, host, recipients, secret,
+               key_id, include_details, created_at, created_by)
+             VALUES ($1,$2,'teams','No secret','hooks.example',NULL,NULL,NULL,false,now(),$3)`,
+            [tenantA, randomUUID(), randomUUID()],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        db().tenant(tenantA, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_destination (tenant_id, id, kind, label, host, recipients, secret,
+               key_id, include_details, created_at, created_by)
+             VALUES ($1,$2,'email','Mail',NULL,'["ops@example.invalid"]'::jsonb,$3,NULL,false,
+                     now(),$4)`,
+            [tenantA, randomUUID(), Buffer.from("x"), randomUUID()],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      const addDelivery = (tenant: string, owner: string, fields: { error?: string } = {}) =>
+        db().tenant(tenant, (sql) =>
+          sql.query(
+            `INSERT INTO prism365_delivery (tenant_id, id, destination_id, source, rule_id, subjects,
+               items, status, attempts, last_error, created_at, updated_at)
+             VALUES ($1,$2,$3,'test',NULL,'[]'::jsonb,0,'failed',1,$4,now(),now())`,
+            [owner, randomUUID(), destination, fields.error ?? "timeout"],
+          ),
+        );
+      await expect(addDelivery(tenantA, tenantB)).rejects.toMatchObject({ code: "42501" });
+      await addDelivery(tenantA, tenantA);
+      await addDelivery(tenantB, tenantB);
+      const deliveries = await db().tenant(tenantB, (sql) =>
+        sql.query<{ tenant_id: string }>("SELECT tenant_id FROM prism365_delivery"),
+      );
+      expect(deliveries.rows.map((row) => row.tenant_id)).toEqual([tenantB]);
+      // Only a fixed category is ever stored as the error, never a message.
+      await expect(
+        addDelivery(tenantA, tenantA, { error: "connect ECONNREFUSED 10.0.0.1:443" }),
+      ).rejects.toMatchObject({ code: "23514" });
+    });
+
     it("hides other tenants' rows even when a query has no tenant filter", async () => {
       const now = new Date().toISOString();
       await db().tenant(tenantA, (sql) =>

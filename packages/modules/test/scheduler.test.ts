@@ -230,6 +230,39 @@ describe("module scheduler", () => {
     expect(graph.calls).toEqual([]);
   });
 
+  it("lets a collector read a setting it declared, for its own tenant, and nothing else", async () => {
+    await scheduler.stop();
+    await database.close();
+    ({ registry, database } = await openRuntime({
+      ...probeModule(behavior),
+      settings: ["test.canaries", "test.unset"],
+    }));
+    build();
+    const save = (tenant: string, key: string, value: unknown) =>
+      database.tenant(tenant, (sql) =>
+        sql.query(
+          `INSERT INTO prism365_preference (tenant_id, key, value, updated_at, updated_by)
+           VALUES ($1,$2,$3::jsonb,now(),$4)`,
+          [tenant, key, JSON.stringify(value), actor],
+        ),
+      );
+    await save(tenantA, "test.canaries", { accounts: ["mine"] });
+    await save(tenantB, "test.canaries", { accounts: ["theirs"] });
+    await save(tenantA, "attention", { secret: true });
+    const seen: unknown[] = [];
+    behavior.run = async (context) => {
+      seen.push(await context.settings.get("test.canaries"));
+      seen.push(await context.settings.get("test.unset"));
+      // A key the module did not declare is refused, even though the row exists.
+      await context.settings.get("attention").catch((error: Error) => seen.push(error.name));
+      return undefined;
+    };
+    scheduler.bind(credential());
+    await scheduler.tick();
+    expect(seen).toEqual([{ accounts: ["mine"] }, null, "ModuleBoundaryError"]);
+    expect((await runs())[0]).toMatchObject({ status: "succeeded" });
+  });
+
   it("times out a slow run and discards anything it tries to write afterwards", async () => {
     build({ timeoutMilliseconds: 30 });
     let lateWrite: unknown = null;

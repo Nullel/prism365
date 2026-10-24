@@ -11,6 +11,7 @@ import {
   sessionSchema,
 } from "@prism365/contracts";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Alerts } from "./Alerts.tsx";
 import { Notifications } from "./Attention.tsx";
 import { Audits } from "./Audits.tsx";
 import { DirectoryChanges } from "./Changes.tsx";
@@ -52,6 +53,7 @@ export type WorkspaceView =
   | "users"
   | "handoffs"
   | "lifecycle"
+  | "alerts"
   | "access";
 
 interface NavItem {
@@ -87,6 +89,10 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { label: "Lifecycle automation", icon: SettingsIcon, view: "lifecycle" },
     ],
   },
+  {
+    label: "Settings",
+    items: [{ label: "Alerts", icon: BellIcon, view: "alerts" }],
+  },
 ];
 const accessItem: NavItem = { label: "Microsoft access", icon: LockIcon, view: "access" };
 
@@ -109,7 +115,7 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
   audits: {
     title: "Audits",
     description:
-      "Checks you run against the tenant when you need them: inactive accounts, unused licenses, MFA gaps, guests and license capacity.",
+      "Checks you run against the tenant when you need them, or on a schedule: accounts, licenses, sign-in security, roles, devices, apps, groups and mailboxes.",
   },
   signins: {
     title: "Sign-in audit",
@@ -133,6 +139,11 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
   lifecycle: {
     title: "Lifecycle automation",
     description: "Review onboarding and offboarding runbooks before anything changes.",
+  },
+  alerts: {
+    title: "Alerts",
+    description:
+      "Where Prism365 sends word of findings, audit numbers and collection problems, so you hear about them without opening it.",
   },
   access: {
     title: "Microsoft access",
@@ -572,6 +583,7 @@ const workspaceViews: readonly WorkspaceView[] = [
   "users",
   "handoffs",
   "lifecycle",
+  "alerts",
   "access",
 ];
 
@@ -938,6 +950,9 @@ export function App() {
               ) : null}
               {view === "lifecycle" && demo ? <LifecycleAutomation /> : null}
               {view === "lifecycle" ? <ScriptPackages session={session} /> : null}
+              {view === "alerts" ? (
+                <Alerts key={`${session.mode}-${session.authenticated}`} session={session} />
+              ) : null}
               {view === "access" ? (
                 <SetupChecklist
                   key={`${session.mode}-${session.authenticated}`}

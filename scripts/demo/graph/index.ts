@@ -2,7 +2,9 @@ import { applications } from "./applications.ts";
 import { conditionalAccess } from "./conditional-access.ts";
 import { managedDevices } from "./devices.ts";
 import { directoryAudits } from "./directory-audits.ts";
+import { demoGroups } from "./groups.ts";
 import { riskyUsers } from "./risky-users.ts";
+import { directoryRoles } from "./roles.ts";
 import type { DemoGraphExtension } from "./types.ts";
 import { usageReports } from "./usage-reports.ts";
 
@@ -16,4 +18,6 @@ export const demoGraphExtensions: readonly DemoGraphExtension[] = [
   managedDevices,
   applications,
   usageReports,
+  directoryRoles,
+  demoGroups,
 ];

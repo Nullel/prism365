@@ -176,6 +176,7 @@ const TRAVEL_IP = "198.51.100.231";
 const MFA_ATTACKER_IP = "203.0.113.77";
 const SPRAY_IP = "2001:db8:4f1a::9c";
 const WENDELL_HOME_IP = "203.0.113.18";
+const CANARY_IP = "198.51.100.63";
 // The address of the run of failed sign-ins before a success, for the recorder to look for.
 export const HOME_FAILURE_IP = WENDELL_HOME_IP;
 
@@ -949,6 +950,8 @@ export interface DirectoryUser {
   accountEnabled: boolean;
   createdDateTime: string;
   lastPasswordChangeDateTime: string | null;
+  // Microsoft's comma-separated flags: DisablePasswordExpiration, DisableStrongPassword.
+  passwordPolicies: string | null;
   onPremisesSyncEnabled: boolean | null;
   usageLocation: string;
   city: string;
@@ -1061,6 +1064,29 @@ function deviceFor(rand: Rand, key: string, kind: "laptop" | "phone" | "legacy")
   };
 }
 
+// Passwords the passwords audit has something to say about: days since the last change (null for
+// never changed) and the flags Microsoft keeps on the account. The domains' policies are in
+// graph/roles.ts: 180 days with a 14-day window for larkspur.example, no expiry for the research
+// domain. Everyone else keeps the date drawn for them below.
+const passwordStories: Record<string, { daysAgo: number | null; policies?: string }> = {
+  // Expired for 25 days on the 180-day domain.
+  agray: { daysAgo: 205 },
+  // Ends in five days.
+  dferrante: { daysAgo: 175 },
+  // A shared front-desk login set never to expire, three years old.
+  mcobb: { daysAgo: 1_100, policies: "DisablePasswordExpiration" },
+  // A training kiosk that may keep a weak password.
+  kiosk: { daysAgo: 400, policies: "DisableStrongPassword" },
+  // Quiet laboratory accounts on the research domain, where passwords do not expire.
+  ewragg: { daysAgo: 520 },
+  jfennimore: { daysAgo: 640 },
+  rpemberton: { daysAgo: 430 },
+  // Synced from on-premises, where the cloud policy does not decide.
+  msterling: { daysAgo: 700 },
+  // Created and never given a password of its own.
+  qhale: { daysAgo: null },
+};
+
 function buildMembers(now: Date): Member[] {
   const ids = new Map(roster.map((seed) => [seed.key, guid(`user:${seed.key}`)]));
   const t = now.getTime();
@@ -1084,6 +1110,7 @@ function buildMembers(now: Date): Member[] {
     if (seed.skus.includes("SPB") && index % 3 !== 0 && seed.kind !== "never")
       licenses.push("FLOW_FREE");
     const groupId = guid("group:licensing");
+    const passwordStory = passwordStories[seed.key];
     const user: DirectoryUser = {
       id: ids.get(seed.key) as string,
       displayName: seed.name,
@@ -1099,7 +1126,15 @@ function buildMembers(now: Date): Member[] {
       userType: guest ? "Guest" : "Member",
       accountEnabled: seed.kind !== "disabled" && seed.kind !== "shared",
       createdDateTime: iso(created),
-      lastPasswordChangeDateTime: guest || seed.kind === "shared" ? null : iso(lastPassword),
+      lastPasswordChangeDateTime:
+        guest || seed.kind === "shared"
+          ? null
+          : passwordStory
+            ? passwordStory.daysAgo === null
+              ? null
+              : iso(t - passwordStory.daysAgo * DAY - 3 * HOUR)
+            : iso(lastPassword),
+      passwordPolicies: passwordStory?.policies ?? null,
       onPremisesSyncEnabled: seed.hybrid ? true : null,
       usageLocation: "US",
       city: site.city,
@@ -1499,11 +1534,29 @@ function plantStories(members: Map<string, Member>, now: number): Stories {
     );
   }
 
+  // 7. A canary: the training account has never been used, so an administrator marks it as a
+  // decoy. Someone from a foreign address guesses its password the day before. The recorder marks
+  // the account before collecting, as an administrator would.
+  const decoy = member("kiosk");
+  events.push(
+    makeSignIn({
+      member: decoy,
+      at: day(1, 3, 26, 40),
+      ip: CANARY_IP,
+      place: frankfurt,
+      device: { id: "", os: "Linux", browser: "", managed: null, compliant: null, trustType: null },
+      app: "portal",
+      ...typo,
+      label: "canary",
+    }),
+  );
+
   return {
     ids: {
       traveler: traveler.user.id,
       mfaTarget: target.user.id,
       forgetful: forgetful.user.id,
+      canary: decoy.user.id,
     },
     events,
     suppress,
@@ -1978,6 +2031,14 @@ function project<T extends object>(item: T, select: string | null): Partial<T> {
   return Object.fromEntries(Object.entries(item).filter(([key]) => wanted.has(key))) as Partial<T>;
 }
 
+// The IDs in a `$filter=id in ('a','b')`, the form Microsoft's lookups of several objects take;
+// null for any other filter or none.
+export function idFilter(url: URL): Set<string> | null {
+  const filter = (url.searchParams.get("$filter") ?? "").trim();
+  if (!filter.startsWith("id in (") || !filter.endsWith(")")) return null;
+  return new Set([...filter.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? ""));
+}
+
 // One page of a collection with a $skiptoken continuation.
 function page<T extends object>(url: URL, items: readonly T[], select: string | null) {
   const requested = Number(url.searchParams.get("$top") ?? "100");
@@ -2107,7 +2168,14 @@ export function createSyntheticGraph(options: { now: Date; quietFrom?: Date }): 
       const matches = signInFilter(url.searchParams.get("$filter") ?? "");
       return page(url, sortedSignIns.filter(matches), null);
     }
-    if (path === "users") return page(url, tenant.users, select);
+    if (path === "users") {
+      const only = idFilter(url);
+      return page(
+        url,
+        only ? tenant.users.filter((user) => only.has(user.id)) : tenant.users,
+        select,
+      );
+    }
     const principal = /^users\('((?:[^']|'')*)'\)(\/.*)?$/.exec(path);
     const byPath = /^users\/([^/]+)(\/.*)?$/.exec(path);
     if (principal || byPath) {

@@ -6,6 +6,7 @@ import type { ModuleDatabase, StateStore } from "@prism365/storage";
 import type { FastifyRequest } from "fastify";
 import type { AuditRunner } from "../audits.ts";
 import type { SupportedReadFeature } from "../config.ts";
+import type { DeliveryService } from "../delivery.ts";
 import type { IdentitySession } from "../identity.ts";
 
 // What a feature's routes get from the app. Each feature keeps its routes in its own file under
@@ -74,4 +75,7 @@ export interface RouteContext {
   auditAvailability(audit: Audit, session: IdentitySession): AuditAvailability;
   // Who is collecting, or null when nothing is. Never the credential itself.
   collectingAdmin(): { actorId: string } | null;
+  // Alert destinations, rules and deliveries; live mode with module storage only. It holds the
+  // destination key and the relay password privately and never hands either out.
+  readonly delivery: DeliveryService | null;
 }

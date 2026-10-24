@@ -84,6 +84,24 @@ export const readPacks: readonly { id: string; label: string; scope: string; det
     detail: "Which delegated permissions users and administrators consented to, per application.",
   },
   {
+    id: "directory.roles.read",
+    label: "Directory roles",
+    scope: "RoleManagement.Read.Directory",
+    detail: "Who holds each directory role, active or eligible. Eligible roles need Entra ID P2.",
+  },
+  {
+    id: "directory.groups.read",
+    label: "Groups and owners",
+    scope: "Group.Read.All",
+    detail: "Groups, the groups behind Teams, and each group's owners.",
+  },
+  {
+    id: "directory.domains.read",
+    label: "Domains",
+    scope: "Domain.Read.All",
+    detail: "Each domain's password expiry policy, for the password audit.",
+  },
+  {
     id: "reports.usage.read",
     label: "Microsoft 365 usage reports",
     scope: "Reports.Read.All",

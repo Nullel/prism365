@@ -3,12 +3,19 @@ import { GraphBoundaryError } from "@prism365/graph";
 import { type CollectorContext, type FindingInput, FindingPolicyError } from "@prism365/modules";
 import type { SqlClient } from "@prism365/storage";
 import { z } from "zod";
+import { CANARY_SETTING, parseCanaryList } from "./canaries.ts";
 import type { SigninsAuditConfig } from "./config.ts";
 import { MIN_SPLIT_MS, parseCursor, type SigninsCursor, WINDOW_MS } from "./cursor.ts";
 import {
+  CANARY_RULE,
+  type CanaryEntry,
+  type CanaryIndex,
+  canaryDedupeKey,
+  canaryIndex,
   type FailurePattern,
   type FailureRecord,
   failurePatterns,
+  matchCanary,
   type Reason,
   RULES_VERSION,
   type SuccessHistory,
@@ -545,6 +552,57 @@ function unfamiliarFinding(
   };
 }
 
+// A sign-in attempt by a canary account. Whatever its result, nobody should be using the account,
+// so it is always critical. One finding per account and UTC day: later attempts that day update it
+// and count up, and the evidence shown is the latest attempt.
+export function canaryFinding(event: SigninEvent, canary: CanaryEntry): FindingInput {
+  const name = (event.displayName ?? event.upn ?? canary.principal).slice(0, 200);
+  const location = [event.city, event.state, event.country].filter(Boolean).join(", ");
+  const result = event.errorCode === 0 ? "success" : event.errorCode === -1 ? "unknown" : "failure";
+  const what =
+    result === "success"
+      ? "A successful sign-in"
+      : result === "failure"
+        ? `A failed sign-in attempt (error ${event.errorCode})`
+        : "A sign-in attempt with no reported result";
+  const summary = `${what} on ${name}, a canary account.${location ? ` It came from ${location}.` : ""}${event.appName ? ` The app was ${event.appName}.` : ""} Nobody should be using this account.`;
+  return {
+    ruleId: CANARY_RULE,
+    ruleVersion: RULES_VERSION,
+    dedupeKey: findingKey(canaryDedupeKey(canary, event.createdAt)),
+    purpose: "security",
+    severity: "critical",
+    score: 100,
+    subject: { kind: "person", id: canary.userId, label: name },
+    title: "Sign-in attempt on a canary account",
+    summary: summary.slice(0, 1_000),
+    evidence: [
+      {
+        source: "Microsoft Entra sign-in logs",
+        ref: event.id,
+        observedAt: iso(event.createdAt),
+        // The full address, unlike the other rules: this finding is about one account and the
+        // address is what an administrator would act on. The same view is on the person's page.
+        fields: {
+          result,
+          errorCode: event.errorCode,
+          failureReason: event.failureReason?.slice(0, 300) ?? null,
+          ip: event.ip,
+          location: location || null,
+          app: event.appName,
+          client: event.clientApp,
+        },
+      },
+    ],
+    limitations: [
+      "Canaries are accounts you marked; Prism365 cannot tell a mistaken sign-in from an attack.",
+      ...sharedLimitations,
+    ],
+    window: { start: event.createdAt, end: event.createdAt },
+    observedAt: event.createdAt,
+  };
+}
+
 const failureCopy: Record<
   FailurePattern["rule"],
   {
@@ -623,6 +681,10 @@ function failureFinding(
     window: { start: pattern.start, end: pattern.end },
     observedAt: pattern.end,
   };
+}
+
+async function loadCanaries(context: CollectorContext): Promise<CanaryIndex> {
+  return canaryIndex(parseCanaryList(await context.settings.get(CANARY_SETTING)).accounts);
 }
 
 // Values that took part in a flagged sign-in become normal once that finding is resolved.
@@ -709,6 +771,7 @@ async function hourShare(
 async function detect(
   context: CollectorContext,
   config: SigninsAuditConfig,
+  canaries: CanaryIndex,
   through: Date,
 ): Promise<void> {
   const eventTable = context.table("event");
@@ -791,6 +854,13 @@ async function detect(
       }
       return { window, baselines, previous, hours };
     });
+
+    // Canary accounts first: any attempt is a finding, so this needs no baseline, history or
+    // score, and it applies to history being loaded as much as to live sign-ins.
+    for (const event of events) {
+      const canary = matchCanary(event, canaries);
+      if (canary) await upsertSafely(context, canaryFinding(event, canary));
+    }
 
     // Failure patterns that end at one of these events.
     const batchIds = new Set(events.map((event) => event.id));
@@ -898,6 +968,7 @@ async function detect(
 async function collectRange(
   context: CollectorContext,
   config: SigninsAuditConfig,
+  canaries: CanaryIndex,
   from: Date,
   to: Date,
   backfilled: boolean,
@@ -908,7 +979,7 @@ async function collectRange(
   context.count.fetched(fetched.events.length + fetched.skipped);
   context.count.skipped(fetched.skipped);
   context.count.inserted(await insertEvents(context, fetched.events, backfilled));
-  await detect(context, config, to);
+  await detect(context, config, canaries, to);
   for (const gap of recordGaps ? fetched.gaps : []) {
     const read = new Set(
       fetched.events
@@ -1004,6 +1075,8 @@ export async function collectSignins(
   let complete = true;
 
   await promoteResolved(context);
+  // Read once: marking an account as a canary takes effect from the next run.
+  const canaries = await loadCanaries(context);
   let cursor = parseCursor(await context.cursor.get());
   if (!cursor) {
     const start = new Date(now.getTime() - config.backfillDays * 86_400_000);
@@ -1085,7 +1158,7 @@ export async function collectSignins(
       const began = Date.now();
       let read: boolean;
       try {
-        read = await collectRange(context, config, from, end, backfilled, budget);
+        read = await collectRange(context, config, canaries, from, end, backfilled, budget);
       } catch (error) {
         lane.trying = undefined;
         if (error instanceof RunBudgetSpentError) {
@@ -1226,7 +1299,7 @@ export async function collectSignins(
   while (freshTo.getTime() > freshFloor.getTime() && Date.now() <= totalDeadline) {
     const from = max(freshFloor, new Date(freshTo.getTime() - FRESH_WINDOW_MS));
     try {
-      await collectRange(context, config, from, freshTo, false, freshBudget, false);
+      await collectRange(context, config, canaries, from, freshTo, false, freshBudget, false);
     } catch (error) {
       if (error instanceof RunBudgetSpentError) break;
       if (error instanceof GraphBoundaryError && error.reason === "timeout") break;

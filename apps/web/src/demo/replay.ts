@@ -14,7 +14,9 @@ import {
   auditScheduleSchema,
   auditScopeSchema,
   buildHandoff,
+  type CanaryList,
   type CollectionStatus,
+  canaryChangeSchema,
   canonicalJson,
   type Finding,
   type FindingState,
@@ -25,7 +27,9 @@ import {
   handoffFileName,
   handoffView,
   hasPersonColumn,
+  MAX_CANARY_ACCOUNTS,
   type ModuleList,
+  type PersonDirectory,
   type PersonList,
   type PersonRecord,
   type PersonSigninPage,
@@ -188,6 +192,7 @@ export interface DemoState {
   settings: AttentionSettings | null;
   auditSettings: AuditSettings | null;
   auditSchedule: AuditScheduleSettings | null;
+  canaries: CanaryList | null;
   collection: CollectionStatus | null;
   runs: SimulatedRun[];
   recordedReceipts: Record<string, string>;
@@ -231,6 +236,7 @@ export function createDemoState(fixtures: Fixtures, now: () => Date = () => new 
     settings: bodyOf<AttentionSettings>(responses, "GET /api/v1/settings/attention"),
     auditSettings: bodyOf<AuditSettings>(responses, "GET /api/v1/settings/audits"),
     auditSchedule: bodyOf<AuditScheduleSettings>(responses, "GET /api/v1/settings/audit-schedule"),
+    canaries: bodyOf<CanaryList>(responses, "GET /api/v1/settings/canaries"),
     collection: modules ? { ...modules.collection } : null,
     runs: [],
     recordedReceipts: { ...(fixtures.receipts ?? {}) },
@@ -396,6 +402,55 @@ function personSignins(state: DemoState, id: string, url: URL): DemoResponse | n
     (item) => result === "all" || (result === "success") === (item.result === "success"),
   );
   return json(200, { items, next: null });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Canary accounts
+// ---------------------------------------------------------------------------------------------
+
+// The sign-in name the recording holds for an account: its directory page, else its stored
+// sign-ins. An account the recording never opened is not known, as one nowhere in the tenant.
+function recordedPrincipal(state: DemoState, id: string): string | null {
+  const directory = bodyOf<PersonDirectory>(state.responses, `GET ${API}/people/${id}/directory`);
+  const record = bodyOf<PersonRecord>(state.responses, `GET ${API}/people/${id}`);
+  return directory?.profile?.userPrincipalName ?? record?.history?.userPrincipalName ?? null;
+}
+
+// Saved for this page; the recorded findings are not re-run with it.
+function changeCanaries(state: DemoState, body: unknown): DemoResponse {
+  const parsed = canaryChangeSchema.safeParse(body);
+  if (!parsed.success)
+    return json(400, {
+      error: "invalid_request",
+      message: "Name at least one account to add or remove.",
+    });
+  const removing = new Set(parsed.data.remove ?? []);
+  const accounts = (state.canaries?.accounts ?? []).filter(
+    (account) => !removing.has(account.userId),
+  );
+  for (const userId of parsed.data.add ?? []) {
+    if (accounts.some((account) => account.userId === userId)) continue;
+    const principal = recordedPrincipal(state, userId);
+    if (!principal)
+      return json(404, {
+        error: "account_not_found",
+        message:
+          "One of those accounts is not in the sign-in history or the directory, so nothing was changed.",
+      });
+    if (accounts.length >= MAX_CANARY_ACCOUNTS)
+      return json(400, {
+        error: "invalid_request",
+        message: `A tenant can have at most ${MAX_CANARY_ACCOUNTS} canary accounts. Remove one first.`,
+      });
+    accounts.push({
+      userId,
+      principal,
+      addedAt: state.now().toISOString(),
+      addedBy: "demo-administrator",
+    });
+  }
+  state.canaries = { accounts };
+  return json(200, clone(state.canaries));
 }
 
 function personRecord(state: DemoState, id: string): DemoResponse | null {
@@ -875,6 +930,8 @@ function handleGet(state: DemoState, path: string, url: URL, request: DemoReques
     answer = json(200, clone(state.auditSettings));
   else if (path === "/settings/audit-schedule" && state.auditSchedule)
     answer = json(200, scheduleAnswer(state));
+  else if (path === "/settings/canaries" && state.canaries)
+    answer = json(200, clone(state.canaries));
   else if (path === "/audits") answer = listCatalog(state);
   else if (first === "audits" && second && third === "runs" && segments.length === 3)
     answer = listRuns(state, second);
@@ -948,6 +1005,7 @@ function handlePost(state: DemoState, path: string, body: unknown): DemoResponse
     state.auditSettings = { ...state.auditSettings, scope: parsed.data };
     return json(200, clone(state.auditSettings));
   }
+  if (path === "/settings/canaries" && state.canaries) return changeCanaries(state, body);
   if (path === "/settings/audit-schedule" && state.auditSchedule) {
     // Saved for this page; nothing runs on its own in the demo.
     const parsed = auditScheduleSchema.safeParse(payload);

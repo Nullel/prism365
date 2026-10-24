@@ -652,6 +652,9 @@ const samplePaths: Record<GraphFeatureId, string> = {
   "identity.conditional-access.read": "identity/conditionalAccess/policies",
   "directory.applications.read": "servicePrincipals",
   "directory.permission-grants.read": "oauth2PermissionGrants",
+  "directory.roles.read": "roleManagement/directory/roleAssignments",
+  "directory.groups.read": "groups",
+  "directory.domains.read": "domains",
   "identity.risk.read": "identityProtection/riskyUsers",
   "reports.usage.read": REPORT,
   "reports.settings.read": "admin/reportSettings",
@@ -720,6 +723,7 @@ describe("the usage report and membership paths", () => {
     "getOneDriveUsageAccountDetail",
     "getSharePointActivityUserDetail",
     "getMailboxUsageDetail",
+    "getTeamsTeamActivityDetail",
   ];
 
   it("allows each listed report for each period", async () => {

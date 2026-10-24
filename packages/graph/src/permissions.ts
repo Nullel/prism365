@@ -387,6 +387,72 @@ export const permissionPacks = [
     documentationLastVerified: "2026-10-23",
   },
   {
+    id: "directory.roles.read",
+    label: "Directory roles",
+    source: "microsoftGraph",
+    permission: "RoleManagement.Read.Directory",
+    mode: "either",
+    phase: "experimental",
+    defaultEnabled: false,
+    purpose:
+      "Read directory role definitions and who holds each role, active or eligible, for the privileged roles audit.",
+    deniedBehavior: "The privileged roles audit cannot run; other audits are unaffected.",
+    clouds: allGraphClouds,
+    prerequisites: [],
+    roleNotes:
+      "Delegated callers need Global Reader or Privileged Role Administrator for every endpoint; Directory Readers can read active assignments and definitions but not Privileged Identity Management schedules.",
+    licenseNotes:
+      "Eligible and time-bound assignments come from Privileged Identity Management, which needs Microsoft Entra ID P2 or ID Governance; without it only active assignments are listed.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/rbacapplication-list-roleassignments?view=graph-rest-1.0",
+    relatedDocumentationUrls: [
+      "https://learn.microsoft.com/en-us/graph/api/rbacapplication-list-roledefinitions?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/rbacapplication-list-roleeligibilityscheduleinstances?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/rbacapplication-list-roleassignmentscheduleinstances?view=graph-rest-1.0",
+    ],
+    documentationLastVerified: "2026-10-24",
+  },
+  {
+    id: "directory.groups.read",
+    label: "Groups and owners",
+    source: "microsoftGraph",
+    permission: "Group.Read.All",
+    mode: "either",
+    phase: "experimental",
+    defaultEnabled: false,
+    purpose:
+      "Read groups, including the groups behind Microsoft Teams, and each group's owners, for the groups and Teams audit.",
+    deniedBehavior: "The groups and Teams audit cannot run; other audits are unaffected.",
+    clouds: allGraphClouds,
+    prerequisites: [],
+    roleNotes:
+      "Delegated access is limited by the signed-in user's privileges; Global Reader or Directory Readers can read every group's owners.",
+    licenseNotes: "No additional license is required.",
+    documentationUrl: "https://learn.microsoft.com/en-us/graph/api/group-list?view=graph-rest-1.0",
+    relatedDocumentationUrls: [
+      "https://learn.microsoft.com/en-us/graph/api/group-list-owners?view=graph-rest-1.0",
+    ],
+    documentationLastVerified: "2026-10-24",
+  },
+  {
+    id: "directory.domains.read",
+    label: "Domains",
+    source: "microsoftGraph",
+    permission: "Domain.Read.All",
+    mode: "either",
+    phase: "experimental",
+    defaultEnabled: false,
+    purpose:
+      "Read each domain's password expiry policy, so the password audit can say when passwords expire.",
+    deniedBehavior: "The password audit reports password age only, not expiry dates.",
+    clouds: allGraphClouds,
+    prerequisites: ["directory.users.read"],
+    roleNotes: "Delegated callers need a role such as Global Reader or Directory Readers.",
+    licenseNotes: "No additional license is required.",
+    documentationUrl: "https://learn.microsoft.com/en-us/graph/api/domain-list?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-24",
+  },
+  {
     id: "purview.entra.read",
     label: "Purview Entra audit search",
     source: "microsoftGraph",

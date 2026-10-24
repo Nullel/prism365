@@ -73,6 +73,7 @@ New in Prism365:
 | `dormant.revival` | first success after 60 or more days without one | 25 |
 | `country.outside_allowlist` | success from a country not in the tenant's expected list | 20 |
 | `hour.unusual` | success in an hour bucket with under 2 % of the account's history, after 30 days of data | 10, low only, never alone |
+| `signin.canary-used` | any sign-in attempt by an account marked as a canary, successful or not | critical, always (see section 12) |
 
 Entra Guard's `THREAT` (AbuseIPDB) and its ISP lookup (ip-api over plain HTTP) move to an
 **enrichment provider** that is off by default. When enabled with the operator's consent it
@@ -183,3 +184,72 @@ while you are signed in, before S5 exists.
   holds a client secret for some tenant. Rotate both regardless of what happens here.
 - Confirm the operator account holds Reports Reader; without it the collector gets 403 and the
   module reports "unknown" by design.
+
+## 12. Canary accounts
+
+A canary is an account nobody should ever sign in to, such as a training account that was never
+handed out or a mailbox kept only to be found. An administrator marks accounts as canaries, and
+any sign-in attempt by one, successful or not, becomes a critical finding within one collection
+run. Nothing about the rule depends on a baseline, so it also applies to the history loaded on the
+first run.
+
+### Marking an account
+
+On a person's page, the Canary account switch marks or unmarks that account. Turning it on asks
+for confirmation first and names the account; turning it off does not ask. The Sign-in audit page
+has a small Canary accounts panel that lists every marked account with a button to remove it.
+Opening a marked account from that list goes to its page.
+
+### Where the list lives
+
+One setting per tenant in `prism365_preference`, key `signins.canaries`, with no migration:
+
+```json
+{ "accounts": [{ "userId": "...", "principal": "...", "addedAt": "...", "addedBy": "..." }] }
+```
+
+At most 100 accounts. `addedBy` is the administrator's object id, as in the access ledger, never a
+name. The module declares the key in its definition (`settings`), which is the only way a
+collector can read a saved setting, and only inside its own namespace. The collector reads the
+list once per run, so marking an account takes effect from the next run. A sign-in that was already
+read before the account was marked is not looked at again. A damaged list reads as empty and a
+damaged entry is skipped, so one bad row cannot stop collection or switch off the others.
+
+`GET /v1/settings/canaries` returns the list. `POST /v1/settings/canaries` takes
+`{ "add": [userId], "remove": [userId] }`, both optional but not both empty, and changes only
+what it names. Marking a marked account or unmarking an unmarked one changes nothing. The list
+can hold 100 accounts after the request, counting removals made in the same request.
+
+Each added account needs the sign-in name it signs in with, so a sign-in record that carries no
+user id can still be matched. The name comes from the newest stored sign-in for that account. Only
+an account with no stored sign-in is looked up in the directory, which needs `User.Read.All`
+(the `directory.users.read` pack) on the signed-in session. An id found in neither place refuses
+the whole request and changes nothing, and so does a directory that cannot be read just now.
+
+The access ledger gets `signins.canaries.lookup` before each read it makes (which datasets, and
+how many accounts) and `signins.canaries.changed` before the list is saved (how many added, how
+many removed, how many held afterwards). Counts only: never an id, a name or an address.
+
+### The rule
+
+`signin.canary-used` is critical, for the purpose security, about the person. A sign-in is matched
+by its user id. Only a record with no user id is matched by principal name, compared after
+compatibility normalisation (NFKC) and in lower case. A sign-in with a user id that is not a
+canary's is never matched by name.
+
+The dedupe key is `canary:<userId>:<UTC day>`. More attempts on the same day update one finding
+and its occurrence count goes up; the evidence shown is the latest attempt, and the window covers
+all of them. The next UTC day opens a new finding, so a canary that is hit again tomorrow is not
+hidden behind a finding someone already resolved. A finding resolved earlier the same day reopens.
+
+The evidence is the sign-in: when it happened, whether it succeeded or failed, the error code and
+Microsoft's failure reason, the full address, the location, the app and the client. The address is
+shown in full, unlike the other rules, because this finding is about one account and the address is
+what an administrator would act on; the person's page shows it too.
+
+The limitations say what the finding cannot: canaries are accounts you marked, and Prism365
+cannot tell a mistaken sign-in from an attack. The sign-in log this module reads holds interactive
+sign-ins, so an account used only by a background token would not appear in it.
+
+Canary findings appear wherever sign-in findings already appear: the findings list, the person's
+page and the This week page. Delivering them as a notification is a later slice.
