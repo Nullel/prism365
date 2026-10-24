@@ -21,12 +21,17 @@ import {
 // The Alerts settings page, rendered without a browser. Synthetic destinations and rules only.
 
 const noop = () => {};
-const text = (html: string) =>
-  html
-    .replace(/<!--.*?-->/g, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&#x27;/g, "'")
-    .replace(/\s+/g, " ");
+const text = (html: string) => {
+  // React separates adjacent text with exactly this comment. Tags are removed until none is
+  // left, so removing one can never leave another behind.
+  let current = html.replaceAll("<!-- -->", "");
+  let previous: string;
+  do {
+    previous = current;
+    current = current.replace(/<[^>]*>/g, " ");
+  } while (current !== previous);
+  return current.replace(/&#x27;/g, "'").replace(/\s+/g, " ");
+};
 
 const hookId = "bbbbbbbb-0000-4000-8000-000000000001";
 const mailId = "bbbbbbbb-0000-4000-8000-000000000002";

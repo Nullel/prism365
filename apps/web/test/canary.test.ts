@@ -21,12 +21,17 @@ function session(overrides: Partial<PrismSession> = {}): PrismSession {
 
 const noop = () => {};
 // What a reader sees: tags and React's text-node separators removed.
-const text = (html: string) =>
-  html
-    .replace(/<!--.*?-->/g, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&#x27;/g, "'")
-    .replace(/\s+/g, " ");
+const text = (html: string) => {
+  // React separates adjacent text with exactly this comment. Tags are removed until none is
+  // left, so removing one can never leave another behind.
+  let current = html.replaceAll("<!-- -->", "");
+  let previous: string;
+  do {
+    previous = current;
+    current = current.replace(/<[^>]*>/g, " ");
+  } while (current !== previous);
+  return current.replace(/&#x27;/g, "'").replace(/\s+/g, " ");
+};
 
 const toggle = (
   overrides: Partial<Parameters<typeof CanaryToggleView>[0]> = {},
