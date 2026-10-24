@@ -247,7 +247,7 @@ export class FakeTenant {
     const id = /^applications\/([^/]+)$/.exec(path)?.[1];
     const application = this.applications.find((item) => item.id === id);
     if (id && !application) return error(404, "Request_ResourceNotFound");
-    if (method === "GET" && application && query.get("$select") === "id,appId,tags")
+    if (method === "GET" && application && query.get("$select") !== "keyCredentials")
       return Response.json(listed(application));
     if (method === "GET" && application && query.get("$select") === "keyCredentials")
       return Response.json({

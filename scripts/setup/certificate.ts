@@ -455,39 +455,42 @@ export async function promotePending(files: CertificateFiles) {
 }
 
 // What the setup remembers between runs, in setup-state.json beside the key (mode 0600). It
-// holds a thumbprint and ACL entries, never key material.
+// holds a thumbprint, a flag and an application ID, never key material and never ACL entries:
+// anyone who can write in the folder could edit it, so it is only ever a hint.
 export interface SetupRecord {
   // The SHA-256 thumbprint of the certificate the last rotation replaced, so a later run can say
   // which certificate on the registration it is once the .previous files are gone.
   replacedThumbprint: string | null;
-  // ACL entries a rotation could not give the new files; the next run tries again.
-  pendingAcl: { privateKey: string[]; certificate: string[] } | null;
+  // A rotation could not copy the old files' access list to the new ones. The entries themselves
+  // are read again from the .previous files, never taken from here.
+  aclPending: boolean;
+  // The registration this install used before --app-id moved it to another one.
+  previousClientId: string | null;
 }
 
-const emptyRecord: SetupRecord = { replacedThumbprint: null, pendingAcl: null };
-const ENTRY = /^(?:user|group):[^:]+:[rwx-]{3}$|^mask::[rwx-]{3}$/;
+export const emptyRecord: SetupRecord = {
+  replacedThumbprint: null,
+  aclPending: false,
+  previousClientId: null,
+};
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export async function readRecord(files: CertificateFiles): Promise<SetupRecord> {
   const bytes = await readIfPresent(files.record);
   if (!bytes) return emptyRecord;
   try {
-    const value = JSON.parse(bytes.toString("utf8")) as Partial<SetupRecord>;
-    const entries = (list: unknown) =>
-      Array.isArray(list)
-        ? list.filter((item): item is string => typeof item === "string" && ENTRY.test(item))
-        : [];
+    const value = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
     return {
       replacedThumbprint:
         typeof value.replacedThumbprint === "string" &&
         /^[0-9A-F]{64}$/.test(value.replacedThumbprint)
           ? value.replacedThumbprint
           : null,
-      pendingAcl: value.pendingAcl
-        ? {
-            privateKey: entries(value.pendingAcl.privateKey),
-            certificate: entries(value.pendingAcl.certificate),
-          }
-        : null,
+      aclPending: value.aclPending === true,
+      previousClientId:
+        typeof value.previousClientId === "string" && GUID.test(value.previousClientId)
+          ? value.previousClientId
+          : null,
     };
   } catch {
     return emptyRecord;

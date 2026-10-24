@@ -275,27 +275,30 @@ describe("after a rotation (INFO)", () => {
     expect(output[0]).not.toContain("certificates this setup did not make");
   });
 
-  it("tries again with access list entries a rotation could not apply", async () => {
+  it("tries again with the entries the .previous files carry, never the record's", async () => {
     const dir = await workspace();
     const files = certificateFiles(join(dir, "secrets"));
     const tenant = new FakeTenant();
     await run(tenant, optionsFor(dir), dir);
     const entries = ["user:1000:r--", "mask::r--"];
-    const onOldKey = { entries, defaults: [] } satisfies AccessList;
-    let readable = onOldKey;
-    const failing = {
-      read: async (path: string) => (path === files.privateKey ? readable : null),
-      apply: async () => false,
-    };
+    // The old key has the list; after the rotation it is the .previous file, and the new key is
+    // the one without it.
+    let rotated = false;
+    const read = async (path: string): Promise<AccessList | null> =>
+      (!rotated && path === files.privateKey) || path === files.previousKey
+        ? { entries, defaults: [] }
+        : { entries: [], defaults: [] };
+    const failing = { read, apply: async () => false };
     await run(tenant, optionsFor(dir, { rotateCertificate: true }), dir, [], { acl: failing });
+    rotated = true;
     const record = JSON.parse(await readFile(files.record, "utf8"));
-    expect(record.pendingAcl).toEqual({ privateKey: ["user:1000:r--"], certificate: [] });
+    // Only a hint: the record never holds the entries themselves.
+    expect(record.aclPending).toBe(true);
+    expect(JSON.stringify(record)).not.toContain("user:1000");
 
-    // The new key does not have them; the next run gives them again.
-    readable = { entries: [], defaults: [] };
     const applied: string[][] = [];
     const working = {
-      read: failing.read,
+      read,
       apply: async (_path: string, list: readonly string[]) => {
         applied.push([...list]);
         return true;
@@ -303,8 +306,9 @@ describe("after a rotation (INFO)", () => {
     };
     const output: string[] = [];
     expect(await run(tenant, optionsFor(dir), dir, output, { acl: working })).toBe("applied");
-    expect(output[0]).toContain("the access list entries the last rotation could not copy");
+    expect(output[0]).toContain("the access list entries the .previous files carry");
+    expect(output[0]).toContain("user:1000:r--");
     expect(applied).toEqual([["user:1000:r--"]]);
-    expect(JSON.parse(await readFile(files.record, "utf8")).pendingAcl).toBeNull();
+    expect(JSON.parse(await readFile(files.record, "utf8")).aclPending).toBe(false);
   });
 });

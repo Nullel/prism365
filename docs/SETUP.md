@@ -118,6 +118,12 @@ uses), or else it creates a new one. It writes `ENTRA_CLIENT_ID` as soon as the 
 exists, so a run that stops after that is picked up again by the next one. If the settings file
 names a registration the tenant does not have, it stops rather than make another.
 
+Moving an install that already uses one registration to another with `--app-id` works the other
+way round: the settings file keeps the old application ID until every step on the new one has
+worked, so a run that fails leaves the install as it was. Once the move is done,
+`secrets/setup-state.json` keeps the old application ID and the run prints the command that
+switches back.
+
 The `prism365-setup` label on a registration it creates is only a label. A create also carries a
 second label unique to the run, so that when Microsoft answers a create with an error or not at
 all, the setup can look for exactly that registration. It keeps looking for about 45 seconds,
@@ -125,6 +131,11 @@ the time a new registration can take to show, and creates again only if none has
 then. A registration Microsoft takes even longer to show could still end up twice; the setup
 then names the extra one at the end of the run, or names the label to look for if it stops. The
 run label comes off when the run finishes.
+
+Anyone who can read registrations sees that label once the registration exists and could copy it
+onto one of theirs, so a registration that carries it is used only when it passes every check
+below, with nothing kept. One that fails is not the one the run created: the setup stops, names
+it, and neither uses it nor prints a consent link for it.
 
 Before it changes an existing registration, it checks it, and stops without changing anything
 if:
@@ -541,10 +552,13 @@ setfacl -d -m u:1000:r secrets
 setfacl -m u:1000:r secrets/entra-private.pem secrets/entra-public.pem
 ```
 
-The setup keeps that working: it never tightens a file or folder that has an access list (or,
-where it cannot read the list, one whose group can read it), writes new keys with mode 640 in a
-folder with a default list so its entry applies, and after a rotation gives the new files the
-list the old ones had, or prints the `setfacl` command to run when it cannot.
+The setup keeps that working: it leaves the group bits of a file or folder that has an access
+list (or, where it cannot read the list, one whose group can read it), though it always takes
+write access away from the group and from others. It writes new keys with mode 640 in a folder
+with a default list so its entry applies, and after a rotation gives the new files the entries
+the old ones had, listing each one in the plan first, or prints the `setfacl` command to run when
+it cannot. A later run tries again only with the entries the `.previous` files carry;
+`setup-state.json` notes only that something is left to do, never which entries.
 
 The browser warns about the local certificate until it is trusted;
 `scripts/docker-live.sh export-ca` saves it and prints the macOS command to trust it.

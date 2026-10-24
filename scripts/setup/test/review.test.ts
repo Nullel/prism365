@@ -297,9 +297,12 @@ describe("access control lists (M2)", () => {
     // What setfacl -m u:1000:r leaves behind: the mask shows in the group bits.
     await chmod(files.privateKey, 0o640);
     const applied: { path: string; entries: readonly string[] }[] = [];
+    // The old key keeps its list when the rotation moves it to the .previous name (a hard link).
     const acl = {
       read: async (path: string): Promise<AccessList | null> =>
-        path === files.privateKey ? { entries, defaults: [] } : { entries: [], defaults: [] },
+        path === files.privateKey || path === files.previousKey
+          ? { entries, defaults: [] }
+          : { entries: [], defaults: [] },
       apply: async (path: string, list: readonly string[]) => {
         applied.push({ path, entries: list });
         return true;
@@ -321,7 +324,10 @@ describe("access control lists (M2)", () => {
     const tenant2 = new FakeTenant();
     await run(tenant2, optionsFor(dir2), dir2);
     const failing = {
-      read: async (path: string) => (path === files2.privateKey ? { entries, defaults: [] } : null),
+      read: async (path: string) =>
+        path === files2.privateKey || path === files2.previousKey
+          ? { entries, defaults: [] }
+          : null,
       apply: async () => false,
     };
     const printed: string[] = [];

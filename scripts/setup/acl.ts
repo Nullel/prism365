@@ -93,10 +93,10 @@ export const systemAcl: AclTools = {
 };
 
 // The permission bits the setup may set on an existing key or secrets directory. Access for
-// everyone else is always removed: no ACL needs it, and clearing it leaves an ACL's mask alone.
-// Group bits are removed too, except where they may be an ACL's mask (an ACL was read and has
-// entries, or on Linux, where the ACL could not be read). On other systems they are plain group
-// permissions. `change` is null when nothing needs changing.
+// everyone else, and write access for the group, are always removed: no ACL entry Prism365 needs
+// writes to the secrets. The other group bits are removed too, except where they may be an ACL's
+// mask (an ACL was read and has entries, or on Linux, where the ACL could not be read); on other
+// systems they are plain group permissions. `change` is null when nothing needs changing.
 export interface ModeDecision {
   change: number | null;
   kept: "acl" | "group" | null;
@@ -108,7 +108,7 @@ export function modeDecision(
   platform: NodeJS.Platform,
 ): ModeDecision {
   if (mode === null || platform === "win32") return { change: null, kept: null };
-  let target = mode & ~0o007;
+  let target = mode & ~0o027;
   let kept: ModeDecision["kept"] = null;
   if ((mode & 0o070) !== 0) {
     if (acl && acl.entries.length > 0) kept = "acl";

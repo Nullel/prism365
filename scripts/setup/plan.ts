@@ -96,6 +96,9 @@ export interface SetupState {
     directory: AccessList | null;
     privateKey: AccessList | null;
     certificate: AccessList | null;
+    // The .previous files' lists, read only when the record says a rotation left work undone.
+    previousKey: AccessList | null;
+    previousCertificate: AccessList | null;
   };
   env: { exists: boolean; text: string; source: "env" | "example" | "empty" };
   cwd: string;
@@ -143,8 +146,12 @@ export interface SetupPlan {
   // New permission bits for the secrets directory and the key, or null to leave them.
   restrictDirectory: number | null;
   restrictPrivateKey: number | null;
-  // ACL entries a rotation could not give the files last time, to apply now.
+  // ACL entries a rotation could not give the files last time, read from the .previous files,
+  // to apply now; and whether the record's hint about them can be cleared.
   reapplyAcl: { privateKey: string[]; certificate: string[] } | null;
+  clearAclHint: boolean;
+  // The registration .env names now, when --app-id moves the install to another one.
+  switchingFrom: string | null;
   env: { source: SetupState["env"]["source"]; changes: EnvChange[]; write: boolean };
   blockers: string[];
   warnings: string[];
@@ -442,6 +449,40 @@ function adoptionProblems(
   return verified;
 }
 
+// The blockers for a registration the setup did not read when it made the plan: one that carries
+// this run's label after an unclear create. It must pass every check an adopted registration
+// does, with nothing kept, or it is not the setup's own.
+export function registrationProblems(
+  state: SetupState,
+  application: GraphApplication,
+  registration: RegistrationFacts,
+  keyCredentials: unknown[],
+  wanted: RequiredResourceAccess,
+): string[] {
+  const blockers: string[] = [];
+  adoptionProblems(
+    {
+      ...state,
+      options: {
+        ...state.options,
+        prunePermissions: false,
+        keepOtherPermissions: false,
+        keepOtherRedirectUris: false,
+        keepOtherCertificates: false,
+        keepOtherOwners: false,
+      },
+      application,
+      foundBy: "appId",
+      registration,
+      keyCredentials,
+    },
+    wanted,
+    blockers,
+    [],
+  );
+  return blockers;
+}
+
 function applicationStep(state: SetupState, wanted: RequiredResourceAccess): ApplicationStep {
   const { options } = state;
   if (!state.application)
@@ -657,17 +698,29 @@ export function buildPlan(state: SetupState): SetupPlan {
     state.acl.directory,
     warnings,
   );
-  // ACL entries a rotation could not copy last time, where the files still lack them.
-  const pending = state.record.pendingAcl;
+  // ACL entries a rotation could not copy last time. The record only says that something is
+  // pending; the entries are the ones the .previous files carry, which a rotation left in place.
+  const named = (list: AccessList | null) =>
+    (list?.entries ?? []).filter((entry) => !entry.startsWith("mask::"));
   const missing = (wanted: readonly string[], current: AccessList | null) =>
-    wanted.filter((entry) => !entry.startsWith("mask::") && !current?.entries.includes(entry));
-  const reapplyAcl =
-    pending && state.platform !== "win32"
-      ? {
-          privateKey: missing(pending.privateKey, state.acl.privateKey),
-          certificate: missing(pending.certificate, state.acl.certificate),
-        }
-      : null;
+    wanted.filter((entry) => !current?.entries.includes(entry));
+  let reapplyAcl: SetupPlan["reapplyAcl"] = null;
+  let clearAclHint = false;
+  if (state.record.aclPending && state.platform !== "win32") {
+    if (!state.secrets.previousFiles) {
+      warnings.push(
+        "A rotation could not give the new key the access list the old one had, and the .previous files that carried it are gone. Give the key its entries again by hand (docs/SETUP.md, Live install in Docker).",
+      );
+      clearAclHint = true;
+    } else {
+      const wanted = {
+        privateKey: missing(named(state.acl.previousKey), state.acl.privateKey),
+        certificate: missing(named(state.acl.previousCertificate), state.acl.certificate),
+      };
+      if (wanted.privateKey.length + wanted.certificate.length > 0) reapplyAcl = wanted;
+      else clearAclHint = true;
+    }
+  }
   // With a default ACL on the directory, new files take their named entries from it, and the
   // group bits of their mode become the ACL's mask: 0600 would switch those entries off.
   const writeModes =
@@ -708,6 +761,20 @@ export function buildPlan(state: SetupState): SetupPlan {
     warnings.push(
       `.env enables ${dropped.join(", ")} now and the new feature list leaves ${dropped.length === 1 ? "it" : "them"} out. Pass --features with the full list to keep ${dropped.length === 1 ? "it" : "them"}.`,
     );
+  const envClientId = state.env.exists
+    ? (current.get("ENTRA_CLIENT_ID")?.trim().toLowerCase() ?? "")
+    : "";
+  const switchingFrom =
+    state.foundBy === "appId" &&
+    state.application &&
+    envClientId &&
+    envClientId !== state.application.appId.toLowerCase()
+      ? envClientId
+      : null;
+  if (switchingFrom)
+    warnings.push(
+      `This install uses application ${terminalText(switchingFrom, 60)} now. The setup moves ${relative(state.cwd, options.envFile) || options.envFile} to ${state.application?.appId} only after every other step has worked, and keeps ${terminalText(switchingFrom, 60)} in setup-state.json so you can switch back.`,
+    );
   if (current.get("ENTRA_CLIENT_SECRET"))
     warnings.push(
       "ENTRA_CLIENT_SECRET is set in .env. The certificate takes its place; once sign-in works, remove the secret from .env and from the registration.",
@@ -736,10 +803,9 @@ export function buildPlan(state: SetupState): SetupPlan {
     writeModes,
     restrictDirectory,
     restrictPrivateKey,
-    reapplyAcl:
-      reapplyAcl && reapplyAcl.privateKey.length + reapplyAcl.certificate.length > 0
-        ? reapplyAcl
-        : null,
+    reapplyAcl,
+    clearAclHint,
+    switchingFrom,
     env,
     blockers,
     warnings,
@@ -863,10 +929,38 @@ export function planText(plan: SetupPlan, state: SetupState): string {
     lines.push(
       `Change ${shown(state.files.privateKey)} to ${bits(plan.restrictPrivateKey)} so others cannot read it.`,
     );
-  if (plan.reapplyAcl)
+  if (plan.reapplyAcl) {
+    const { privateKey, certificate } = plan.reapplyAcl;
     lines.push(
-      "Give the key and certificate the access list entries the last rotation could not copy to them.",
+      `Give the files the access list entries the .previous files carry, which the last rotation could not copy: ${list(
+        [
+          ...(privateKey.length > 0
+            ? [`${shown(state.files.privateKey)} ${privateKey.join(", ")}`]
+            : []),
+          ...(certificate.length > 0
+            ? [`${shown(state.files.certificate)} ${certificate.join(", ")}`]
+            : []),
+        ],
+      )}.`,
     );
+  }
+  if (plan.certificate.action === "rotate" || plan.certificate.action === "promote") {
+    const keep = (state.acl.privateKey?.entries ?? []).filter(
+      (entry) => !entry.startsWith("mask::"),
+    );
+    const keepCertificate = (state.acl.certificate?.entries ?? []).filter(
+      (entry) => !entry.startsWith("mask::"),
+    );
+    if (keep.length + keepCertificate.length > 0)
+      lines.push(
+        `After the move, give the new files the access list entries the old ones have: ${list([
+          ...(keep.length > 0 ? [`${shown(state.files.privateKey)} ${keep.join(", ")}`] : []),
+          ...(keepCertificate.length > 0
+            ? [`${shown(state.files.certificate)} ${keepCertificate.join(", ")}`]
+            : []),
+        ])}.`,
+      );
+  }
   lines.push("");
 
   const envFile = shown(state.options.envFile);

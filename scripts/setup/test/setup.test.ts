@@ -394,10 +394,15 @@ describe("npm run setup against a fake tenant", () => {
       expect(search.query.get("$filter")).toMatch(
         /^tags\/any\(t:t eq 'prism365-setup-run-[0-9a-f]{16}'\)$/,
       );
+    // Owners are read only for the registration this run made and its service principal.
     const mine = tenant.applications[60];
+    const principal = tenant.servicePrincipals.find((item) => item.appId === mine?.appId);
     expect(
       tenant.requests.filter(
-        (request) => request.path.endsWith("/owners") && !request.path.includes(mine?.id ?? "-"),
+        (request) =>
+          request.path.endsWith("/owners") &&
+          !request.path.includes(mine?.id ?? "-") &&
+          !request.path.includes(principal?.id ?? "-"),
       ),
     ).toEqual([]);
     expect(tenant.applications).toHaveLength(61);
