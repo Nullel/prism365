@@ -32,8 +32,11 @@ stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator'
 
 Checks you run when you need them: inactive accounts by days since the last
 successful sign-in (7, 30, 60, 90, 120, 180 and 365 days, or never), licenses on disabled or
-inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts and
-license capacity. Results are kept, filterable, sortable and exportable as CSV.
+inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts,
+license capacity, Conditional Access policies (legacy authentication, MFA for administrators,
+exclusions), risky users, managed devices, app consents (high-risk and unverified apps) and
+Microsoft 365 app usage. Results are kept, filterable, sortable and exportable as CSV. Each audit
+runs only when its own read pack is enabled, and says what it needs when it is not.
 
 ![The license capacity audit: products with no seats left, more assigned than owned, or an expired subscription](docs/images/license-capacity.jpg)
 
