@@ -291,9 +291,13 @@ const row = (rows: { key: string }[], key: string) => {
   };
 };
 
+// Audits that read endpoints the shared tenant above does not serve. Each is held to the same
+// checks, against its own synthetic tenant, in its own test file.
+const ownTenant = new Set(["devices.managed", "apps.consents", "usage.m365-apps"]);
+
 describe("audit definitions", () => {
   it("publish valid tables whose views, sort and rows agree", async () => {
-    for (const audit of builtInAudits) {
+    for (const audit of builtInAudits.filter((item) => !ownTenant.has(item.definition.id))) {
       const definition = auditDefinition(audit);
       const keys = new Set(definition.columns.map((column) => column.key));
       expect(keys.has(definition.defaultSort.column), definition.id).toBe(true);

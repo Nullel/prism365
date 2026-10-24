@@ -32,8 +32,11 @@ stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator'
 
 Checks you run when you need them: inactive accounts by days since the last
 successful sign-in (7, 30, 60, 90, 120, 180 and 365 days, or never), licenses on disabled or
-inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts and
-license capacity. Results are kept, filterable, sortable and exportable as CSV.
+inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts,
+license capacity, Conditional Access policies (legacy authentication, MFA for administrators,
+exclusions), risky users, managed devices, app consents (high-risk and unverified apps) and
+Microsoft 365 app usage. Results are kept, filterable, sortable and exportable as CSV. Each audit
+runs only when its own read pack is enabled, and says what it needs when it is not.
 
 ![The license capacity audit: products with no seats left, more assigned than owned, or an expired subscription](docs/images/license-capacity.jpg)
 
@@ -48,6 +51,13 @@ says.
 
 The Graph client refuses every write, and every permission Prism365 asks
 for is tied to one feature.
+
+### Prism365 and action tools
+
+Prism365 sees; a separate tool acts. From an audit's results you export a handoff, the list of
+accounts to act on with the reasons, for your offboarding or lifecycle tool. The receipt that
+tool sends back is imported and shown on each person's page as the tool's report
+([formats](docs/handoff.md)); Prism365 never calls the tool and shares no credentials with it.
 
 ## How it is built
 
@@ -98,7 +108,7 @@ each step, the manual path, and what each feature needs.
 
 ## Documentation
 
-[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Sign-in audit](docs/modules/signins-audit.md),
+[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
 [Service health](docs/modules/service-health.md), [Module runtime](docs/MODULES.md),
 [Permissions](docs/PERMISSIONS.md), [Privacy](docs/PRIVACY.md), [Architecture](docs/ARCHITECTURE.md),
 [Roadmap](docs/ROADMAP.md), and the decision records in [docs/decisions](docs/decisions).

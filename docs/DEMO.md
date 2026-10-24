@@ -51,7 +51,7 @@ npm run demo:record
 This takes a few seconds. It starts the API inside the process (nothing listens on a port), signs
 in a fake administrator, starts collection so the real collectors read the invented Graph, waits
 until the sign-in history is loaded and service health and Message center have been checked, runs
-all five audits, then asks the API for every response the web app uses and writes them to
+every audit, then asks the API for every response the web app uses and writes them to
 `apps/web/demo/fixtures.json`. It never contacts Microsoft, never uses a database server and
 never touches Docker.
 

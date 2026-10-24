@@ -32,6 +32,8 @@ export interface RouteSettings {
   // Sessions and the access ledger survive a restart (the encrypted PostgreSQL state store). They
   // do not with PRISM_DATA_DIR alone, which only keeps module data.
   readonly durableSessions: boolean;
+  // How long handoffs and receipts are kept, in days (HANDOFF_RETENTION_DAYS).
+  readonly handoffRetentionDays: number;
 }
 
 // Module storage for reading what was collected, and the collection status. Starting, stopping

@@ -1,12 +1,12 @@
 import {
-  userInvestigationSchema,
   type CapabilityState,
   type PrismSession,
   type UserInvestigation,
+  userInvestigationSchema,
 } from "@prism365/contracts";
 import { useEffect, useId, useRef, useState } from "react";
-import { SearchIcon, ShieldIcon, UsersIcon } from "./icons.tsx";
 import { AiInvestigation } from "./AiInvestigation.tsx";
+import { SearchIcon, ShieldIcon, UsersIcon } from "./icons.tsx";
 
 const stateLabels: Record<CapabilityState, string> = {
   available: "Available",

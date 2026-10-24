@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { canonicalJson } from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
 import {
   MODULE_ID as SIGNINS,
@@ -11,6 +13,7 @@ import {
 import { latestRuns, ModuleScheduler } from "@prism365/modules";
 import { MemoryStateStore, PGliteModuleDatabase } from "@prism365/storage";
 import { createApp } from "../../apps/api/src/app.ts";
+import { AuditRunner } from "../../apps/api/src/audits.ts";
 import type { AppConfig, IdentityConfig } from "../../apps/api/src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../../apps/api/src/identity.ts";
 import { createModuleRegistry } from "../../apps/api/src/modules.ts";
@@ -34,6 +37,7 @@ import {
 // server: the API is never listened on, requests go straight into it.
 
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const output = resolve(root, "apps/web/demo/fixtures.json");
 const started = Date.now();
@@ -152,11 +156,18 @@ async function main() {
         maxRetryWaitMilliseconds: 30_000,
       }),
   });
+  // Audits run on their own clock, against the synthetic tenant as it stood at that time, so the
+  // recording holds runs from earlier days and every audit's trend has points. Both go back to
+  // the present once the audits have run.
+  let auditClock: Date | null = null;
+  let auditGraph = graph;
+  const auditRunner = new AuditRunner({ database, now: () => auditClock ?? new Date() });
   const app = createApp({
     config,
     store,
     identity,
-    graphFetch: graph,
+    graphFetch: ((input, init) => auditGraph(input, init)) as typeof fetch,
+    audits: auditRunner,
     modules: { registry, database, scheduler },
   });
   log("API ready on an in-memory database.");
@@ -278,24 +289,39 @@ async function main() {
   await setState(expected.burstAccount, "resolved");
   await setState(expected.burstAddress, "resolved");
 
-  // 4. Run every audit.
+  // 4. Run every audit: two weeks ago, a week ago and now, so each has a trend.
   const catalog = await getJson<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
-  for (const entry of catalog.audits) {
-    const id = entry.definition.id;
-    const response = await call("POST", `/api/v1/audits/${id}/runs`);
-    if (response.statusCode !== 202) throw new Error(`Audit ${id} did not start: ${response.body}`);
-    const runId = (response.json() as { run: { id: string } }).run.id;
-    const read = () =>
-      getJson<{ status: string; rowCount: number; error: unknown }>(`/api/v1/audit-runs/${runId}`);
-    let detail = await read();
-    for (let poll = 0; detail.status === "running" && poll < 400; poll += 1) {
-      await new Promise((done) => setTimeout(done, 100));
-      detail = await read();
+  for (const daysAgo of [14, 7, 0]) {
+    auditClock = daysAgo === 0 ? null : new Date(anchor.getTime() - daysAgo * DAY);
+    auditGraph = auditClock ? createSyntheticGraph({ now: auditClock }) : graph;
+    for (const entry of catalog.audits) {
+      const id = entry.definition.id;
+      const response = await call("POST", `/api/v1/audits/${id}/runs`);
+      if (response.statusCode !== 202)
+        throw new Error(`Audit ${id} did not start: ${response.body}`);
+      const runId = (response.json() as { run: { id: string } }).run.id;
+      const read = () =>
+        getJson<{ status: string; rowCount: number; error: unknown }>(
+          `/api/v1/audit-runs/${runId}`,
+        );
+      let detail = await read();
+      for (let poll = 0; detail.status === "running" && poll < 400; poll += 1) {
+        await new Promise((done) => setTimeout(done, 100));
+        detail = await read();
+      }
+      if (detail.status !== "succeeded")
+        throw new Error(`Audit ${id} ${detail.status}: ${JSON.stringify(detail.error)}`);
+      log(`Audit ${id}${daysAgo ? ` (${daysAgo} days ago)` : ""}: ${detail.rowCount} rows.`);
     }
-    if (detail.status !== "succeeded")
-      throw new Error(`Audit ${id} ${detail.status}: ${JSON.stringify(detail.error)}`);
-    log(`Audit ${id}: ${detail.rowCount} rows.`);
   }
+  auditClock = null;
+  auditGraph = graph;
+  // Two audits run on their own. Saved after the last runs, so neither is due while recording.
+  const scheduled = await call("POST", "/api/v1/settings/audit-schedule", {
+    audits: { "accounts.inactive": "weekly", "mfa.registration": "daily" },
+  });
+  if (scheduled.statusCode !== 200)
+    throw new Error(`The audit schedule was not saved: ${scheduled.body}`);
 
   // 5. Record every request the web app makes.
   const responses: Fixtures["responses"] = {};
@@ -325,22 +351,95 @@ async function main() {
   await record("/api/v1/attention?filter=unread&limit=1");
   await record("/api/v1/settings/attention");
   await record("/api/v1/settings/audits");
+  await record("/api/v1/settings/audit-schedule");
   await record("/api/v1/modules/service.health/status");
   await record("/api/v1/automation/workflows");
   await record("/api/v1/automation/packages");
   await record("/api/v1/ai/status");
 
+  // A handoff from the inactive accounts audit, and a receipt from an invented action tool for
+  // some of its accounts, so the Handoffs page and those people's pages have something to show.
+  // The export is stored as the page would receive it; the replay builds others from it.
+  const inactive = (
+    await getJson<{ runs: { id: string; status: string }[] }>(
+      "/api/v1/audits/accounts.inactive/runs",
+    )
+  ).runs.find((run) => run.status === "succeeded");
+  if (!inactive) throw new Error("The inactive accounts audit has no result to hand off.");
+  const exportUrl = `/api/v1/audit-runs/${inactive.id}/handoff.json?view=d30&sort=days&direction=desc`;
+  const exported = await call("GET", exportUrl);
+  if (exported.statusCode !== 200)
+    throw new Error(
+      `The handoff export answered ${exported.statusCode}: ${exported.body.slice(0, 200)}`,
+    );
+  const handoff = exported.json<{
+    id: string;
+    items: { userId: string; userPrincipalName: string | null }[];
+  }>();
+  responses[normalizeKey("GET", exportUrl)] = { status: 200, body: handoff };
+  const [released, blocked, kept, refused] = handoff.items;
+  if (!released || !blocked || !kept || !refused)
+    throw new Error("The inactive accounts audit handed off fewer than four accounts.");
+  const reported = (
+    account: { userId: string; userPrincipalName: string | null },
+    action: string,
+    status: "done" | "failed" | "skipped",
+    detail: string,
+  ) => ({
+    userId: account.userId,
+    userPrincipalName: account.userPrincipalName,
+    action,
+    status,
+    detail,
+  });
+  const receipt = {
+    format: "prism365.receipt",
+    version: 1,
+    id: randomUUID(),
+    handoffId: handoff.id,
+    tool: { name: "Example action tool", version: "1.4.0" },
+    performedAt: new Date(anchor.getTime() - 40 * 60_000).toISOString(),
+    performedBy: "Jordan Vale",
+    items: [
+      reported(released, "account.sign-in-blocked", "done", "Sign-in blocked after review."),
+      reported(released, "license.removed", "done", "Released the license for reuse."),
+      reported(blocked, "account.sign-in-blocked", "done", "Sign-in blocked after review."),
+      reported(
+        kept,
+        "account.sign-in-blocked",
+        "skipped",
+        "The manager asked to keep it until the end of the month.",
+      ),
+      reported(
+        refused,
+        "account.sign-in-blocked",
+        "failed",
+        "The tool's account lacked the role to change this account.",
+      ),
+    ],
+  };
+  const imported = await call("POST", "/api/v1/receipts", receipt);
+  if (imported.statusCode !== 201)
+    throw new Error(
+      `The receipt import answered ${imported.statusCode}: ${imported.body.slice(0, 200)}`,
+    );
+  await record("/api/v1/handoffs");
+  await record(`/api/v1/receipts/${receipt.id}?limit=200`);
+  log(`Handed off ${handoff.items.length} inactive accounts and imported a receipt for four.`);
+
   const audits = await record<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
   const accounts: { id: string; principal: string }[] = [];
   for (const entry of audits.audits) {
     const id = entry.definition.id;
+    await record(`/api/v1/audits/${id}/trend?days=365`);
     const runs = await record<{ runs: { id: string }[] }>(`/api/v1/audits/${id}/runs`);
     for (const run of runs.runs) {
       const detail = await record<{
         rows: { personId: string | null; cells: { person?: { principal: string | null } } }[];
       }>(`/api/v1/audit-runs/${run.id}`);
-      // The accounts audit lists everyone in the directory, so it is the list of person pages.
-      if (id === "accounts.inactive")
+      // The accounts audit lists everyone in the directory, so its newest run is the list of
+      // person pages.
+      if (id === "accounts.inactive" && run.id === runs.runs[0]?.id)
         for (const row of detail.rows) {
           const principal = row.cells.person?.principal;
           if (row.personId && principal) accounts.push({ id: row.personId, principal });
@@ -361,11 +460,19 @@ async function main() {
     if (page.next !== null) throw new Error(`${principal} has more sign-ins than one page.`);
     await record(`/api/v1/people/lookup?email=${encodeURIComponent(principal)}`);
     await record(`/api/v1/investigations/user?email=${encodeURIComponent(principal)}`);
+    // Recorded without the principal name: the replay answers the page's request, which names
+    // it, from this one, and the demo receipt names every account by its id.
+    await record(`/api/v1/people/${encodeURIComponent(id)}/receipts`);
   }
   log(`Recorded ${Object.keys(responses).length} responses for ${accounts.length} accounts.`);
 
   // 6. Check, write and format.
-  const fixtures: Fixtures = { recordedAt: new Date().toISOString(), responses };
+  // The receipt's body as sent, so the replay can tell the same receipt from a different one.
+  const fixtures: Fixtures = {
+    recordedAt: new Date().toISOString(),
+    responses,
+    receipts: { [receipt.id]: canonicalJson(receipt) },
+  };
   const text = JSON.stringify(fixtures);
   assertSynthetic(text, tenant.addresses);
   await mkdir(dirname(output), { recursive: true });
