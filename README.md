@@ -110,7 +110,7 @@ each step, the manual path, and what each feature needs.
 
 ## Documentation
 
-[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
+[Setup](docs/SETUP.md), [Audits](docs/audits.md), [This week](docs/this-week.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
 [Service health](docs/modules/service-health.md), [Module runtime](docs/MODULES.md),
 [Permissions](docs/PERMISSIONS.md), [Privacy](docs/PRIVACY.md), [Architecture](docs/ARCHITECTURE.md),
 [Roadmap](docs/ROADMAP.md), and the decision records in [docs/decisions](docs/decisions).

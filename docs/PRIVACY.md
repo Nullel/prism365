@@ -103,6 +103,14 @@ audit are kept and older ones deleted. Starting a run, opening a result and expo
 entry that names the audit and the run, not an account. A downloaded CSV is outside Prism365's
 retention and should be handled like the directory export it is.
 
+## This week
+
+The This week page (`docs/this-week.md`) stores nothing of its own. It reads findings, directory
+changes, audit results and trend points, notification items and collector run history that
+Prism365 already holds, and shows the account names and sign-in names that audit results contain.
+Opening it writes an access-ledger entry (`digest.viewed`) that names the range in days and the
+sections read, not a person, a title or a value.
+
 ## Handoffs and receipts
 
 A handoff (`docs/handoff.md`) is a file an administrator exports from an audit for another tool to
