@@ -13,6 +13,7 @@ import {
   GraphRequestError,
   GraphRetryDeferredError,
 } from "./client.ts";
+import { principalNameCanExist } from "./person.ts";
 
 // Microsoft Graph v1.0 documentation verified 2026-10-13:
 // https://learn.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0
@@ -153,6 +154,12 @@ export async function investigateUser(options: {
       "missing_consent",
       403,
       "User inventory requires the enabled User.Read.All feature pack.",
+    );
+  if (!principalNameCanExist(email))
+    throw new UserInvestigationError(
+      "user_not_found",
+      404,
+      "No user was found for this principal name in the connected tenant.",
     );
 
   let profile: UserInvestigation["profile"]["data"];

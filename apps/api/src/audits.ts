@@ -21,6 +21,8 @@ import {
   GraphBoundaryError,
   type GraphFeatureId,
   type GraphHttpClient,
+  GraphReportDownloadError,
+  GraphReportHostError,
   GraphRequestError,
   GraphRetryDeferredError,
 } from "@prism365/graph";
@@ -110,6 +112,27 @@ export function describeAuditFailure(
           };
   const reference = (requestId: string | undefined) =>
     requestId ? ` Microsoft request ID: ${requestId}.` : "";
+  // A usage report's download link (ADR-0010). The host is printable ASCII of at most 253
+  // characters, never the link's path or query, which carry its token.
+  if (error instanceof GraphReportHostError)
+    return {
+      code: "report_host",
+      message:
+        error.host === null
+          ? "Microsoft sent a report download link Prism365 could not read."
+          : error.knownHost
+            ? `Microsoft sent a report download link on ${error.host} that Prism365 does not accept: ${error.problem}.`
+            : `Microsoft sent the report from a host Prism365 does not recognise: ${error.host}.`,
+    };
+  // The short-lived link failed. Not a sign-in or role problem, whatever the status says.
+  if (
+    error instanceof GraphReportDownloadError ||
+    (error instanceof GraphBoundaryError && error.reason === "download")
+  )
+    return {
+      code: "report_download",
+      message: "Microsoft's report download link failed. Run the audit again.",
+    };
   if (error instanceof GraphRetryDeferredError)
     return {
       code: "throttled",
@@ -166,6 +189,17 @@ export function describeAuditFailure(
       message: "The audit produced a result Prism365 could not store. This is a bug in the audit.",
     };
   return { code: "failed", message: "The audit failed. The server log has the category." };
+}
+
+// The server log line for a failed run, or null when the page already says all there is. It holds
+// fixed codes and error class names, and for a refused report link its host, so an operator can
+// report a host Microsoft moved to; never a provider message or the link itself.
+export function auditFailureLogLine(auditId: string, code: string, error: unknown): string | null {
+  if (error instanceof GraphReportHostError)
+    return `Prism365 audit ${auditId} failed (report_host, ${error.host === null ? "no host" : `host ${error.host}`}).`;
+  if (code === "failed" || code === "invalid_result")
+    return `Prism365 audit ${auditId} failed (${error instanceof Error ? error.name : typeof error}).`;
+  return null;
 }
 
 interface Running {
@@ -373,11 +407,10 @@ export class AuditRunner {
         controller.signal.aborted && controller.signal.reason instanceof AuditStoppedError
           ? controller.signal.reason
           : error;
-      outcome = { status: "failed", ...describeAuditFailure(cause, audit, this.#timeout) };
-      if (outcome.code === "failed" || outcome.code === "invalid_result")
-        console.warn(
-          `Prism365 audit ${audit.definition.id} failed (${error instanceof Error ? error.name : typeof error}).`,
-        );
+      const failure = describeAuditFailure(cause, audit, this.#timeout);
+      outcome = { status: "failed", ...failure };
+      const line = auditFailureLogLine(audit.definition.id, failure.code, cause);
+      if (line) console.warn(line);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

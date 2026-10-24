@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getMicrosoftCloudProfile, type MicrosoftCloud } from "./clouds.ts";
+import { CsvFormatError, type CsvTable, parseCsv } from "./csv.ts";
 import { type GraphFeatureId, type GraphPermission, getPermissionPack } from "./permissions.ts";
 
 type FetchImplementation = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -28,6 +29,13 @@ export interface CollectionOptions {
   deadline?: number;
   // Stops paging, and the request in flight, when aborted.
   signal?: AbortSignal;
+}
+
+export interface ReportOptions {
+  // Stops the Graph request and the download, including one in flight, when aborted.
+  signal?: AbortSignal;
+  // The report's byte cap: 16 MiB unless set, at most 32 MiB.
+  maxBytes?: number;
 }
 
 export interface CollectionResult<T> {
@@ -78,7 +86,11 @@ export type GraphBoundaryReason =
   | "content_type"
   | "size"
   | "empty"
-  | "json";
+  | "json"
+  | "report"
+  | "report_host"
+  | "download"
+  | "csv";
 
 export class GraphBoundaryError extends Error {
   readonly reason: GraphBoundaryReason;
@@ -86,6 +98,41 @@ export class GraphBoundaryError extends Error {
     super(message);
     this.name = "GraphBoundaryError";
     this.reason = reason;
+  }
+}
+
+// A usage report download link refused by getReport (ADR-0010). It carries the link's host so an
+// audit can show it and the log can record it, and an operator can report a host Microsoft moved
+// to. Never the path or query: they carry the pre-authenticated token. A parsed hostname is
+// printable ASCII (the URL parser refuses control and space characters in hosts and converts other
+// names to punycode), and it is cut to the longest DNS name. `problem` is fixed text from the check.
+export class GraphReportHostError extends GraphBoundaryError {
+  readonly host: string | null;
+  // Whether the host is a listed download host, so the problem is the link's form, not its host.
+  readonly knownHost: boolean;
+  readonly problem: string;
+  constructor(problem: string, host: string | null, knownHost: boolean) {
+    const allowed = reportDownloadHosts.map((name) => `https://${name}${REPORT_DOWNLOAD_PATH}`);
+    super(
+      `Microsoft's usage report download link was refused because ${problem} (host: ${host ?? "none"}). Prism365 downloads reports only from ${allowed.join(" or ")}. If Microsoft has moved report downloads, report this host so the list can be reviewed.`,
+      "report_host",
+    );
+    this.name = "GraphReportHostError";
+    this.host = host === null ? null : host.slice(0, 253);
+    this.knownHost = knownHost;
+    this.problem = problem;
+  }
+}
+
+// A usage report download that the download host answered with anything but 200. It is not a
+// GraphRequestError: a 401 or 403 here means the short-lived link failed, not that the session or a
+// role is missing, and it keeps only the status, never the link or the host's text.
+export class GraphReportDownloadError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`Microsoft's usage report download failed with HTTP ${status}.`);
+    this.name = "GraphReportDownloadError";
+    this.status = status;
   }
 }
 
@@ -106,8 +153,14 @@ function boundedInteger(value: number, min: number, max: number, label: string):
 // links do not always keep the casing of the request (auditLogs/signIns comes back as signins).
 const allowedPaths: Record<GraphFeatureId, RegExp> = {
   profile: /^\/v1\.0\/me\/?$/i,
-  // The user list, one user, or one user's manager.
-  "directory.users.read": /^\/v1\.0\/users(?:(?:\/[^/]+|\([^/]+\))(?:\/manager)?)?\/?$/i,
+  // The user list, one user, one user's manager, or one user's direct memberships (groups,
+  // directory roles and administrative units; not transitiveMemberOf), in the /users/{id} or the
+  // users('upn') form. The key takes only what the path builders (person.ts, investigation.ts)
+  // produce from an id or a principal name: what encodeURIComponent leaves as it is (letters,
+  // digits and - _ . ! ~ * ' ( )), the : and @ of raw ids, and well-formed percent escapes other
+  // than an encoded slash, backslash or question mark, which no id or principal name holds.
+  "directory.users.read":
+    /^\/v1\.0\/users(?:(?:\/(?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+|\((?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+\))(?:\/manager|\/memberOf)?)?\/?$/i,
   "user.licenses.read": /^\/v1\.0\/users(?:\/[^/]+|\([^/]+\))\/licenseDetails\/?$/i,
   "tenant.licenses.read": /^\/v1\.0\/subscribedSkus\/?$/i,
   "service.health.read":
@@ -124,9 +177,11 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
     /^\/v1\.0\/servicePrincipals(?:\/[A-Za-z0-9._:-]+(?:\/appRoleAssignments)?)?\/?$/i,
   "directory.permission-grants.read": /^\/v1\.0\/oauth2PermissionGrants\/?$/i,
   "identity.risk.read": /^\/v1\.0\/identityProtection\/riskyUsers(?:\/[^/]+)?\/?$/i,
-  // The per-user Microsoft 365 apps report, which v1.0 documents as answering in JSON. The other
-  // per-user detail reports answer with a redirect to a CSV download, which this client refuses.
-  "reports.usage.read": /^\/v1\.0\/reports\/getM365AppUserDetail\(period='D(?:7|30|90|180)'\)\/?$/i,
+  // The per-user usage reports, by period only (no date= form). getM365AppUserDetail also answers
+  // in JSON through request(); every one of them answers with a redirect to a CSV download, which
+  // only getReport() follows (ADR-0010).
+  "reports.usage.read":
+    /^\/v1\.0\/reports\/get(?:M365AppUserDetail|Office365ActiveUserDetail|EmailActivityUserDetail|TeamsUserActivityUserDetail|OneDriveActivityUserDetail|OneDriveUsageAccountDetail|SharePointActivityUserDetail|MailboxUsageDetail)\(period='D(?:7|30|90|180)'\)\/?$/i,
   "reports.settings.read": /^\/v1\.0\/admin\/reportSettings\/?$/i,
   "security.score.read":
     /^\/v1\.0\/security\/(?:secureScores|secureScoreControlProfiles)(?:\/[^/]+)?\/?$/i,
@@ -134,6 +189,21 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
   "devices.intune.read": /^\/v1\.0\/deviceManagement\/managedDevices(?:\/[^/]+)?\/?$/i,
   "purview.entra.read": /^\/v1\.0\/security\/auditLog\/queries(?:\/[^/]+(?:\/records)?)?\/?$/i,
 };
+
+// Usage report downloads (ADR-0010). Microsoft answers a usage report with 302 Found and a
+// short-lived, pre-authenticated link; following that link is the one redirect this client ever
+// makes, and only to a listed host, over HTTPS on the default port, under this path.
+const REPORT_FEATURE: GraphFeatureId = "reports.usage.read";
+const reportDownloadHosts: readonly string[] = ["reports.office.com"];
+const REPORT_DOWNLOAD_PATH = "/data/download/";
+const REPORT_DEFAULT_BYTES = 16 * 1_048_576;
+const REPORT_MAX_BYTES = 32 * 1_048_576;
+// Microsoft serves the download as application/octet-stream; text/csv is accepted in case a report
+// is ever answered directly. Anything else, JSON or an HTML error page, is refused.
+const reportContentTypes: ReadonlySet<string> = new Set(["application/octet-stream", "text/csv"]);
+// What Microsoft's own SDK sends for these stream-returning functions: the file, or a JSON error.
+const REPORT_ACCEPT = "application/octet-stream, application/json";
+const DOWNLOAD_ACCEPT = "application/octet-stream, text/csv";
 
 export class GraphHttpClient {
   readonly #getAccessToken: () => Promise<string>;
@@ -191,125 +261,111 @@ export class GraphHttpClient {
     init: RequestInit = {},
     schema?: z.ZodType,
   ): Promise<unknown> {
-    const pack = getPermissionPack(context.feature);
-    if (pack.source !== "microsoftGraph" || pack.permission !== context.permission) {
-      throw new GraphBoundaryError(
-        "The Graph request permission does not match its declared feature pack.",
-        "pack",
-      );
-    }
-    if (!(pack.clouds as readonly MicrosoftCloud[]).includes(this.#cloud)) {
-      throw new GraphBoundaryError(
-        `Feature ${context.feature} is not supported in the selected Microsoft cloud (${this.#cloud}).`,
-        "cloud",
-      );
-    }
     const method = (init.method ?? "GET").toUpperCase();
-    if ((method !== "GET" && method !== "HEAD") || init.body != null) {
-      throw new GraphBoundaryError(
-        `Microsoft Graph ${method} requests are disabled by the read-only boundary.`,
-        "method",
-      );
-    }
-    const target = this.#resolveTarget(pathOrNextLink);
-    if (!allowedPaths[context.feature].test(target.pathname)) {
-      throw new GraphBoundaryError(
-        "Graph endpoint does not belong to its declared feature pack.",
-        "endpoint",
-      );
-    }
-    // $expand pulls related objects into the response, so it could reach data the pack's paths
-    // deliberately leave out (an application's owners, a user's group memberships). Nothing in
-    // Prism365 uses it; it is refused rather than allowlisted per pack.
-    // Graph also accepts query options without the "$" prefix on some endpoints.
-    const expands = (key: string) => key.trim().toLowerCase().replace(/^\$/, "") === "expand";
-    if ([...target.searchParams.keys()].some(expands)) {
-      throw new GraphBoundaryError(
-        "Graph $expand is not allowed by the read boundary.",
-        "endpoint",
-      );
-    }
+    const target = this.#checkedTarget(pathOrNextLink, context, method, init.body);
     // A caller's signal (an audit's time limit, a collector run ending) stops the request and
     // any retry; the request's own timeout still applies.
     const { signal: external, ...requestInit } = init;
-    let waited = 0;
-    for (let attempt = 0; attempt <= this.#maxRetries; attempt += 1) {
-      external?.throwIfAborted();
-      const controller = new AbortController();
-      const forward = () => controller.abort(external?.reason);
-      external?.addEventListener("abort", forward, { once: true });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const operation = async () => {
-        const token = await this.#getAccessToken();
-        if (!token || controller.signal.aborted)
-          throw new GraphBoundaryError(
-            "Graph credentials are unavailable or the request expired.",
-            "credential",
-          );
-        const headers = new Headers(requestInit.headers);
-        headers.set("Accept", "application/json");
-        headers.set("Authorization", `Bearer ${token}`);
-        const response = await this.#fetch(target, {
-          ...requestInit,
-          method,
-          headers,
-          redirect: "manual",
-          signal: controller.signal,
-        });
-        if (response.status >= 300 && response.status < 400) {
+    const value = await this.#exchange(
+      target,
+      method,
+      requestInit,
+      external,
+      "application/json",
+      async (response) => {
+        if (response.status >= 300) {
           await response.body?.cancel();
           throw new GraphBoundaryError(
             "Graph redirects are disabled; this resource needs a reviewed download adapter.",
             "redirect",
           );
         }
-        if (!response.ok || response.status === 204 || method === "HEAD") {
+        if (response.status === 204 || method === "HEAD") {
           await response.body?.cancel();
-          return { response, value: undefined };
+          return undefined;
         }
-        return { response, value: await readBoundedJson(response, this.#maxResponseBytes) };
-      };
-      let result: { response: Response; value: unknown };
-      try {
-        result = await Promise.race([
-          operation(),
-          new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => {
-              controller.abort();
-              reject(new GraphBoundaryError("Graph request exceeded its time budget.", "timeout"));
-            }, this.#timeout);
-          }),
-        ]);
-      } catch (error) {
-        if (external?.aborted) throw external.reason;
-        throw error;
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-        external?.removeEventListener("abort", forward);
-      }
-      const { response, value } = result;
-      if (response.ok) {
-        if (!schema) return value;
-        const parsed = schema.safeParse(value);
-        if (!parsed.success)
-          throw new GraphBoundaryError(
-            "Microsoft Graph returned an invalid response shape.",
-            "shape",
-          );
-        return parsed.data;
-      }
-      const requestId = response.headers.get("request-id") ?? undefined;
-      if (response.status === 429 || response.status === 503) {
-        const delay = retryDelayMilliseconds(response.headers.get("Retry-After"), attempt);
-        if (attempt >= this.#maxRetries || delay > this.#retryBudget - waited)
-          throw new GraphRetryDeferredError(response.status, delay, requestId);
-        waited += delay;
-        await this.#sleep(delay);
-        continue;
-      }
-      throw new GraphRequestError(response.status, requestId);
+        return readBoundedJson(response, this.#maxResponseBytes);
+      },
+    );
+    if (!schema) return value;
+    const parsed = schema.safeParse(value);
+    if (!parsed.success)
+      throw new GraphBoundaryError("Microsoft Graph returned an invalid response shape.", "shape");
+    return parsed.data;
+  }
+
+  // Reads one Microsoft 365 usage report (ADR-0010): the one place this client follows a
+  // redirect. The Graph request passes every check request() applies and carries the token;
+  // Microsoft answers 302 with a short-lived, pre-authenticated link, which must be an HTTPS URL
+  // on a listed host under /data/download/, and the download is sent with no token, no cookies,
+  // no header but Accept, no redirects and one attempt. A CSV answered by Graph itself (200) is
+  // read the same way. Either is capped in bytes while it streams, then parsed by parseCsv.
+  async getReport(
+    path: string,
+    context: GraphRequestContext,
+    options: ReportOptions = {},
+  ): Promise<CsvTable> {
+    if (context.feature !== REPORT_FEATURE)
+      throw new GraphBoundaryError(
+        "Report downloads are only for the Microsoft 365 usage reports pack.",
+        "report",
+      );
+    const maxBytes = boundedInteger(
+      options.maxBytes ?? REPORT_DEFAULT_BYTES,
+      1_024,
+      REPORT_MAX_BYTES,
+      "maxBytes",
+    );
+    const target = this.#checkedTarget(path, context, "GET", undefined);
+    // A report is named by its function and period alone. A query option could change what
+    // Microsoft answers (JSON instead of a download, for one report), and none is needed.
+    if (target.search)
+      throw new GraphBoundaryError("Usage report requests take no query options.", "endpoint");
+    const { signal } = options;
+    const answer = await this.#exchange(
+      target,
+      "GET",
+      {},
+      signal,
+      REPORT_ACCEPT,
+      async (response): Promise<{ download: URL } | { text: string }> => {
+        if (response.status === 302) {
+          const location = response.headers.get("Location");
+          await response.body?.cancel();
+          if (location === null)
+            throw new GraphBoundaryError(
+              "Microsoft Graph answered a usage report with a redirect but no download link.",
+              "redirect",
+            );
+          return { download: reportDownloadUrl(location) };
+        }
+        if (response.status !== 200) {
+          await response.body?.cancel();
+          throw response.status >= 300
+            ? new GraphBoundaryError(
+                "Microsoft Graph answered a usage report with a redirect other than 302.",
+                "redirect",
+              )
+            : new GraphBoundaryError(
+                "Microsoft Graph answered a usage report with no report in it.",
+                "shape",
+              );
+        }
+        return { text: await readBoundedReport(response, maxBytes) };
+      },
+    );
+    const text =
+      "text" in answer ? answer.text : await this.#download(answer.download, maxBytes, signal);
+    try {
+      return parseCsv(text);
+    } catch (error) {
+      if (error instanceof CsvFormatError)
+        throw new GraphBoundaryError(
+          `Microsoft's usage report could not be read as CSV (${error.problem}).`,
+          "csv",
+        );
+      throw error;
     }
-    throw new GraphBoundaryError("Graph retry budget exhausted.", "retry_budget");
   }
 
   getCollection(
@@ -403,6 +459,194 @@ export class GraphHttpClient {
     return result.items;
   }
 
+  // The checks every Graph request passes before anything is sent: the declared pack and its
+  // permission, the cloud, read-only methods, the configured host, the pack's paths and $expand.
+  #checkedTarget(
+    pathOrNextLink: string,
+    context: GraphRequestContext,
+    method: string,
+    body: RequestInit["body"],
+  ): URL {
+    const pack = getPermissionPack(context.feature);
+    if (pack.source !== "microsoftGraph" || pack.permission !== context.permission) {
+      throw new GraphBoundaryError(
+        "The Graph request permission does not match its declared feature pack.",
+        "pack",
+      );
+    }
+    if (!(pack.clouds as readonly MicrosoftCloud[]).includes(this.#cloud)) {
+      throw new GraphBoundaryError(
+        `Feature ${context.feature} is not supported in the selected Microsoft cloud (${this.#cloud}).`,
+        "cloud",
+      );
+    }
+    if ((method !== "GET" && method !== "HEAD") || body != null) {
+      throw new GraphBoundaryError(
+        `Microsoft Graph ${method} requests are disabled by the read-only boundary.`,
+        "method",
+      );
+    }
+    const target = this.#resolveTarget(pathOrNextLink);
+    if (!allowedPaths[context.feature].test(target.pathname)) {
+      throw new GraphBoundaryError(
+        "Graph endpoint does not belong to its declared feature pack.",
+        "endpoint",
+      );
+    }
+    // $expand pulls related objects into the response, so it could reach data the pack's paths
+    // deliberately leave out (an application's owners, a user's group memberships). Nothing in
+    // Prism365 uses it; it is refused rather than allowlisted per pack.
+    // Graph also accepts query options without the "$" prefix on some endpoints.
+    const expands = (key: string) => key.trim().toLowerCase().replace(/^\$/, "") === "expand";
+    if ([...target.searchParams.keys()].some(expands)) {
+      throw new GraphBoundaryError(
+        "Graph $expand is not allowed by the read boundary.",
+        "endpoint",
+      );
+    }
+    return target;
+  }
+
+  // Sends a checked Graph request with the bearer token and redirect "manual", so a redirect is
+  // seen rather than followed. `answer` reads a 2xx or 3xx response inside the request's time
+  // budget; any other status is cancelled here, and 429 or 503 is retried after Retry-After
+  // within the retry budget, or becomes a GraphRequestError with only its status and request ID.
+  async #exchange<T>(
+    target: URL,
+    method: string,
+    init: Omit<RequestInit, "signal">,
+    external: AbortSignal | null | undefined,
+    accept: string,
+    answer: (response: Response) => Promise<T>,
+  ): Promise<T> {
+    let waited = 0;
+    for (let attempt = 0; attempt <= this.#maxRetries; attempt += 1) {
+      external?.throwIfAborted();
+      const controller = new AbortController();
+      const forward = () => controller.abort(external?.reason);
+      external?.addEventListener("abort", forward, { once: true });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const operation = async (): Promise<
+        { answered: true; value: T } | { answered: false; response: Response }
+      > => {
+        const token = await this.#getAccessToken();
+        if (!token || controller.signal.aborted)
+          throw new GraphBoundaryError(
+            "Graph credentials are unavailable or the request expired.",
+            "credential",
+          );
+        const headers = new Headers(init.headers);
+        headers.set("Accept", accept);
+        headers.set("Authorization", `Bearer ${token}`);
+        const response = await this.#fetch(target, {
+          ...init,
+          method,
+          headers,
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        if (response.status < 400) return { answered: true, value: await answer(response) };
+        await response.body?.cancel();
+        return { answered: false, response };
+      };
+      let result: Awaited<ReturnType<typeof operation>>;
+      try {
+        result = await Promise.race([
+          operation(),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              controller.abort();
+              reject(new GraphBoundaryError("Graph request exceeded its time budget.", "timeout"));
+            }, this.#timeout);
+          }),
+        ]);
+      } catch (error) {
+        if (external?.aborted) throw external.reason;
+        throw error;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        external?.removeEventListener("abort", forward);
+      }
+      if (result.answered) return result.value;
+      const { response } = result;
+      const requestId = response.headers.get("request-id") ?? undefined;
+      if (response.status === 429 || response.status === 503) {
+        const delay = retryDelayMilliseconds(response.headers.get("Retry-After"), attempt);
+        if (attempt >= this.#maxRetries || delay > this.#retryBudget - waited)
+          throw new GraphRetryDeferredError(response.status, delay, requestId);
+        waited += delay;
+        await this.#sleep(delay);
+        continue;
+      }
+      throw new GraphRequestError(response.status, requestId);
+    }
+    throw new GraphBoundaryError("Graph retry budget exhausted.", "retry_budget");
+  }
+
+  // The report download: a GET to the checked link with no token, no cookies and no header but
+  // Accept, refusing any redirect, within the client's request timeout and the caller's signal.
+  // The link is pre-authenticated and short-lived, so it is used once and never retried, and it
+  // never goes into an error or a log: whoever holds it can read the report. Any answer but 200 is
+  // a GraphReportDownloadError, a partial (206) or empty (204) one included.
+  async #download(url: URL, maxBytes: number, external: AbortSignal | undefined): Promise<string> {
+    external?.throwIfAborted();
+    const controller = new AbortController();
+    const forward = () => controller.abort(external?.reason);
+    external?.addEventListener("abort", forward, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const operation = async () => {
+      try {
+        const response = await this.#fetch(url, {
+          method: "GET",
+          headers: new Headers({ Accept: DOWNLOAD_ACCEPT }),
+          redirect: "error",
+          credentials: "omit",
+          signal: controller.signal,
+        });
+        if (response.status !== 200) {
+          await response.body?.cancel();
+          throw new GraphReportDownloadError(response.status);
+        }
+        return await readBoundedReport(response, maxBytes);
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          error instanceof GraphBoundaryError ||
+          error instanceof GraphReportDownloadError
+        )
+          throw error;
+        // A network failure, or a redirect that fetch refused. The underlying error may carry
+        // the link, so only a fixed message leaves here.
+        throw new GraphBoundaryError(
+          "The usage report download failed. Prism365 follows no redirect from the download host.",
+          "download",
+        );
+      }
+    };
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(
+              new GraphBoundaryError(
+                "The usage report download exceeded its time budget.",
+                "timeout",
+              ),
+            );
+          }, this.#timeout);
+        }),
+      ]);
+    } catch (error) {
+      if (external?.aborted) throw external.reason;
+      throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      external?.removeEventListener("abort", forward);
+    }
+  }
+
   #resolveTarget(pathOrNextLink: string): URL {
     const target = new URL(pathOrNextLink.replace(/^\//, ""), `${this.#baseUrl.href}/`);
     if (
@@ -428,14 +672,53 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
       "content_type",
     );
   }
+  const tooLarge = "Microsoft Graph response exceeded the size budget.";
   const length = response.headers.get("Content-Length");
   if (length && Number(length) > maxBytes) {
     await response.body?.cancel();
-    throw new GraphBoundaryError("Microsoft Graph response exceeded the size budget.", "size");
+    throw new GraphBoundaryError(tooLarge, "size");
   }
   if (!response.body)
     throw new GraphBoundaryError("Microsoft Graph returned an empty JSON response.", "empty");
-  const reader = response.body.getReader();
+  const bytes = await readBoundedBytes(response.body, maxBytes, tooLarge);
+  try {
+    return z.json().parse(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch {
+    throw new GraphBoundaryError("Microsoft Graph returned invalid JSON.", "json");
+  }
+}
+
+// A usage report body, as text for parseCsv. The byte cap is checked against Content-Length
+// first and again while the body streams, so an oversized report stops partway.
+async function readBoundedReport(response: Response, maxBytes: number): Promise<string> {
+  const type = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (type === undefined || !reportContentTypes.has(type)) {
+    await response.body?.cancel();
+    throw new GraphBoundaryError(
+      "Microsoft returned a usage report with an unsupported content type.",
+      "content_type",
+    );
+  }
+  const tooLarge = "The usage report exceeded its size limit.";
+  const length = response.headers.get("Content-Length");
+  if (length && Number(length) > maxBytes) {
+    await response.body?.cancel();
+    throw new GraphBoundaryError(tooLarge, "size");
+  }
+  const bytes = response.body
+    ? await readBoundedBytes(response.body, maxBytes, tooLarge)
+    : new Uint8Array(0);
+  // ignoreBOM keeps a leading byte-order mark in the text, so parseCsv strips exactly one. Bytes
+  // that are not UTF-8 become U+FFFD rather than failing the report.
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+}
+
+async function readBoundedBytes(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  tooLarge: string,
+): Promise<Uint8Array> {
+  const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -443,8 +726,7 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
       const chunk = await reader.read();
       if (chunk.done) break;
       size += chunk.value.byteLength;
-      if (size > maxBytes)
-        throw new GraphBoundaryError("Microsoft Graph response exceeded the size budget.", "size");
+      if (size > maxBytes) throw new GraphBoundaryError(tooLarge, "size");
       chunks.push(chunk.value);
     }
   } finally {
@@ -457,11 +739,43 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return bytes;
+}
+
+// Checks the Location of a usage report redirect. A refusal is a GraphReportHostError, which names
+// the host and nothing else of the link.
+function reportDownloadUrl(location: string): URL {
+  let url: URL | undefined;
   try {
-    return z.json().parse(JSON.parse(new TextDecoder().decode(bytes)));
+    url = location.length <= 16_384 ? new URL(location) : undefined;
   } catch {
-    throw new GraphBoundaryError("Microsoft Graph returned invalid JSON.", "json");
+    url = undefined;
   }
+  const problem = downloadLinkProblem(url);
+  if (url && problem === null) return url;
+  const host = url?.hostname ? url.hostname : null;
+  throw new GraphReportHostError(
+    problem ?? "it is not an allowed link",
+    host,
+    host !== null && reportDownloadHosts.includes(host),
+  );
+}
+
+// Why a parsed link is not an allowed report download, or null when it is. `new URL` without a
+// base refuses relative and protocol-relative links, so those arrive here as undefined.
+function downloadLinkProblem(url: URL | undefined): string | null {
+  if (!url) return "it is not an absolute URL";
+  if (url.protocol !== "https:") return "it is not HTTPS";
+  if (!reportDownloadHosts.includes(url.hostname)) return "its host is not a report download host";
+  if (url.port !== "") return "it names a port";
+  if (url.username !== "" || url.password !== "") return "it carries a user name or password";
+  if (url.hash !== "") return "it has a fragment";
+  if (
+    !url.pathname.startsWith(REPORT_DOWNLOAD_PATH) ||
+    url.pathname.length === REPORT_DOWNLOAD_PATH.length
+  )
+    return `its path is not under ${REPORT_DOWNLOAD_PATH}`;
+  return null;
 }
 
 function retryDelayMilliseconds(retryAfter: string | null, attempt: number): number {

@@ -14,6 +14,9 @@ export interface DemoGraphTools {
   // One page of a collection with a $skiptoken continuation, honouring $top and $select.
   page<T extends object>(url: URL, items: readonly T[], select: string | null): Response;
   notFound(message?: string): Response;
+  // A usage report as Microsoft serves it: `body` is kept under a one-time token on the download
+  // host, and the answer is the 302 Found whose Location is the link to it.
+  download(body: string): Response;
 }
 
 // A feature's part of the synthetic Graph. Returns null for paths it does not serve. Everything it
