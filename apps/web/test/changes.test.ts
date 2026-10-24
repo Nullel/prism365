@@ -350,3 +350,11 @@ describe("person page directory changes", () => {
     ).toBe("");
   });
 });
+
+describe("the page's address", () => {
+  it("opens Directory changes from #/changes", async () => {
+    const { parseRoute, routeHash } = await import("../src/App.tsx");
+    expect(parseRoute("#/changes")).toEqual({ view: "changes", person: null, audit: null });
+    expect(routeHash({ view: "changes", person: null, audit: null })).toBe("#/changes");
+  });
+});
