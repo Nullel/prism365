@@ -363,16 +363,27 @@ An audit can run on its own, daily or weekly. Run automatically on the audit's p
 and Weekly and saves at once; the catalog tags a scheduled audit Daily or Weekly, and the run
 history marks scheduled runs.
 
-You can schedule an audit only if you could run it yourself: turning an audit on (or moving it to
-another cadence) needs every read pack it requires enabled in `ENABLED_READ_FEATURES` and granted
-by your own sign-in, by the Run button's rule, and is refused with the Run button's message
-otherwise. Turning a schedule off is always allowed. Scheduled runs then read with the collecting
-administrator's sign-in, not yours.
+You can schedule an audit only if you could run it yourself, and it never reads more than you
+could. Turning an audit on (or moving it to another cadence) needs every read pack it requires
+enabled in `ENABLED_READ_FEATURES` and granted by your own sign-in, by the Run button's rule, and
+is refused with the Run button's message otherwise. Saving keeps, with the audit, the permissions
+your sign-in had granted among its packs. Scheduled runs read with the collecting administrator's
+sign-in, but only with the permissions both of you have: the collecting sign-in's grants narrowed
+to the ones kept for the audit, and only the packs whose permission is left. When that is less
+than a fully granted manual run reads, the audit's page says so: "Runs with the permissions <name>
+had when scheduling, so it does not read with <permission>." A guest review scheduled by someone
+who has not granted `AuditLog.Read.All` therefore reads no sign-in dates, whoever collects.
+Turning a schedule off is always allowed.
 
 The schedule is one setting per tenant under the key `audits.schedule` in `prism365_preference`:
-`{ "audits": { "<auditId>": "off" | "daily" | "weekly" }, "scheduledBy": { "<auditId>": "<actor id>" } }`,
-where `scheduledBy` is the administrator who last set each scheduled audit to its cadence. A save
-changes only the audits it names, so two pages changing different audits never undo each other.
+`{ "audits": { "<auditId>": "off" | "daily" | "weekly" }, "scheduledBy": { "<auditId>": "<actor id>" }, "names": { "<auditId>": "<name>" }, "grants": { "<auditId>": ["<permission>"] } }`.
+For each scheduled audit it keeps the administrator who last set it to its cadence, their name as
+the page shows it, and the permissions their sign-in had granted among the audit's packs then. An
+entry saved before grants were kept, or whose grants cannot be read, runs with the audit's required
+permissions only. A save changes only the audits it names, and an audit sent with the cadence it
+already has is no change, so it keeps its scheduler and their grants. Two pages changing different
+audits never undo each other: each save locks the setting's row for its transaction (creating the
+row first when there is none), so two saves at the same moment apply one after the other.
 An id that is not a known audit is dropped from a save and ignored when running, but an entry a
 newer build saved for an audit this build does not know is kept when this build saves. A value
 that is not a frequency reads as off, so a damaged setting can only stop audits from running.
@@ -400,7 +411,9 @@ A scheduled run reads only while its sign-in is still the one collecting. Every 
 is refused once collection has stopped or passed to another administrator, and the run in
 progress is stopped the moment that happens, its request in flight included. It closes as failed
 with "Collection stopped while this scheduled run was reading." Manual runs are never stopped this
-way. A sign-in that stops working while a scheduled run reads (signed out, expired, or refused by
+way, but a Run pressed while a scheduled run of the same audit reads joins that run and ends with
+it, and the page says so when it joins. Pressing Start again from the session already collecting
+keeps the collection as it is (the start is recorded again), so it stops nothing. A sign-in that stops working while a scheduled run reads (signed out, expired, or refused by
 Microsoft) fails that run as a session failure, the way a manual run fails, and ends the round: the
 remaining due audits are neither started nor recorded until the next check.
 

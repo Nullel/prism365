@@ -142,21 +142,22 @@ export async function auditHarness(
     },
   };
   const store = new MemoryStateStore();
-  // Each Graph read, with how many audit.run.started ledger entries existed when it was made.
-  const reads: { path: string; ledgerStarts: number }[] = [];
-  // While held, the first page of users waits, and then points to a second page.
-  let held: { release: () => void; waiting: boolean } | null = null;
+  // Each Graph read, with its $select and how many audit.run.started ledger entries existed when
+  // it was made.
+  const reads: { path: string; select: string | null; ledgerStarts: number }[] = [];
+  // While held, every first page of users waits, and then points to a second page.
+  let held: { waiters: (() => void)[] } | null = null;
   const graphFetch = (async (input: RequestInfo | URL) => {
     const url = new URL(String(input));
     reads.push({
       path: `${url.pathname}${url.searchParams.has("$skiptoken") ? "?page=2" : ""}`,
+      select: url.searchParams.get("$select"),
       ledgerStarts: store.audit.filter((entry) => entry.event.type === "audit.run.started").length,
     });
     if (url.pathname === "/v1.0/users" && held && !url.searchParams.has("$skiptoken")) {
       const gate = held;
       await new Promise<void>((resolve) => {
-        gate.release = resolve;
-        gate.waiting = true;
+        gate.waiters.push(resolve);
       });
       const next = new URL(url);
       next.searchParams.set("$skiptoken", "page-2");
@@ -246,15 +247,15 @@ export async function auditHarness(
     refuseTokens: (value: boolean) => {
       refuseTokens = value;
     },
-    // Holds the first page of users until released; waiting() says a read is held there.
+    // Holds every first page of users until released; waiting() says how many reads are held.
     holdUsers: () => {
-      const gate = { release: () => {}, waiting: false };
+      const gate: { waiters: (() => void)[] } = { waiters: [] };
       held = gate;
       return {
-        waiting: () => gate.waiting,
+        waiting: () => gate.waiters.length,
         release: () => {
           held = null;
-          gate.release();
+          for (const resolve of gate.waiters.splice(0)) resolve();
         },
       };
     },

@@ -448,6 +448,8 @@ describe("audit schedules", () => {
           JSON.stringify({
             audits: { "devices.compliance": "daily", "accounts.inactive": "weekly" },
             scheduledBy: { "devices.compliance": actor.id, "accounts.inactive": actor.id },
+            names: { "devices.compliance": "Synthetic admin" },
+            grants: { "devices.compliance": ["DeviceManagementManagedDevices.Read.All"] },
           }),
           actor.id,
         ],
@@ -476,6 +478,9 @@ describe("audit schedules", () => {
         "mfa.registration": otherActor,
         "devices.compliance": actor.id,
       },
+      // Saved without a saver, the MFA entry keeps no grants: it runs with required permissions.
+      names: { "devices.compliance": "Synthetic admin" },
+      grants: { "devices.compliance": ["DeviceManagementManagedDevices.Read.All"] },
     });
   });
 

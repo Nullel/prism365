@@ -7,10 +7,11 @@ import {
   latestRunStart,
   readAuditSchedule,
   readStoredAuditSchedule,
+  type StoredAuditSchedule,
   scheduledAuditCount,
 } from "@prism365/audits";
 import type { AuditAvailability } from "@prism365/contracts";
-import type { GraphHttpClient } from "@prism365/graph";
+import { type GraphFeatureId, type GraphHttpClient, permissionPacks } from "@prism365/graph";
 import { CredentialUnavailableError } from "@prism365/modules";
 import type { ModuleDatabase } from "@prism365/storage";
 import type { AuditRunner } from "./audits.ts";
@@ -63,6 +64,61 @@ export const systemTimers: ScheduleTimers = {
     return () => clearTimeout(timer);
   },
 };
+
+const packPermission = (pack: string) =>
+  permissionPacks.find((candidate) => candidate.id === pack)?.permission ?? null;
+
+// What a scheduled run of this audit may read. The permissions allowed are the ones the
+// administrator who scheduled it had granted among its packs when they saved it, or, for an entry
+// saved before those were kept, the audit's required permissions only. `scopes` is the
+// collecting sign-in's grants narrowed to those; `granted` and `packs` are what auditReadScope
+// allows with them, without any pack whose permission did not survive. A scheduled run therefore
+// never reads more than the administrator who scheduled it could have read themselves.
+export function scheduledReadScope(
+  audit: Audit,
+  enabledPacks: readonly string[],
+  collecting: readonly string[],
+  stored: StoredAuditSchedule,
+): { scopes: string[]; packs: GraphFeatureId[]; granted: string[] } {
+  const id = audit.definition.id;
+  const allowed = new Set(
+    Object.hasOwn(stored.grants, id)
+      ? (stored.grants[id] ?? [])
+      : auditDefinition(audit).permissions,
+  );
+  const scopes = collecting.filter((scope) => allowed.has(scope));
+  const read = auditReadScope(audit, enabledPacks, scopes);
+  return {
+    scopes,
+    packs: read.packs.filter((pack) => read.granted.includes(packPermission(pack) ?? "")),
+    granted: read.granted,
+  };
+}
+
+// The scheduled audits that read less than a fully granted manual run would here: the
+// permissions their enabled packs carry that the administrator who scheduled them had not
+// granted. Shown on the audit's page.
+export function scheduleLimits(
+  stored: StoredAuditSchedule,
+  audits: readonly Audit[],
+  enabledPacks: readonly string[],
+): Record<string, { by: string | null; without: string[] }> {
+  const known = knownAuditSchedule(stored, audits);
+  const limits: Record<string, { by: string | null; without: string[] }> = {};
+  for (const audit of audits) {
+    const id = audit.definition.id;
+    if (known[id] === "off") continue;
+    const { permissions, optionalPermissions } = auditDefinition(audit);
+    const everything = auditReadScope(audit, enabledPacks, [
+      ...permissions,
+      ...optionalPermissions,
+    ]).granted;
+    const allowed = scheduledReadScope(audit, enabledPacks, everything, stored).granted;
+    const without = everything.filter((permission) => !allowed.includes(permission));
+    if (without.length > 0) limits[id] = { by: stored.names[id] ?? null, without };
+  }
+  return limits;
+}
 
 export interface AuditSchedulerOptions {
   runner: Pick<AuditRunner, "start" | "runningId" | "stopRun">;
@@ -221,9 +277,12 @@ export class AuditScheduler {
     } catch {
       return this.#paused();
     }
+    // The run may read only what both sign-ins allow: the collecting one's grants, narrowed to
+    // the permissions the administrator who scheduled it had granted then.
+    const read = scheduledReadScope(audit, this.#enabledPacks, scopes, stored);
     // Skipped unless every pack the audit needs is enabled and granted, by the manual route's
     // rule; a skipped audit stays due and is tried again on the next tick.
-    const availability = this.#availability(audit, scopes);
+    const availability = this.#availability(audit, read.scopes);
     if (availability.state !== "available") {
       const reason = [availability.state, ...availability.enable, ...availability.missing].join(
         " ",
@@ -234,9 +293,6 @@ export class AuditScheduler {
       return true;
     }
     this.#skipped.delete(id);
-    // The run reads the audit's packs and only the optional packs this installation enabled,
-    // with the permissions those packs carry, exactly as a manual run does.
-    const read = auditReadScope(audit, this.#enabledPacks, scopes);
     const definition = auditDefinition(audit);
     // The ledger names what this run will read, as the manual route's entry does.
     const datasets = [

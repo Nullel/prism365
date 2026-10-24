@@ -8,6 +8,7 @@ import {
   type AuditRun,
   type AuditRunDetail,
   type AuditScheduleFrequency,
+  type AuditScheduleLimit,
   type AuditScheduleSettings,
   type AuditSettings,
   type AuditSummaryItem,
@@ -869,6 +870,30 @@ export function scheduleTag(frequency: AuditScheduleFrequency | undefined): stri
   return frequency && frequency !== "off" ? frequencyLabels[frequency] : null;
 }
 
+// Said when a scheduled run reads less than a manual run with every permission would: it reads
+// only with what the administrator who scheduled it had granted then. null when it reads it all.
+export function scheduleLimitNote(limit: AuditScheduleLimit | null): string | null {
+  if (!limit || limit.without.length === 0) return null;
+  const without = titles(limit.without);
+  return limit.by
+    ? `Runs with the permissions ${limit.by} had when scheduling, so it does not read with ${without}.`
+    : `Runs with its required permissions only, so it does not read with ${without}: it was scheduled before Prism365 kept the permissions of whoever scheduled it.`;
+}
+
+// Saves one audit's schedule. Only that audit is sent: the server leaves the others as they
+// are, so another page changing another audit is never undone by a stale copy here.
+export function saveAuditSchedule(
+  session: PrismSession,
+  auditId: string,
+  frequency: AuditScheduleFrequency,
+): Promise<AuditScheduleSettings> {
+  return readJson(
+    "/api/v1/settings/audit-schedule",
+    auditScheduleSettingsSchema.parse,
+    post(session, { audits: { [auditId]: frequency } }),
+  );
+}
+
 // Said when a scheduled audit's newest run is dated in the future (the clock was turned back):
 // the schedule counts from that start, so nothing runs until a full period after it. null when
 // the next run is not held back that way.
@@ -888,6 +913,7 @@ export function AuditScheduleControl({
   saving,
   error,
   lastStart = null,
+  limit = null,
   disabled = false,
   onChange,
 }: {
@@ -897,11 +923,14 @@ export function AuditScheduleControl({
   error: string;
   // When the audit's newest run of any kind started, which the schedule counts from.
   lastStart?: string | null;
+  // Set when a scheduled run reads less than a fully granted manual run would.
+  limit?: AuditScheduleLimit | null;
   disabled?: boolean;
   onChange: (frequency: AuditScheduleFrequency) => void;
 }) {
   const labelId = useId();
   const held = futureRunNote(frequency, lastStart);
+  const limited = frequency === "off" ? null : scheduleLimitNote(limit);
   return (
     <section className="audit-schedule" aria-labelledby={labelId}>
       <div className="audit-schedule__row">
@@ -929,8 +958,9 @@ export function AuditScheduleControl({
       </div>
       <p className="muted-label">
         Runs while collection is on, with the collecting administrator's sign-in. You can schedule
-        an audit only if you could run it yourself.
+        an audit only if you could run it yourself, and it never reads more than you could.
       </p>
+      {limited ? <p className="muted-label">{limited}</p> : null}
       {!collecting && frequency !== "off" ? (
         <p className="audit-schedule__off">
           Collection is off, so this audit will not run on its own until someone starts it.
@@ -1229,7 +1259,11 @@ function AuditDetail({
   scope: readonly string[] | null;
   // How often this audit runs on its own, and whether collection is on; null when the saved
   // schedule could not be loaded.
-  schedule: { frequency: AuditScheduleFrequency; collecting: boolean } | null;
+  schedule: {
+    frequency: AuditScheduleFrequency;
+    collecting: boolean;
+    limit: AuditScheduleLimit | null;
+  } | null;
   onSchedule: (frequency: AuditScheduleFrequency) => Promise<void>;
   onBack: () => void;
   onOpenPerson: (userId: string) => void;
@@ -1244,6 +1278,8 @@ function AuditDetail({
   const [runId, setRunId] = useState<string | null>(entry.runningId ?? entry.lastRun?.id ?? null);
   const [run, setRun] = useState<AuditRunDetail | null>(null);
   const [error, setError] = useState("");
+  // A plain note about the last Run, such as having joined a scheduled run.
+  const [notice, setNotice] = useState("");
   const [starting, setStarting] = useState(false);
   const demo = session.mode === "demo";
   // The parent's refresh, read through a ref so a new callback never restarts the polling.
@@ -1333,6 +1369,7 @@ function AuditDetail({
   async function start() {
     setStarting(true);
     setError("");
+    setNotice("");
     try {
       const started = await readJson(
         `/api/v1/audits/${encodeURIComponent(definition.id)}/runs`,
@@ -1341,6 +1378,7 @@ function AuditDetail({
       );
       setRunId(started.run.id);
       setRun({ ...started.run, rows: [] });
+      setNotice(started.message ?? "");
       void loadHistory();
       changed.current();
     } catch (problem) {
@@ -1404,11 +1442,17 @@ function AuditDetail({
           saving={scheduleSaving}
           error={scheduleError}
           lastStart={history?.[0]?.startedAt ?? entry.lastRun?.startedAt ?? null}
+          limit={schedule.limit}
           onChange={(frequency) => void changeSchedule(frequency)}
         />
       ) : null}
 
       {access ? <p className="audit-note">{access}</p> : null}
+      {notice ? (
+        <p className="audit-note" role="status">
+          {notice}
+        </p>
+      ) : null}
       {demo ? (
         <p className="audit-note">Connect a tenant to run this audit. Demo mode has no results.</p>
       ) : null}
@@ -1522,6 +1566,8 @@ export function Audits({
   const [settings, setSettings] = useState<AuditSettings | null>(null);
   const [schedule, setSchedule] = useState<AuditScheduleSettings | null>(null);
   const [error, setError] = useState("");
+  // A plain note about the last Run, such as having joined a scheduled run.
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const live = session.mode === "live";
 
@@ -1583,12 +1629,14 @@ export function Audits({
   async function run(auditId: string) {
     setBusy(auditId);
     setError("");
+    setNotice("");
     try {
-      await readJson(
+      const started = await readJson(
         `/api/v1/audits/${encodeURIComponent(auditId)}/runs`,
         auditStartSchema.parse,
         post(session),
       );
+      setNotice(started.message ?? "");
       await refresh();
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : "The audit could not be started.");
@@ -1597,16 +1645,8 @@ export function Audits({
     }
   }
 
-  // Saves this one audit's schedule; the server leaves the others as they are, so another page
-  // changing another audit is never undone.
   async function saveSchedule(auditId: string, frequency: AuditScheduleFrequency) {
-    setSchedule(
-      await readJson(
-        "/api/v1/settings/audit-schedule",
-        auditScheduleSettingsSchema.parse,
-        post(session, { audits: { [auditId]: frequency } }),
-      ),
-    );
+    setSchedule(await saveAuditSchedule(session, auditId, frequency));
   }
 
   async function saveScope(domains: string[]) {
@@ -1634,6 +1674,7 @@ export function Audits({
             ? {
                 frequency: schedule.audits[entry.definition.id] ?? "off",
                 collecting: schedule.collecting,
+                limit: schedule.limits[entry.definition.id] ?? null,
               }
             : null
         }
@@ -1651,6 +1692,11 @@ export function Audits({
       {error ? (
         <p className="form-error form-error--banner" role="alert">
           {error}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="audit-note" role="status">
+          {notice}
         </p>
       ) : null}
       {catalog ? (

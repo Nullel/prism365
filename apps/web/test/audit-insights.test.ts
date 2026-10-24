@@ -17,6 +17,8 @@ import {
   defaultTrendTile,
   futureRunNote,
   runLabel,
+  saveAuditSchedule,
+  scheduleLimitNote,
   scheduleTag,
   trendGeometry,
   trendHollowNote,
@@ -236,8 +238,59 @@ describe("audit schedule control", () => {
     expect(control({ frequency: "off", collecting: false })).not.toContain("Collection is off");
   });
 
-  it("says you can schedule only what you could run yourself", () => {
-    expect(control()).toContain("You can schedule an audit only if you could run it yourself.");
+  it("says you can schedule only what you could run yourself, and it reads no more", () => {
+    expect(control()).toContain(
+      "You can schedule an audit only if you could run it yourself, and it never reads more than you could.",
+    );
+  });
+
+  it("says when a scheduled run reads less than a manual run would, and with whose grants", () => {
+    const limit = { by: "Other admin", without: ["AuditLog.Read.All"] };
+    expect(scheduleLimitNote(limit)).toBe(
+      "Runs with the permissions Other admin had when scheduling, so it does not read with AuditLog.Read.All.",
+    );
+    expect(
+      scheduleLimitNote({ by: null, without: ["AuditLog.Read.All", "LicenseAssignment.Read.All"] }),
+    ).toBe(
+      "Runs with its required permissions only, so it does not read with AuditLog.Read.All and LicenseAssignment.Read.All: it was scheduled before Prism365 kept the permissions of whoever scheduled it.",
+    );
+    expect(scheduleLimitNote(null)).toBeNull();
+    expect(control({ frequency: "daily", limit })).toContain(
+      "Runs with the permissions Other admin had when scheduling",
+    );
+    // Off, nothing runs, so nothing is said.
+    expect(control({ frequency: "off", limit })).not.toContain("had when scheduling");
+  });
+
+  it("saves one audit at a time, never a copy of the whole schedule", async () => {
+    const sent: { url: string; body: unknown; headers: Headers }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+        headers: new Headers(init?.headers),
+      });
+      return Response.json({ audits: { "accounts.inactive": "daily" }, collecting: true });
+    }) as typeof fetch;
+    try {
+      const saved = await saveAuditSchedule(
+        { csrfToken: "synthetic-csrf" } as Parameters<typeof saveAuditSchedule>[0],
+        "accounts.inactive",
+        "daily",
+      );
+      expect(saved).toEqual({
+        audits: { "accounts.inactive": "daily" },
+        collecting: true,
+        limits: {},
+      });
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.url).toBe("/api/v1/settings/audit-schedule");
+    expect(sent[0]?.body).toEqual({ audits: { "accounts.inactive": "daily" } });
+    expect(sent[0]?.headers.get("x-csrf-token")).toBe("synthetic-csrf");
   });
 
   it("says when the next run waits because the last one is dated in the future", () => {

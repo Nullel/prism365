@@ -582,6 +582,17 @@ export function createApp(options: AppOptions = {}) {
       }
       // An explicit start retries a session Microsoft refused before.
       refusedSessions.delete(digest(handle));
+      // Start again from the session already collecting keeps that binding: rebinding would
+      // count as collection passing to someone else and stop the scheduled run it is reading
+      // with. A binding Microsoft refused is replaced, so the start retries it.
+      const current = collecting;
+      if (
+        current &&
+        current.sessionKey === digest(handle) &&
+        !current.refused &&
+        modules.scheduler.status().state === "collecting"
+      )
+        return;
       bindCollection(handle, session);
     });
     void modules.scheduler.tick().catch(() => {});
@@ -1311,9 +1322,15 @@ export function createApp(options: AppOptions = {}) {
     }
     if (!run)
       return reply.status(409).send({ error: "run_unavailable", message: "Reload the page." });
+    // A Run that joined a scheduled run in progress shares its end, and a scheduled run stops
+    // when collection stops: the administrator is told, so a stopped result is no surprise.
+    const message =
+      !result.started && run.trigger === "schedule"
+        ? "This audit was already running on its schedule, so your Run joined that run. It stops if collection stops; run it again then."
+        : null;
     return reply
       .status(result.started ? 202 : 200)
-      .send(auditStartSchema.parse({ run, started: result.started }));
+      .send(auditStartSchema.parse({ run, started: result.started, message }));
   });
 
   app.get("/v1/audits/:auditId/runs", async (request, reply) => {

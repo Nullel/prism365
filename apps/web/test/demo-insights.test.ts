@@ -85,7 +85,7 @@ describe("audit schedules in the demo", () => {
     const { request } = start();
     const answer = request("GET", "/api/v1/settings/audit-schedule");
     expect(answer.status).toBe(200);
-    expect(auditScheduleSettingsSchema.parse(answer.body)).toEqual(schedule);
+    expect(auditScheduleSettingsSchema.parse(answer.body)).toEqual({ ...schedule, limits: {} });
   });
 
   it("saves a change for the page, changing only the audits named and dropping unknown ones", () => {

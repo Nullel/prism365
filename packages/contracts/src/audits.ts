@@ -205,7 +205,13 @@ export const auditSettingsSchema = z.object({
 export type AuditSettings = z.infer<typeof auditSettingsSchema>;
 
 export const auditRunListSchema = z.object({ runs: z.array(auditRunSchema) });
-export const auditStartSchema = z.object({ run: auditRunSchema, started: z.boolean() });
+export const auditStartSchema = z.object({
+  run: auditRunSchema,
+  started: z.boolean(),
+  // Said when a request joined a run already in progress that may end differently than one the
+  // requester started, such as a scheduled run that stops when collection stops.
+  message: text.nullable().default(null),
+});
 
 // Filtering, sorting and export, shared by the page and the CSV route so both show the same rows.
 

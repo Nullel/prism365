@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 import {
   type Audit,
   auditDefinition,
+  auditReadScope,
   builtInAudits,
   finishRun,
+  findAudit,
   insertRun,
   listRuns,
+  storedAuditSchedule,
   writeAuditSchedule,
 } from "@prism365/audits";
 import { type AuditAvailability, type AuditSchedule, auditTrendSchema } from "@prism365/contracts";
@@ -13,7 +16,12 @@ import { GraphHttpClient } from "@prism365/graph";
 import { CredentialUnavailableError } from "@prism365/modules";
 import { PGliteModuleDatabase } from "@prism365/storage";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { AuditScheduler, type ScheduleCredential } from "../src/audit-schedule.ts";
+import {
+  AuditScheduler,
+  type ScheduleCredential,
+  scheduledReadScope,
+  scheduleLimits,
+} from "../src/audit-schedule.ts";
 import type { AuditRunner } from "../src/audits.ts";
 import { actorId, auditHarness, manualTimers, otherActorId, tenantId } from "./audit-harness.ts";
 
@@ -185,10 +193,26 @@ async function setup(schedule: AuditSchedule["audits"], enabledPacks = somePacks
     timers: timers.timers,
     log: (message) => logs.push(message),
   });
-  // The other administrator saves the schedule; the first one collects.
-  const save = (audits: AuditSchedule["audits"]) =>
+  // The other administrator saves the schedule, with every permission granted unless a test
+  // says otherwise; null saves the way a build without stored grants did.
+  const save = (
+    audits: AuditSchedule["audits"],
+    saverScopes: string[] | null = ["User.Read", "User.Read.All", "AuditLog.Read.All"],
+  ) =>
     database.tenant(tenantId, (sql) =>
-      writeAuditSchedule(sql, tenantId, { audits }, otherActorId, builtInAudits),
+      writeAuditSchedule(
+        sql,
+        tenantId,
+        { audits },
+        otherActorId,
+        builtInAudits,
+        saverScopes
+          ? {
+              name: "Other admin",
+              grants: (audit) => auditReadScope(audit, enabledPacks, saverScopes).granted,
+            }
+          : undefined,
+      ),
     );
   await save(schedule);
   return {
@@ -453,6 +477,40 @@ describe("audit scheduler", () => {
     expect(t.ledger).toEqual([]);
   });
 
+  it("reads with no more than the administrator who scheduled it had granted", async () => {
+    // Scheduled by someone whose own sign-in had not granted AuditLog.Read.All; collected by
+    // someone whose sign-in has.
+    const s = await setup({});
+    await s.save({ "guests.review": "daily" }, ["User.Read", "User.Read.All"]);
+    await s.scheduler.tick();
+    const [input] = s.fake.starts;
+    expect(input).toMatchObject({
+      packs: ["directory.users.read"],
+      granted: ["User.Read.All"],
+    });
+    expect(s.ledger[0]?.event).toMatchObject({ datasets: ["User.Read.All"] });
+  });
+
+  it("runs an entry saved without grants with its required permissions only", async () => {
+    const s = await setup({});
+    await s.save({ "guests.review": "daily" }, null);
+    await s.scheduler.tick();
+    expect(s.fake.starts[0]).toMatchObject({
+      packs: ["directory.users.read"],
+      granted: ["User.Read.All"],
+    });
+  });
+
+  it("skips an audit whose scheduler's grants lack a required permission", async () => {
+    const s = await setup({});
+    await s.save({ "accounts.inactive": "daily" }, ["User.Read", "User.Read.All"]);
+    await s.scheduler.tick();
+    expect(s.fake.starts).toEqual([]);
+    expect(s.logs).toContain(
+      "Prism365 scheduled audit accounts.inactive skipped (missing_permission).",
+    );
+  });
+
   it("leaves an audit alone while a run of it is in progress", async () => {
     const s = await setup({ "accounts.inactive": "daily" });
     s.fake.running.set(`${s.tenantId}:accounts.inactive`, randomUUID());
@@ -532,6 +590,76 @@ describe("audit scheduler", () => {
     await s.scheduler.tick();
     expect(s.timers.active()).toEqual([]);
     expect(s.fake.starts).toHaveLength(1);
+  });
+});
+
+describe("what a scheduled run may read", () => {
+  const audit = (id: string) => {
+    const found = findAudit(id);
+    if (!found) throw new Error(`No audit ${id}.`);
+    return found;
+  };
+  const everything = ["User.Read", "User.Read.All", "AuditLog.Read.All"];
+
+  it("narrows the collecting sign-in to the scheduler's grants, and drops packs left without", () => {
+    const guests = audit("guests.review");
+    const narrow = storedAuditSchedule({
+      audits: { "guests.review": "daily" },
+      grants: { "guests.review": ["User.Read.All"] },
+    });
+    expect(scheduledReadScope(guests, somePacks, everything, narrow)).toEqual({
+      scopes: ["User.Read.All"],
+      packs: ["directory.users.read"],
+      granted: ["User.Read.All"],
+    });
+    const full = storedAuditSchedule({
+      audits: { "guests.review": "daily" },
+      grants: { "guests.review": ["User.Read.All", "AuditLog.Read.All"] },
+    });
+    expect(scheduledReadScope(guests, somePacks, everything, full)).toEqual({
+      scopes: ["User.Read.All", "AuditLog.Read.All"],
+      packs: ["directory.users.read", "audit.signins.read"],
+      granted: ["User.Read.All", "AuditLog.Read.All"],
+    });
+    // Neither sign-in can widen the other: the collecting one lacks what the scheduler had.
+    expect(scheduledReadScope(guests, somePacks, ["User.Read.All"], full).granted).toEqual([
+      "User.Read.All",
+    ]);
+    // An entry saved without grants reads with required permissions only, and damaged grants
+    // count as none.
+    for (const value of [
+      { audits: { "guests.review": "daily" } },
+      { audits: { "guests.review": "daily" }, grants: { "guests.review": "AuditLog.Read.All" } },
+    ])
+      expect(
+        scheduledReadScope(guests, somePacks, everything, storedAuditSchedule(value)).granted,
+      ).toEqual(["User.Read.All"]);
+  });
+
+  it("says which scheduled audits read less than a fully granted run, and by whose grants", () => {
+    const stored = storedAuditSchedule({
+      audits: {
+        "guests.review": "daily",
+        "accounts.inactive": "weekly",
+        "licenses.reclaim": "off",
+      },
+      names: { "guests.review": "Other admin" },
+      grants: {
+        "guests.review": ["User.Read.All"],
+        "accounts.inactive": ["User.Read.All", "AuditLog.Read.All"],
+        "licenses.reclaim": ["User.Read.All"],
+      },
+    });
+    expect(scheduleLimits(stored, builtInAudits, somePacks)).toEqual({
+      "guests.review": { by: "Other admin", without: ["AuditLog.Read.All"] },
+    });
+    expect(
+      scheduleLimits(
+        storedAuditSchedule({ audits: { "guests.review": "daily" } }),
+        builtInAudits,
+        somePacks,
+      ),
+    ).toEqual({ "guests.review": { by: null, without: ["AuditLog.Read.All"] } });
   });
 });
 
@@ -677,7 +805,7 @@ describe("scheduled audits in the app", () => {
       await h.scheduler.tick();
       const hold = h.holdUsers();
       h.timers.fire("after");
-      await vi.waitFor(() => expect(hold.waiting()).toBe(true));
+      await vi.waitFor(() => expect(hold.waiting()).toBe(1));
       const stop = await h.post("/v1/collection/stop");
       expect(stop.json()).toMatchObject({ state: "stopped" });
       const reads = h.reads.length;
@@ -710,7 +838,7 @@ describe("scheduled audits in the app", () => {
       await h.scheduler.tick();
       const hold = h.holdUsers();
       h.timers.fire("after");
-      await vi.waitFor(() => expect(hold.waiting()).toBe(true));
+      await vi.waitFor(() => expect(hold.waiting()).toBe(1));
       const takeover = await h.post("/v1/collection/start", undefined, other);
       expect(takeover.statusCode).toBe(200);
       const reads = h.reads.length;
@@ -730,6 +858,130 @@ describe("scheduled audits in the app", () => {
         startedBy: { id: actorId },
         error: { code: "collection_stopped" },
       });
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("never read more than the administrator who scheduled the audit could", async () => {
+    // The other administrator has not granted AuditLog.Read.All: their own guest review reads no
+    // sign-in dates, so the one they schedule must not either, on anyone's sign-in.
+    const h = await auditHarness({ otherScopes: ["User.Read", "User.Read.All"] });
+    try {
+      const other = await h.signIn(otherActorId);
+      const saved = await h.post(
+        "/v1/settings/audit-schedule",
+        { audits: { "guests.review": "daily" } },
+        other,
+      );
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json().limits).toEqual({
+        "guests.review": { by: "Other admin", without: ["AuditLog.Read.All"] },
+      });
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      h.timers.fire("after");
+      await vi.waitFor(async () => {
+        expect((await runsOf(h, "guests.review")).map((run) => run.status)).toEqual(["succeeded"]);
+      });
+      const users = h.reads.filter((read) => read.path === "/v1.0/users");
+      expect(users.length).toBeGreaterThan(0);
+      expect(users.every((read) => !(read.select ?? "").includes("signInActivity"))).toBe(true);
+      const started = h.store.audit.find((entry) => entry.event.type === "audit.run.started");
+      expect(started?.event).toMatchObject({
+        datasets: ["User.Read.All"],
+        trigger: "schedule",
+        scheduledBy: otherActorId,
+      });
+      // Scheduled by the administrator collecting, who has granted it, it reads them.
+      expect(
+        (
+          await h.post("/v1/settings/audit-schedule", { audits: { "guests.review": "weekly" } })
+        ).json().limits,
+      ).toEqual({});
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("stop only the scheduled run when collection stops, never a manual one", async () => {
+    const h = await auditHarness();
+    try {
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      const hold = h.holdUsers();
+      const manual = await h.post("/v1/audits/guests.review/runs");
+      expect(manual.statusCode).toBe(202);
+      h.timers.fire("after");
+      await vi.waitFor(() => expect(hold.waiting()).toBe(2));
+      await h.post("/v1/collection/stop");
+      hold.release();
+      await settle(h);
+      expect(await runsOf(h, "guests.review")).toMatchObject([
+        { status: "succeeded", trigger: "manual" },
+      ]);
+      expect(await runsOf(h, "licenses.reclaim")).toMatchObject([
+        { status: "failed", trigger: "schedule", error: { code: "collection_stopped" } },
+      ]);
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("keep reading when the collecting administrator presses Start again", async () => {
+    const h = await auditHarness();
+    try {
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      const boundAt = (await h.get("/v1/modules")).json().collection.boundAt;
+      const hold = h.holdUsers();
+      h.timers.fire("after");
+      await vi.waitFor(() => expect(hold.waiting()).toBe(1));
+      const again = await h.post("/v1/collection/start");
+      expect(again.statusCode).toBe(200);
+      hold.release();
+      await settle(h);
+      expect(await runsOf(h, "licenses.reclaim")).toMatchObject([
+        { status: "succeeded", trigger: "schedule" },
+      ]);
+      // The same binding, and the start recorded as before.
+      expect((await h.get("/v1/modules")).json().collection).toMatchObject({
+        state: "collecting",
+        boundAt,
+      });
+      expect(
+        h.store.audit.filter((entry) => entry.event.type === "collection.started"),
+      ).toHaveLength(2);
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("tell an administrator whose Run joined a scheduled run that it stops with collection", async () => {
+    const h = await auditHarness();
+    try {
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      const hold = h.holdUsers();
+      h.timers.fire("after");
+      await vi.waitFor(() => expect(hold.waiting()).toBe(1));
+      const other = await h.signIn(otherActorId);
+      const joined = await h.post("/v1/audits/licenses.reclaim/runs", undefined, other);
+      expect(joined.statusCode).toBe(200);
+      expect(joined.json()).toMatchObject({
+        started: false,
+        message:
+          "This audit was already running on its schedule, so your Run joined that run. It stops if collection stops; run it again then.",
+      });
+      hold.release();
+      await settle(h);
+      // A manual run started by itself says nothing of the kind.
+      const own = await h.post("/v1/audits/guests.review/runs", undefined, other);
+      expect(own.json()).toMatchObject({ started: true, message: null });
+      await settle(h);
     } finally {
       await h.app.close();
     }

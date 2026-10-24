@@ -2,7 +2,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PostgresModuleDatabase, PostgresStateStore, runPostgresMigrations } from "../src/index.ts";
+import {
+  PostgresModuleDatabase,
+  PostgresStateStore,
+  runPostgresMigrations,
+  type SqlClient,
+} from "../src/index.ts";
 import { migrationsBeforeTrends, trendMigrationSuite } from "./audit-trend-migration-suite.ts";
 import { isolationSuite, probeScope } from "./module-isolation-suite.ts";
 
@@ -434,3 +439,105 @@ trendMigrationSuite(
   },
   Boolean(adminUrl),
 );
+
+// Two saves of the audit schedule at the same moment, on real PostgreSQL, where transactions do
+// run side by side (PGlite runs one at a time). Each save locks the setting's row, so the second
+// waits for the first and adds to it instead of overwriting it. The schedule code lives in
+// @prism365/audits, which depends on this package, so it is loaded by path at run time and typed
+// here by the little it needs.
+interface ScheduleCode {
+  builtInAudits: readonly unknown[];
+  writeAuditSchedule(
+    sql: SqlClient,
+    tenantId: string,
+    schedule: { audits: Record<string, string> },
+    actorId: string,
+    audits: readonly unknown[],
+  ): Promise<unknown>;
+  readStoredAuditSchedule(
+    sql: SqlClient,
+    tenantId: string,
+  ): Promise<{ audits: Record<string, string> }>;
+}
+const scheduleCode = "../../audits/src/index.ts";
+
+describe.skipIf(!adminUrl)("PostgreSQL: audit schedule saves at the same moment", () => {
+  const suffix = randomBytes(8).toString("hex");
+  const scheduleDatabase = `prism365_schedule_${suffix}`;
+  const memberRole = `prism365_schedule_member_${suffix}`;
+  const tenant = randomUUID();
+  let bootstrap: Pool;
+  let database: PostgresModuleDatabase;
+  let createdAppRole = false;
+  let schedule: ScheduleCode;
+
+  beforeAll(async () => {
+    schedule = (await import(/* @vite-ignore */ scheduleCode)) as ScheduleCode;
+    const parsed = new URL(adminUrl ?? "");
+    if (!["localhost", "127.0.0.1"].includes(parsed.hostname) || parsed.pathname !== "/prism365_ci")
+      throw new Error("TEST_DATABASE_ADMIN_URL must point to a disposable prism365_ci database.");
+    bootstrap = new Pool({ connectionString: parsed.toString(), connectionTimeoutMillis: 5_000 });
+    const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
+    createdAppRole = existing.rowCount === 0;
+    await bootstrap.query(`CREATE DATABASE ${identifier(scheduleDatabase)}`);
+    parsed.pathname = `/${scheduleDatabase}`;
+    await runPostgresMigrations({
+      adminUrl: parsed.toString(),
+      appPassword: syntheticPassword,
+      scopes: [],
+    });
+    await bootstrap.query(
+      `CREATE ROLE ${identifier(memberRole)} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${syntheticPassword}' IN ROLE prism365_app`,
+    );
+    parsed.username = memberRole;
+    parsed.password = syntheticPassword;
+    database = new PostgresModuleDatabase({ connectionString: parsed.toString() });
+    await database.verify();
+  }, 60_000);
+
+  afterAll(async () => {
+    await database?.close();
+    if (!bootstrap) return;
+    try {
+      await bootstrap.query(`DROP DATABASE IF EXISTS ${identifier(scheduleDatabase)} WITH (FORCE)`);
+      await bootstrap.query(`DROP ROLE IF EXISTS ${identifier(memberRole)}`);
+      if (createdAppRole) await bootstrap.query("DROP ROLE IF EXISTS prism365_app");
+    } finally {
+      await bootstrap.end();
+    }
+  }, 30_000);
+
+  it("keeps both of two saves of different audits", async () => {
+    const { builtInAudits, readStoredAuditSchedule, writeAuditSchedule } = schedule;
+    // Each save pauses after reading the setting, so without the row lock both would read the
+    // same old value and the second write would erase the first.
+    const slow = (sql: SqlClient): SqlClient => ({
+      async query<T extends object>(text: string, params?: readonly unknown[]) {
+        const result = await sql.query<T>(text, params);
+        if (text.includes("FROM prism365_preference"))
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        return result;
+      },
+    });
+    const save = (audits: Record<string, "daily" | "weekly">) =>
+      database.tenant(tenant, (sql) =>
+        writeAuditSchedule(slow(sql), tenant, { audits }, actor, builtInAudits),
+      );
+    // First when no setting exists yet, then again once it does.
+    await Promise.all([
+      save({ "accounts.inactive": "daily" }),
+      save({ "guests.review": "weekly" }),
+    ]);
+    await Promise.all([
+      save({ "licenses.reclaim": "daily" }),
+      save({ "mfa.registration": "weekly" }),
+    ]);
+    const stored = await database.tenant(tenant, (sql) => readStoredAuditSchedule(sql, tenant));
+    expect(stored.audits).toMatchObject({
+      "accounts.inactive": "daily",
+      "guests.review": "weekly",
+      "licenses.reclaim": "daily",
+      "mfa.registration": "weekly",
+    });
+  }, 30_000);
+});

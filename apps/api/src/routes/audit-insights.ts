@@ -1,9 +1,13 @@
 import {
+  auditReadScope,
   auditScheduleChanges,
   buildAuditTrend,
   builtInAudits,
   findAudit,
+  knownAuditSchedule,
   readAuditSchedule,
+  readStoredAuditSchedule,
+  type StoredAuditSchedule,
   readTrendPoints,
   scheduledAuditCount,
   writeAuditSchedule,
@@ -17,6 +21,7 @@ import {
 } from "@prism365/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { scheduleLimits } from "../audit-schedule.ts";
 import { auditUnavailableMessage } from "../audits.ts";
 import type { RouteContext } from "./context.ts";
 
@@ -65,20 +70,19 @@ export function registerAuditInsightRoutes(app: FastifyInstance, context: RouteC
     if (!session) return reply.status(401).send({ error: "authentication_required" });
     const { audits, modules } = context;
     if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
-    const schedule = await modules.database.tenant(session.tenantId, (sql) =>
-      readAuditSchedule(sql, session.tenantId, builtInAudits),
+    const stored = await modules.database.tenant(session.tenantId, (sql) =>
+      readStoredAuditSchedule(sql, session.tenantId),
     );
-    return auditScheduleSettingsSchema.parse({
-      audits: schedule,
-      collecting: context.collectingAdmin() !== null,
-    });
+    return settingsOf(stored);
   });
 
   // Changes the audits the body names and leaves the others as they are, so two pages saving
   // different audits never undo each other. An id that is not a known audit is dropped. Turning
-  // an audit on needs the saving administrator to be able to run it now, by the Run button's
-  // rule: a schedule is never a way to start reads one could not start oneself. Turning one off
-  // is always allowed. The CSRF check is the global hook's.
+  // an audit on, or changing its cadence, needs the saving administrator to be able to run it
+  // now, by the Run button's rule, and stores the permissions their own sign-in granted among its
+  // packs: its scheduled runs read with no more than those, whoever's sign-in they use. You can
+  // schedule only what you could run yourself, and a schedule never reads more than you could.
+  // Turning one off is always allowed. The CSRF check is the global hook's.
   app.post("/v1/settings/audit-schedule", async (request, reply) => {
     const session = await context.sessionFor(request);
     if (!session) return reply.status(401).send({ error: "authentication_required" });
@@ -127,11 +131,22 @@ export function registerAuditInsightRoutes(app: FastifyInstance, context: RouteC
         { audits: Object.fromEntries(changes.map((change) => [change.auditId, change.frequency])) },
         session.actorId,
         builtInAudits,
-      ),
+        {
+          name: session.displayName ?? null,
+          grants: (audit) =>
+            auditReadScope(audit, context.settings.enabledFeatures, session.scopes).granted,
+        },
+      ).then(() => readStoredAuditSchedule(sql, session.tenantId)),
     );
-    return auditScheduleSettingsSchema.parse({
-      audits: saved,
-      collecting: context.collectingAdmin() !== null,
-    });
+    return settingsOf(saved);
   });
+
+  // Every audit with its frequency, whether collection is on, and the scheduled audits that read
+  // less than a fully granted manual run would.
+  const settingsOf = (stored: StoredAuditSchedule) =>
+    auditScheduleSettingsSchema.parse({
+      audits: knownAuditSchedule(stored, builtInAudits),
+      collecting: context.collectingAdmin() !== null,
+      limits: scheduleLimits(stored, builtInAudits, context.settings.enabledFeatures),
+    });
 }

@@ -296,7 +296,12 @@ describe("who may schedule an audit", () => {
     (
       await h.database.tenant(tenantId, (sql) =>
         sql.query<{
-          value: { audits: Record<string, string>; scheduledBy: Record<string, string> };
+          value: {
+            audits: Record<string, string>;
+            scheduledBy: Record<string, string>;
+            grants?: Record<string, string[]>;
+            names?: Record<string, string>;
+          };
         }>("SELECT value FROM prism365_preference WHERE tenant_id=$1 AND key='audits.schedule'", [
           tenantId,
         ]),
@@ -380,6 +385,41 @@ describe("who may schedule an audit", () => {
     );
     expect(same.statusCode).toBe(200);
     expect(changes().at(-1)?.event).toMatchObject({ changes: [] });
+  });
+
+  it("checks a cadence change too, and leaves who scheduled an unchanged audit alone", async () => {
+    expect(
+      (await h.post("/v1/settings/audit-schedule", { audits: { "accounts.inactive": "daily" } }))
+        .statusCode,
+    ).toBe(200);
+    // The other administrator cannot run it, so cannot move it to weekly either.
+    const moved = await h.post(
+      "/v1/settings/audit-schedule",
+      { audits: { "accounts.inactive": "weekly" } },
+      other,
+    );
+    expect(moved.statusCode).toBe(403);
+    expect((await stored())?.audits["accounts.inactive"]).toBe("daily");
+    // Sent unchanged next to a real change, it keeps its scheduler and that scheduler's grants.
+    const both = await h.post(
+      "/v1/settings/audit-schedule",
+      { audits: { "accounts.inactive": "daily", "licenses.reclaim": "weekly" } },
+      other,
+    );
+    expect(both.statusCode).toBe(200);
+    const value = await stored();
+    expect(value?.scheduledBy).toMatchObject({
+      "accounts.inactive": actorId,
+      "licenses.reclaim": otherActorId,
+    });
+    expect(value?.grants).toMatchObject({
+      "accounts.inactive": ["User.Read.All", "AuditLog.Read.All"],
+      "licenses.reclaim": ["User.Read.All"],
+    });
+    expect(value?.names).toMatchObject({
+      "accounts.inactive": "Synthetic admin",
+      "licenses.reclaim": "Other admin",
+    });
   });
 });
 

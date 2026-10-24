@@ -122,9 +122,19 @@ export const auditScheduleSchema = z.object({
 });
 export type AuditSchedule = z.infer<typeof auditScheduleSchema>;
 
-// What the settings route returns: every audit with its frequency, and whether collection is on,
-// because nothing runs on a schedule while it is off.
+// A scheduled audit that reads less than a fully granted manual run would: it reads only with the
+// permissions the administrator who scheduled it had granted then (`by`, their name, null when
+// the entry is older than names), so these are left out.
+export const auditScheduleLimitSchema = z.object({
+  by: text.nullable(),
+  without: z.array(z.string().max(100)).max(20),
+});
+export type AuditScheduleLimit = z.infer<typeof auditScheduleLimitSchema>;
+
+// What the settings route returns: every audit with its frequency, whether collection is on
+// (nothing runs on a schedule while it is off), and the scheduled audits that read less.
 export const auditScheduleSettingsSchema = auditScheduleSchema.extend({
   collecting: z.boolean(),
+  limits: z.record(auditIdSchema, auditScheduleLimitSchema).default({}),
 });
 export type AuditScheduleSettings = z.infer<typeof auditScheduleSettingsSchema>;
