@@ -25,14 +25,17 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "test": "vitest run",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "demo": "npm run build:demo && npm run preview --workspace @prism365/web -- --outDir dist-demo"
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p scripts/setup/tsconfig.json",
+    "demo": "npm run build:demo && npm run preview --workspace @prism365/web -- --outDir dist-demo",
+    "setup": "node scripts/setup/main.ts"
   },
   "devDependencies": {
+    "@azure/msal-node": "7.1.0",
     "@biomejs/biome": "2.5.15",
     "@types/node": "26.6.5",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vitest": "5.0.4"
+    "vitest": "5.0.4",
+    "zod": "4.6.7"
   }
 }

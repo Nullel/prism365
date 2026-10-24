@@ -93,9 +93,18 @@ npm install
 npm run demo
 ```
 
-That builds the demo described above and serves it at `http://localhost:4173`. To connect a tenant, follow
-[Setup](docs/SETUP.md): it covers the app registration, the Docker install with PostgreSQL and
-HTTPS, and each feature's permissions.
+That builds the demo described above and serves it at `http://localhost:4173`.
+
+To connect your own tenant, one command registers the Entra app, makes its certificate and
+writes `.env`; it shows its plan and asks before changing anything:
+
+```bash
+npm run setup -- --tenant contoso.onmicrosoft.com
+```
+
+Then open the admin consent link it prints, and start the Docker install with
+`scripts/docker-live.sh init` and `scripts/docker-live.sh up`. [Setup](docs/SETUP.md) covers
+each step, the manual path, and what each feature needs.
 
 ## Documentation
 

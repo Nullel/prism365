@@ -334,6 +334,10 @@ export function createApp(options: AppOptions = {}) {
     )
       return;
     const session = await sessionFor(request);
+    // The setup checklist also answers without a session, so an installation that cannot sign
+    // anyone in yet can still say what is missing. It then tells no more than /v1/session; a
+    // signed-in request goes through every check below like any other.
+    if (!session && pathname === "/v1/setup/status") return;
     if (!session)
       return reply.status(401).send({
         error: "authentication_required",
@@ -1490,6 +1494,7 @@ export function createApp(options: AppOptions = {}) {
           : "secret",
       certificate: config.certificate ? { ...config.certificate } : null,
       durableStorage: Boolean(config.databaseUrl || config.moduleDataDir),
+      durableSessions: store.durable,
       handoffRetentionDays: config.handoffRetentionDays ?? DEFAULT_HANDOFF_RETENTION_DAYS,
     },
     store,
