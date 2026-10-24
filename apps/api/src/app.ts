@@ -58,8 +58,8 @@ import {
   personRecordSchema,
   personSigninPageSchema,
   queryAuditRows,
-  scopeFileSuffix,
   type SystemAlert,
+  scopeFileSuffix,
   serviceHealthStatusSchema,
   sessionSchema,
   signinSummarySchema,
@@ -110,7 +110,8 @@ import { MemoryStateStore, type SqlClient, type StateStore } from "@prism365/sto
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { auditExportParamsSchema, auditExportQuery } from "./audit-export.ts";
-import { AuditRunner } from "./audits.ts";
+import { AuditScheduler, type AuditSchedulerOptions } from "./audit-schedule.ts";
+import { AuditRunner, auditUnavailableMessage } from "./audits.ts";
 import {
   type AppConfig,
   DEFAULT_HANDOFF_RETENTION_DAYS,
@@ -143,6 +144,11 @@ export interface AppOptions {
   modules?: ModuleRuntime;
   // Defaults to a runner on the module database. Tests pass one with a short time limit.
   audits?: AuditRunner;
+  // Timing for scheduled audits. Tests pass their own clock and timers.
+  auditSchedule?: Pick<
+    AuditSchedulerOptions,
+    "now" | "intervalMilliseconds" | "startDelayMilliseconds" | "timers" | "log"
+  >;
 }
 
 function readCookie(request: FastifyRequest, name: string) {
@@ -583,6 +589,17 @@ export function createApp(options: AppOptions = {}) {
       }
       // An explicit start retries a session Microsoft refused before.
       refusedSessions.delete(digest(handle));
+      // Start again from the session already collecting keeps that binding: rebinding would
+      // count as collection passing to someone else and stop the scheduled run it is reading
+      // with. A binding Microsoft refused is replaced, so the start retries it.
+      const current = collecting;
+      if (
+        current &&
+        current.sessionKey === digest(handle) &&
+        !current.refused &&
+        modules.scheduler.status().state === "collecting"
+      )
+        return;
       bindCollection(handle, session);
     });
     void modules.scheduler.tick().catch(() => {});
@@ -1151,8 +1168,9 @@ export function createApp(options: AppOptions = {}) {
   const packPermission = (id: string) =>
     permissionPacks.find((pack) => pack.id === id)?.permission ?? null;
   // An audit is available when every pack it requires is enabled (the pack itself, not just a
-  // permission another enabled pack happens to share) and the session granted their permissions.
-  const auditAvailability = (audit: Audit, session: IdentitySession): AuditAvailability => {
+  // permission another enabled pack happens to share) and the scopes granted their permissions.
+  // The scopes are a session's, or the collecting credential's for a scheduled run.
+  const auditAvailabilityFor = (audit: Audit, scopes: readonly string[]): AuditAvailability => {
     const enabledPacks = new Set<string>(config.enabledFeatures);
     const notEnabledPacks = audit.packs.filter((pack) => !enabledPacks.has(pack));
     if (notEnabledPacks.length > 0)
@@ -1163,7 +1181,7 @@ export function createApp(options: AppOptions = {}) {
         enable: notEnabledPacks,
       };
     const { permissions } = auditDefinition(audit);
-    const granted = new Set(auditReadScope(audit, config.enabledFeatures, session.scopes).granted);
+    const granted = new Set(auditReadScope(audit, config.enabledFeatures, scopes).granted);
     const missing = permissions.filter((permission) => !granted.has(permission));
     if (missing.length > 0)
       return {
@@ -1174,21 +1192,51 @@ export function createApp(options: AppOptions = {}) {
       };
     return { state: "available", missing: [], grantFeature: null, enable: [] };
   };
+  const auditAvailability = (audit: Audit, session: IdentitySession) =>
+    auditAvailabilityFor(audit, session.scopes);
   // Audits read whole directories, so they get the background reader's budgets.
-  const auditGraph = (session: IdentitySession, handle: string) => {
-    if (!identity) throw new Error("Live mode is not configured.");
-    const permitted = new Set(enabledPermissions());
-    const scopes = session.scopes.filter((scope) => permitted.has(scope));
-    const client = new GraphHttpClient({
+  const auditGraphClient = (getAccessToken: () => Promise<string>) =>
+    new GraphHttpClient({
       requestTimeoutMilliseconds: 60_000,
       maxResponseBytes: 8_388_608,
       maxRetries: 3,
       maxRetryWaitMilliseconds: 30_000,
-      getAccessToken: () => identity.accessToken(handle, scopes),
+      getAccessToken,
       ...(options.graphFetch ? { fetchImplementation: options.graphFetch } : {}),
     });
+  const auditGraph = (session: IdentitySession, handle: string) => {
+    if (!identity) throw new Error("Live mode is not configured.");
+    const permitted = new Set(enabledPermissions());
+    const scopes = session.scopes.filter((scope) => permitted.has(scope));
+    const client = auditGraphClient(() => identity.accessToken(handle, scopes));
     return { client, scopes };
   };
+  // Scheduled audits (docs/audits.md, section 15): due audits run one at a time on the sign-in
+  // collection uses, read from the live credential here, so none runs while collection is off.
+  const auditSchedule =
+    audits && modules
+      ? new AuditScheduler({
+          runner: audits,
+          database: modules.database,
+          audits: builtInAudits,
+          credential: () => collecting,
+          enabledPacks: config.enabledFeatures,
+          availability: auditAvailabilityFor,
+          graphClient: auditGraphClient,
+          ledger: (tenantId, actorId, event) => store.appendAudit(tenantId, actorId, event),
+          ...options.auditSchedule,
+        })
+      : null;
+  if (auditSchedule && modules) {
+    auditSchedule.start();
+    // Once shortly after collection starts, so a due audit does not wait a whole tick. When
+    // collection stops or passes to another administrator, a scheduled run reading on the old
+    // sign-in stops at once.
+    modules.scheduler.subscribe((event) => {
+      if (event.type === "collection.bound") auditSchedule.soon();
+      if (event.type === "collection.unbound") auditSchedule.collectionEnded();
+    });
+  }
   const auditsUnavailable = {
     error: "audits_unavailable",
     message: "Audits need live mode with module storage, and a signed-in administrator.",
@@ -1240,10 +1288,7 @@ export function createApp(options: AppOptions = {}) {
     if (availability.state !== "available")
       return reply.status(403).send({
         error: availability.state === "not_enabled" ? "feature_not_enabled" : "missing_consent",
-        message:
-          availability.state === "not_enabled"
-            ? `This installation has not enabled ${availability.enable.join(", ") || availability.missing.join(", ")}. Add it to ENABLED_READ_FEATURES and restart.`
-            : `Your session has not granted ${availability.missing.join(", ")}. Grant access and run it again.`,
+        message: auditUnavailableMessage(availability),
         availability,
       });
     const id = audit.definition.id;
@@ -1284,9 +1329,15 @@ export function createApp(options: AppOptions = {}) {
     }
     if (!run)
       return reply.status(409).send({ error: "run_unavailable", message: "Reload the page." });
+    // A Run that joined a scheduled run in progress shares its end, and a scheduled run stops
+    // when collection stops: the administrator is told, so a stopped result is no surprise.
+    const message =
+      !result.started && run.trigger === "schedule"
+        ? "This audit was already running on its schedule, so your Run joined that run. It stops if collection stops; run it again then."
+        : null;
     return reply
       .status(result.started ? 202 : 200)
-      .send(auditStartSchema.parse({ run, started: result.started }));
+      .send(auditStartSchema.parse({ run, started: result.started, message }));
   });
 
   app.get("/v1/audits/:auditId/runs", async (request, reply) => {
@@ -1743,8 +1794,12 @@ export function createApp(options: AppOptions = {}) {
   });
 
   app.addHook("onClose", async () => {
+    // No scheduled audit starts from here on.
+    auditSchedule?.stop();
     // Audits first: an interrupted run is recorded before the database closes.
     await audits?.close();
+    // A scheduled pass waiting on a run sees it stopped and returns.
+    await auditSchedule?.settled();
     if (options.modules) {
       await options.modules.scheduler.stop();
       await options.modules.database.close();

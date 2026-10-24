@@ -1,10 +1,10 @@
 import {
   type AttentionItem,
   type AttentionList,
-  attentionListSchema,
   type AttentionPreferences,
   type AttentionReviewState,
   type AttentionSettings,
+  attentionListSchema,
   attentionSettingsSchema,
   type PrismSession,
   type SystemAlert,

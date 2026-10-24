@@ -46,6 +46,8 @@ export class DelegatedSessionCredential implements CollectionCredential {
   readonly kind = "delegated" as const;
   readonly tenantId: string;
   readonly actorId: string;
+  // The administrator's name when the session knows it, for runs started on their sign-in.
+  readonly displayName: string | null;
   readonly sessionKey: string;
   readonly #identity: IdentityService;
   readonly #handle: string;
@@ -62,6 +64,7 @@ export class DelegatedSessionCredential implements CollectionCredential {
     this.#permitted = permitted;
     this.tenantId = session.tenantId;
     this.actorId = session.actorId;
+    this.displayName = session.displayName;
     this.sessionKey = digest(handle);
   }
 
@@ -127,6 +130,7 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
           "prism365_attention",
           "prism365_preference",
           "prism365_audit_run",
+          "prism365_audit_trend",
           "prism365_handoff",
           "prism365_receipt",
           "prism365_receipt_item",

@@ -1,5 +1,13 @@
-import type { AuditRow, AuditRun, AuditRunDetail, AuditSummaryItem } from "@prism365/contracts";
+import {
+  type AuditRow,
+  type AuditRun,
+  type AuditRunDetail,
+  type AuditRunTrigger,
+  type AuditSummaryItem,
+  auditRunTriggerSchema,
+} from "@prism365/contracts";
 import type { SqlClient } from "@prism365/storage";
+import { auditTrendTiles } from "./trend.ts";
 
 // Audit runs in prism365_audit_run. Every query is tenant-scoped twice: by the transaction's
 // row-security setting and by the tenant_id predicate.
@@ -11,7 +19,7 @@ export const KEEP_FAILED_RUNS = 5;
 
 const summaryColumns = `id, audit_id, audit_version, status, complete, started_at, finished_at,
   started_by, started_by_name, error_code, error_message, summary, notes, row_count, run_scope,
-  domain_counts`;
+  domain_counts, trigger`;
 
 interface RunRecord {
   id: string;
@@ -30,6 +38,7 @@ interface RunRecord {
   row_count: number;
   run_scope: unknown;
   domain_counts: unknown;
+  trigger: string | null;
   result_rows?: unknown;
 }
 
@@ -64,6 +73,7 @@ function toRun(row: RunRecord): AuditRun {
           typeof (item as { accounts?: unknown }).accounts === "number",
       )
       .slice(0, 1_000),
+    trigger: auditRunTriggerSchema.catch("manual").parse(row.trigger),
   };
 }
 
@@ -85,12 +95,14 @@ export async function insertRun(
     startedBy: { id: string; name: string | null };
     // The account domains this run is limited to; null or empty for every domain.
     scope?: readonly string[] | null;
+    // Who asked for the run: an administrator, or the audit's schedule. Manual by default.
+    trigger?: AuditRunTrigger;
   },
 ): Promise<AuditRun> {
   const result = await sql.query<RunRecord>(
     `INSERT INTO prism365_audit_run (id, tenant_id, audit_id, audit_version, status, started_at,
-       started_by, started_by_name, run_scope)
-     VALUES ($1,$2,$3,$4,'running',$5,$6,$7,$8::jsonb)
+       started_by, started_by_name, run_scope, trigger)
+     VALUES ($1,$2,$3,$4,'running',$5,$6,$7,$8::jsonb,$9)
      RETURNING ${summaryColumns}`,
     [
       run.id,
@@ -101,6 +113,7 @@ export async function insertRun(
       run.startedBy.id,
       run.startedBy.name?.slice(0, 500) ?? null,
       run.scope && run.scope.length > 0 ? JSON.stringify([...run.scope].sort()) : null,
+      run.trigger ?? "manual",
     ],
   );
   const row = result.rows[0];
@@ -120,7 +133,9 @@ export type RunOutcome =
   | { status: "failed"; code: string; message: string };
 
 // Records how a run ended. Only a run still marked running is changed, so a run that was
-// already closed (timed out, or marked interrupted) keeps its first outcome.
+// already closed (timed out, or marked interrupted) keeps its first outcome. A run that
+// succeeded, complete or not, also leaves its trend point, in the same transaction as its
+// result: a result storage refuses leaves no point, and a failed run never has one.
 export async function finishRun(
   sql: SqlClient,
   tenantId: string,
@@ -152,12 +167,53 @@ export async function finishRun(
     ],
   );
   const row = result.rows[0];
-  return row ? toRun(row) : null;
+  if (!row) return null;
+  if (outcome.status === "succeeded") {
+    const scope = scopeOf(row.run_scope);
+    await sql.query(
+      `INSERT INTO prism365_audit_trend (tenant_id, run_id, audit_id, audit_version, finished_at,
+         complete, run_scope, tiles, row_count, trigger)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10)
+       ON CONFLICT (tenant_id, run_id) DO NOTHING`,
+      [
+        tenantId,
+        row.id,
+        row.audit_id,
+        row.audit_version,
+        iso(row.finished_at ?? finishedAt),
+        row.complete,
+        scope ? JSON.stringify(scope) : null,
+        JSON.stringify(auditTrendTiles(outcome.summary)),
+        row.row_count,
+        auditRunTriggerSchema.catch("manual").parse(row.trigger),
+      ],
+    );
+  }
+  return toRun(row);
+}
+
+// The newest start of any run of one audit, whatever its outcome or trigger: what a schedule
+// counts from. null when the audit never ran.
+export async function latestRunStart(
+  sql: SqlClient,
+  tenantId: string,
+  auditId: string,
+): Promise<Date | null> {
+  const result = await sql.query<{ started_at: Date | string }>(
+    `SELECT started_at FROM prism365_audit_run
+      WHERE tenant_id=$1 AND audit_id=$2
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1`,
+    [tenantId, auditId],
+  );
+  const row = result.rows[0];
+  return row ? new Date(row.started_at) : null;
 }
 
 // Deletes old runs of one audit: succeeded runs beyond the newest `keep`, failed runs beyond the
 // newest `keepFailed`. The two are counted apart, so a string of failures (throttling, an expired
-// session) can never push out the last good result. Running runs are never deleted.
+// session) can never push out the last good result. Running runs are never deleted, and neither
+// are trend points: they live in their own table and outlast the runs they came from.
 export async function pruneRuns(
   sql: SqlClient,
   tenantId: string,

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Receipt } from "@prism365/contracts";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // The import route's store, run here so the race between imports of one id is tried on real
 // PostgreSQL, where transactions truly overlap, as well as on PGlite.
 import { insertReceipt } from "../../../apps/api/src/handoff-store.ts";
