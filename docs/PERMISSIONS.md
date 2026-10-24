@@ -61,6 +61,38 @@ and granted scopes, then reports source-specific failures; it does not yet imple
 role/license/service probes. A provider 403 is classified as uncertain, not automatically missing
 consent. See [Compatibility](COMPATIBILITY.md).
 
+## The setup script
+
+`npm run setup` (`scripts/setup/`, see [Setup](SETUP.md)) is the only code in the repository
+that writes to Microsoft, and only when an administrator runs it and confirms its plan. It signs
+in with a device code through Microsoft's public client for the Microsoft Graph command line
+tools (`14d82eec-204b-4c2f-b7e8-296a70dab67e`), asking for delegated `Application.ReadWrite.All`
+and `User.Read`, and keeps the token in memory only. With it, it creates or updates Prism365's
+own registration and service principal and adds a certificate. It never grants consent to that
+registration, never creates a secret, never removes consent, and never asks for an application
+permission. It never looks a registration up by label or name: it works on the one named with
+`--app-id` or by `ENTRA_CLIENT_ID` in the install's settings, or creates one. It uses an existing
+registration only when the signed-in administrator is its only owner (and the only owner of its
+service principal, unless they choose to keep the others), and neither has a client secret, a
+federated credential, an application permission, consent beyond Prism365's permissions, or
+another sign-in platform. Those checks are a snapshot: owners can change a registration later.
+
+That `Application.ReadWrite.All` is the one exception to the rule below against `*.ReadWrite.*`
+permissions. It is never on Prism365's registration or held by the running app, but the consent
+for it does not end with the run: Microsoft keeps it for the command line tools until it is
+revoked. Consent for yourself only (leave Consent on behalf of your organization unticked, which
+would let every account in the tenant use the tool with it), and revoke it once setup is done
+([Setup](SETUP.md#revoke-the-setups-access) has the steps). The setup prints that reminder at
+the end of every run.
+
+The registration it makes requests, as delegated Microsoft Graph permissions, `openid`,
+`profile`, `offline_access` and `User.Read` for sign-in (MSAL asks for the first three on every
+sign-in, and `offline_access` is what keeps a session and collection going), plus the permission
+of each pack in its feature list. By default that list is the core packs; the consent-batch
+packs are added only when named or with `--features all`, and `directory.permission-grants.read`
+(`Directory.Read.All`) only when named. The runtime still uses only the packs in
+`ENABLED_READ_FEATURES`.
+
 ## Not approved for the MVP
 
 - Any `*.ReadWrite.*` permission.
@@ -69,7 +101,7 @@ consent. See [Compatibility](COMPATIBILITY.md).
 - Broad Purview `AuditLogsQuery.Read.All` without a reviewed feature case.
 - A permission added only because it makes an implementation simpler.
 
-## Future lifecycle action packs — disabled
+## Future lifecycle action packs (disabled)
 
 The preview contracts name these permissions so an administrator can understand the eventual
 impact. They are not requested by the current app, are not present in the executable read catalog,
