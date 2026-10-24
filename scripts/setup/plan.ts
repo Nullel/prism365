@@ -1,6 +1,7 @@
 import { type KeyObject, X509Certificate } from "node:crypto";
 import { relative } from "node:path";
-import { type AccessList, type ModeDecision, modeDecision } from "./acl.ts";
+import { supportedReadFeatures } from "../../apps/api/src/config.ts";
+import { type AccessList, modeDecision } from "./acl.ts";
 import {
   type CertificateFiles,
   certificateKey,
@@ -8,6 +9,8 @@ import {
   keyProblem,
   type LocalSecrets,
   ownerModes,
+  type SetupRecord,
+  thumbprintOf,
   type WriteModes,
 } from "./certificate.ts";
 import {
@@ -27,21 +30,46 @@ import {
   type RequestedPermission,
   type RequiredResourceAccess,
   requestedPermissions,
+  SIGN_IN_PERMISSIONS,
 } from "./permissions.ts";
 
-// The fixed tag that marks the registration this script made, so a re-run finds it again. The
-// tag is public: anyone who may register apps can put it on theirs, so it only ever narrows the
-// search. What makes a registration safe to adopt is checked separately (adoptionProblems).
+// A label on registrations this setup creates. It is only a label: the setup never looks a
+// registration up by it, because anyone allowed to register apps can put it on theirs. The
+// registration to work on is the one named by --app-id, or the one this install's .env uses.
 export const SETUP_TAG = "prism365-setup";
+// A second label on a create, unique to the run, so an answer Microsoft loses can be followed up
+// by looking for exactly that registration. It is removed when the run finishes.
+export const RUN_TAG_PREFIX = "prism365-setup-run-";
 const DAY = 86_400_000;
+
+export interface Owner {
+  id: string;
+  name: string | null;
+}
 
 // What the setup learned about an existing registration beyond its own properties.
 export interface RegistrationFacts {
-  // Object IDs of its owners, and whether the list was read to the end.
-  owners: string[];
+  // Its owners, and whether the list was read to the end.
+  owners: Owner[];
   ownersComplete: boolean;
-  // Application permissions already granted to its service principal (null: it has none yet).
-  appRoleAssignments: { resourceDisplayName?: string | null | undefined }[] | null;
+  // Federated identity credentials: another identity provider's tokens accepted as the app.
+  federatedCredentials: number;
+  // Its service principal (enterprise application), or null when it has none yet.
+  servicePrincipal: {
+    id: string;
+    owners: Owner[];
+    ownersComplete: boolean;
+    passwordCredentials: number;
+    keyCredentials: unknown[];
+    // Application permissions granted to it.
+    appRoleAssignments: { resourceDisplayName?: string | null | undefined }[];
+    // Delegated consent already granted to it (oauth2PermissionGrants).
+    grants: {
+      consentType?: string | null | undefined;
+      resourceId: string;
+      scope?: string | null | undefined;
+    }[];
+  } | null;
 }
 
 // Everything the setup read before deciding, gathered by setup.ts.
@@ -49,12 +77,12 @@ export interface SetupState {
   options: SetupOptions;
   tenantId: string;
   admin: { id: string; userPrincipalName: string | null };
+  // The registration to work on: named by --app-id, or by ENTRA_CLIENT_ID in .env. Null means
+  // a new one is created, unless a named one is missing or invalid (missingTarget).
   application: GraphApplication | null;
-  foundBy: "tag" | "name" | "appId" | null;
-  // How many registrations matched; more than one stops the setup.
-  matches: number;
-  // Registrations carrying the tag that the signed-in administrator does not own. Never touched.
-  unownedTagged: { appId: string; displayName: string | null }[];
+  foundBy: "appId" | "env" | null;
+  missingTarget: { appId: string; source: "appId" | "env" } | null;
+  invalidEnvClientId: string | null;
   registration: RegistrationFacts | null;
   servicePrincipal: boolean;
   graph: GraphServicePrincipal;
@@ -62,6 +90,7 @@ export interface SetupState {
   keyCredentials: unknown[];
   files: CertificateFiles;
   secrets: LocalSecrets;
+  record: SetupRecord;
   // Access control lists, where they can be read (Linux with getfacl); null elsewhere.
   acl: {
     directory: AccessList | null;
@@ -93,7 +122,8 @@ export type ApplicationStep =
       addedRedirectUris: string[];
       addedPermissions: string[];
       removedPermissions: string[];
-      addTag: boolean;
+      // Run labels a run that stopped halfway left on the registration.
+      removedLabels: string[];
     }
   | { action: "keep"; id: string; appId: string };
 
@@ -110,8 +140,11 @@ export interface SetupPlan {
   servicePrincipal: "create" | "keep";
   certificate: CertificateStep;
   writeModes: WriteModes;
-  restrictDirectory: boolean;
-  restrictPrivateKey: boolean;
+  // New permission bits for the secrets directory and the key, or null to leave them.
+  restrictDirectory: number | null;
+  restrictPrivateKey: number | null;
+  // ACL entries a rotation could not give the files last time, to apply now.
+  reapplyAcl: { privateKey: string[]; certificate: string[] } | null;
   env: { source: SetupState["env"]["source"]; changes: EnvChange[]; write: boolean };
   blockers: string[];
   warnings: string[];
@@ -182,30 +215,59 @@ function managedBy(secrets: LocalSecrets): (certificate: X509Certificate) => boo
     certificates.some((raw) => Buffer.compare(raw, certificate.raw) === 0);
 }
 
-function otherCertificates(state: SetupState): string[] {
-  const managed = managedBy(state.secrets);
-  return state.keyCredentials
-    .map((item) => item as { keyId?: unknown; key?: unknown; displayName?: unknown })
-    .filter((credential) => {
-      if (typeof credential.key !== "string" || credential.key.length === 0) return true;
-      try {
-        return !managed(new X509Certificate(Buffer.from(credential.key, "base64")));
-      } catch {
-        return true;
-      }
-    })
-    .map((credential) =>
-      typeof credential.displayName === "string" && credential.displayName
-        ? `${terminalText(credential.displayName, 90)} (${terminalText(String(credential.keyId), 40)})`
-        : terminalText(String(credential.keyId), 40),
-    );
+interface ForeignCertificate {
+  label: string;
+  // The certificate the setup's last rotation replaced, once its .previous files are gone.
+  replaced: boolean;
 }
+
+function foreignCertificates(
+  state: SetupState,
+  credentials: readonly unknown[],
+): ForeignCertificate[] {
+  const managed = managedBy(state.secrets);
+  return credentials
+    .map((item) => item as { keyId?: unknown; key?: unknown; displayName?: unknown })
+    .flatMap((credential) => {
+      let certificate: X509Certificate | null = null;
+      if (typeof credential.key === "string" && credential.key.length > 0)
+        try {
+          certificate = new X509Certificate(Buffer.from(credential.key, "base64"));
+        } catch {
+          certificate = null;
+        }
+      if (certificate && managed(certificate)) return [];
+      const label =
+        typeof credential.displayName === "string" && credential.displayName
+          ? `${terminalText(credential.displayName, 90)} (${terminalText(String(credential.keyId), 40)})`
+          : terminalText(String(credential.keyId), 40);
+      return [
+        {
+          label,
+          replaced:
+            certificate !== null &&
+            state.record.replacedThumbprint !== null &&
+            thumbprintOf(certificate) === state.record.replacedThumbprint,
+        },
+      ];
+    });
+}
+
+const ownerLabel = (owner: Owner) =>
+  owner.name ? `${terminalText(owner.name, 80)} (${owner.id})` : owner.id;
+
+// Every delegated permission Prism365 could ask for: sign-in, and every pack's permission.
+const prism365Permissions = new Set<string>([
+  ...SIGN_IN_PERMISSIONS,
+  ...Object.values(supportedReadFeatures),
+]);
 
 // Everything that makes an existing registration unsafe to adopt, as blockers (the setup stops
 // before any write) and, for what the administrator chose to keep, warnings. A registration is
-// adopted only when the signed-in administrator owns it and it carries nothing that would let
-// someone else sign in as Prism365 or that the consent link would grant beyond Prism365's own
-// permissions.
+// adopted only when the signed-in administrator is its only owner (or chose to keep the others)
+// and it carries nothing that lets someone else sign in as Prism365, or that the consent link, or
+// consent already given, grants beyond Prism365's own permissions. These checks are a snapshot:
+// its owners can change it afterwards, and the plan says so.
 function adoptionProblems(
   state: SetupState,
   wanted: RequiredResourceAccess,
@@ -218,23 +280,49 @@ function adoptionProblems(
   const name = terminalText(application.displayName ?? "(no name)", 120);
   const which = `"${name}" (application ID ${application.appId})`;
   const verified: string[] = [];
-
-  if (state.foundBy === "name")
-    blockers.push(
-      `A registration named ${which} exists, but it has no ${SETUP_TAG} tag, so this setup did not make it. If it is the one to use, run the setup again with --app-id ${application.appId}; to create a new one instead, run it with a different --name.`,
-    );
   const facts = state.registration;
-  if (!facts?.owners.some((owner) => sameId(owner, state.admin.id)))
-    blockers.push(
-      `You are not an owner of ${which}. The setup only changes a registration you own, so that nobody can hand Prism365 a registration they control. If it is Prism365's, ask one of its owners to add you under Owners in the Entra admin center; otherwise run the setup with a different --name to create a new one.`,
-    );
-  else verified.push("you own it");
+  const principal = facts?.servicePrincipal ?? null;
 
-  const secrets = application.passwordCredentials?.length ?? 0;
+  const owners = facts?.owners ?? [];
+  const isMine = (owner: Owner) => sameId(owner.id, state.admin.id);
+  if (!owners.some(isMine) || !facts?.ownersComplete)
+    blockers.push(
+      `You are not an owner of ${which}. The setup only works on a registration you own. Ask one of its owners to add you under Owners in the Entra admin center, or run the setup with --app-id for another registration, or with neither --app-id nor ENTRA_CLIENT_ID in .env to create a new one.`,
+    );
+  const others = [
+    ...owners
+      .filter((owner) => !isMine(owner))
+      .map((owner) => `${ownerLabel(owner)} of the registration`),
+    ...(principal?.owners ?? [])
+      .filter((owner) => !isMine(owner))
+      .map((owner) => `${ownerLabel(owner)} of its service principal`),
+  ];
+  if (principal && !principal.ownersComplete)
+    others.push("more owners of its service principal than the setup could read");
+  if (others.length > 0 && options.keepOtherOwners)
+    warnings.push(
+      `${which} has other owners: ${list(others)}. You chose to keep them. They can change the registration at any time, before or after this setup: add a secret, a redirect URI or permissions. The checks in this plan only describe it as it is now.`,
+    );
+  else if (others.length > 0)
+    blockers.push(
+      `${which} has owners besides you: ${list(others)}. Any owner can change the registration at any time, for example add a secret or a redirect URI that sends sign-ins elsewhere. Remove them under Owners in the Entra admin center (on the app registration and on the enterprise application), or run the setup again with --keep-other-owners if you trust them.`,
+    );
+  else if (owners.some(isMine)) verified.push("you are its only owner");
+
+  const secrets =
+    (application.passwordCredentials?.length ?? 0) + (principal?.passwordCredentials ?? 0);
+  const federated = facts?.federatedCredentials ?? 0;
   if (secrets > 0)
     blockers.push(
-      `${which} has ${secrets === 1 ? "a client secret" : `${secrets} client secrets`}. Prism365 signs in only with its certificate, and a secret would let whoever holds it sign in as Prism365. Delete ${secrets === 1 ? "it" : "them"} under Certificates and secrets in the Entra admin center, then run the setup again.`,
+      `${which} or its service principal has ${secrets === 1 ? "a client secret" : `${secrets} client secrets`}. Prism365 signs in only with its certificate, and a secret would let whoever holds it sign in as Prism365. Delete ${secrets === 1 ? "it" : "them"} under Certificates and secrets in the Entra admin center (and on the enterprise application), then run the setup again.`,
     );
+  if (federated > 0)
+    blockers.push(
+      `${which} has ${federated === 1 ? "a federated credential" : `${federated} federated credentials`}: tokens from another identity provider that Microsoft accepts as Prism365. Delete ${federated === 1 ? "it" : "them"} under Certificates and secrets, Federated credentials, then run the setup again.`,
+    );
+  if (secrets === 0 && federated === 0)
+    verified.push("it and its service principal have no client secrets or federated credentials");
+
   const publicUris = application.publicClient?.redirectUris ?? [];
   const spaUris = application.spa?.redirectUris ?? [];
   if (publicUris.length > 0 || spaUris.length > 0 || application.isFallbackPublicClient)
@@ -256,18 +344,33 @@ function adoptionProblems(
     blockers.push(
       `${which} asks for application permissions: ${list(roles)}. Prism365 never uses application permissions, and the admin consent link would grant them. Remove them under API permissions in the Entra admin center, then run the setup again.`,
     );
-  const granted = facts?.appRoleAssignments ?? [];
-  if (granted.length > 0) {
+  const assigned = principal?.appRoleAssignments ?? [];
+  if (assigned.length > 0) {
     const resources = [
-      ...new Set(granted.map((item) => terminalText(item.resourceDisplayName ?? "an API", 80))),
+      ...new Set(assigned.map((item) => terminalText(item.resourceDisplayName ?? "an API", 80))),
     ];
     blockers.push(
-      `${which} has already been granted ${granted.length === 1 ? "an application permission" : `${granted.length} application permissions`} (on ${list(resources)}). Prism365 never uses them. Revoke them under Enterprise applications, ${name}, Permissions, Admin consent in the Entra admin center, then run the setup again.`,
+      `${which} has already been granted ${assigned.length === 1 ? "an application permission" : `${assigned.length} application permissions`} (on ${list(resources)}). Prism365 never uses them. Revoke them under Enterprise applications, ${name}, Permissions, Admin consent in the Entra admin center, then run the setup again.`,
     );
   }
-  if (roles.length === 0 && granted.length === 0)
+  if (roles.length === 0 && assigned.length === 0)
     verified.push("it has no application permissions");
-  if (secrets === 0) verified.push("no client secrets");
+
+  // Consent already given stays whatever the registration asks for now, so it is checked too.
+  const granted = new Set<string>();
+  for (const grant of principal?.grants ?? []) {
+    if (!sameId(grant.resourceId, state.graph.id)) {
+      granted.add("delegated permissions on another API");
+      continue;
+    }
+    for (const scope of (grant.scope ?? "").split(/\s+/).filter(Boolean))
+      if (!prism365Permissions.has(scope)) granted.add(terminalText(scope, 100));
+  }
+  if (granted.size > 0)
+    blockers.push(
+      `${which} has already been granted consent for ${list([...granted])}, which Prism365 does not use. Removing a permission from the registration does not take back consent already given. Revoke it under Enterprise applications, ${name}, Permissions in the Entra admin center: on the Admin consent tab choose it and Revoke permission; consent one person gave is on the User consent tab, which needs Microsoft Graph (docs/SETUP.md, Revoke the setup's access, shows the request). Then run the setup again.`,
+    );
+  else verified.push("no consent has been granted beyond Prism365's permissions");
 
   const wantedIds = wanted.resourceAccess;
   const extra = requested.flatMap((entry) =>
@@ -309,16 +412,33 @@ function adoptionProblems(
     );
   else verified.push("no redirect URIs outside its own address");
 
-  const others = otherCertificates(state);
-  if (others.length > 0 && options.keepOtherCertificates)
+  const foreign = [
+    ...foreignCertificates(state, state.keyCredentials),
+    ...foreignCertificates(state, principal?.keyCredentials ?? []).map((item) => ({
+      ...item,
+      label: `${item.label} on its service principal`,
+    })),
+  ];
+  const replaced = foreign.filter((item) => item.replaced);
+  const unknown = foreign.filter((item) => !item.replaced);
+  if (foreign.length > 0 && options.keepOtherCertificates)
     warnings.push(
-      `${which} also has certificates this setup did not make: ${list(others)}. You chose to keep them; whoever holds their private keys can sign in as Prism365.`,
+      `${which} also has certificates this setup did not make: ${list(foreign.map((item) => item.label))}. You chose to keep them; whoever holds their private keys can sign in as Prism365.`,
     );
-  else if (others.length > 0)
-    blockers.push(
-      `${which} has certificates this setup did not make: ${list(others)}. Whoever holds their private keys can sign in as Prism365. Remove them under Certificates and secrets in the Entra admin center, or run the setup again with --keep-other-certificates if they are yours.`,
+  else {
+    if (replaced.length > 0)
+      blockers.push(
+        `${list(replaced.map((item) => item.label))} on ${which} is the certificate the setup replaced in its last rotation. Remove it from the registration under Certificates and secrets in the Entra admin center, then run the setup again.`,
+      );
+    if (unknown.length > 0)
+      blockers.push(
+        `${which} has certificates this setup did not make: ${list(unknown.map((item) => item.label))}. Whoever holds their private keys can sign in as Prism365. Remove them under Certificates and secrets in the Entra admin center, or run the setup again with --keep-other-certificates if they are yours.`,
+      );
+  }
+  if (foreign.length === 0)
+    verified.push(
+      "it and its service principal have no certificates other than the ones this setup made",
     );
-  else verified.push("no certificates other than the ones this setup made");
   return verified;
 }
 
@@ -346,8 +466,9 @@ function applicationStep(state: SetupState, wanted: RequiredResourceAccess): App
     wanted,
     options.prunePermissions,
   );
+  // Run labels left by a run that stopped halfway are the setup's own; it takes them off.
   const tags = application.tags ?? [];
-  const addTag = !tags.includes(SETUP_TAG);
+  const removedLabels = tags.filter((tag) => tag.startsWith(RUN_TAG_PREFIX));
   const patch: Record<string, unknown> = {};
   if (addedRedirectUris.length > 0) {
     // The rest of `web` goes back as it was. redirectUriSettings is left out: it pairs settings
@@ -357,7 +478,7 @@ function applicationStep(state: SetupState, wanted: RequiredResourceAccess): App
   }
   if (permissions.added.length > 0 || permissions.removed.length > 0)
     patch.requiredResourceAccess = permissions.value;
-  if (addTag) patch.tags = [...tags, SETUP_TAG];
+  if (removedLabels.length > 0) patch.tags = tags.filter((tag) => !tag.startsWith(RUN_TAG_PREFIX));
   if (Object.keys(patch).length === 0)
     return { action: "keep", id: application.id, appId: application.appId };
   const scopes = state.graph.oauth2PermissionScopes;
@@ -371,7 +492,7 @@ function applicationStep(state: SetupState, wanted: RequiredResourceAccess): App
       (access) => scopes.find((scope) => sameId(scope.id, access.id))?.value ?? access.id,
     ),
     removedPermissions: permissions.removed.map((entry) => permissionName(state.graph, entry)),
-    addTag,
+    removedLabels,
   };
 }
 
@@ -464,43 +585,43 @@ function certificateStep(
   }
 }
 
-// Whether to tighten an existing file or directory, and what to say when it is left alone.
+// The new permission bits for an existing file or directory (null to leave it), and what to say
+// about bits it keeps.
 function modeStep(
   state: SetupState,
   path: string,
   mode: number | null,
   acl: AccessList | null,
   notes: string[],
-): boolean {
-  if (state.platform === "win32") return false;
-  const decision: ModeDecision = modeDecision(mode, acl);
+): number | null {
+  const decision = modeDecision(mode, acl, state.platform);
   const shown = relative(state.cwd, path) || path;
-  if (decision === "keep-acl")
+  if (decision.kept === "acl")
     notes.push(
-      `${shown} has an access control list (ACL); the setup leaves its permissions as they are.`,
+      `${shown} has an access control list (ACL), so the setup keeps its group bits (the list's mask)${decision.change !== null ? " and only removes access for everyone else" : ""}.`,
     );
-  if (decision === "keep-group")
+  if (decision.kept === "group")
     notes.push(
-      `${shown} can be read by its group (mode ${mode?.toString(8)}), which may be an access control list's mask; the setup leaves it as it is. If no ACL is meant to be there, run chmod ${path === state.files.directory ? "700" : "600"} ${shown}.`,
+      `${shown} can be read by its group (mode ${mode?.toString(8)}), which on Linux may be an access control list's mask, so the setup leaves the group bits${decision.change !== null ? " and only removes access for everyone else" : ""}. If no ACL is meant to be there, run chmod ${path === state.files.directory ? "700" : "600"} ${shown}.`,
     );
-  return decision === "tighten";
+  return decision.change;
 }
 
 export function buildPlan(state: SetupState): SetupPlan {
   const { options } = state;
   const blockers: string[] = [];
   const warnings: string[] = [];
-  if (state.matches > 1)
+  if (state.invalidEnvClientId !== null)
     blockers.push(
-      `${state.matches} app registrations match (${state.foundBy === "name" ? `by the name "${options.name}"` : `you own several with the ${SETUP_TAG} tag`}). Run the setup again with --app-id and the application ID of the one to use.`,
+      `ENTRA_CLIENT_ID in ${relative(state.cwd, options.envFile) || options.envFile} is "${terminalText(state.invalidEnvClientId, 80)}", which is not an application ID. Fix or remove it, or pass --app-id.`,
     );
-  if (options.appId && !state.application)
+  if (state.missingTarget?.source === "appId")
     blockers.push(
-      `No app registration with application ID ${options.appId} was found in this tenant.`,
+      `No app registration with application ID ${state.missingTarget.appId} was found in this tenant.`,
     );
-  if (state.unownedTagged.length > 0)
-    warnings.push(
-      `${list(state.unownedTagged.map((item) => `"${terminalText(item.displayName ?? "(no name)", 80)}" (${item.appId})`))} ${state.unownedTagged.length === 1 ? "carries" : "carry"} the ${SETUP_TAG} tag, but you do not own ${state.unownedTagged.length === 1 ? "it" : "them"}, so the setup leaves ${state.unownedTagged.length === 1 ? "it" : "them"} alone. If one of them is your Prism365 registration, stop here and ask its owner to add you as an owner.`,
+  if (state.missingTarget?.source === "env")
+    blockers.push(
+      `ENTRA_CLIENT_ID in ${relative(state.cwd, options.envFile) || options.envFile} names application ${state.missingTarget.appId}, which this tenant does not have (or you cannot see). Pass --app-id with the registration to use, or remove ENTRA_CLIENT_ID from the file to create a new one.`,
     );
   const permissions = requestedPermissions(options.features);
   const wanted = graphResourceAccess(
@@ -520,14 +641,15 @@ export function buildPlan(state: SetupState): SetupPlan {
   const credential = state.secrets.credential;
   const restrictPrivateKey =
     (credential.state === "pair" || credential.state === "keyOnly") &&
-    certificate.action !== "rotate" &&
-    modeStep(
-      state,
-      state.files.privateKey,
-      credential.privateKeyMode,
-      state.acl.privateKey,
-      warnings,
-    );
+    certificate.action !== "rotate"
+      ? modeStep(
+          state,
+          state.files.privateKey,
+          credential.privateKeyMode,
+          state.acl.privateKey,
+          warnings,
+        )
+      : null;
   const restrictDirectory = modeStep(
     state,
     state.files.directory,
@@ -535,6 +657,17 @@ export function buildPlan(state: SetupState): SetupPlan {
     state.acl.directory,
     warnings,
   );
+  // ACL entries a rotation could not copy last time, where the files still lack them.
+  const pending = state.record.pendingAcl;
+  const missing = (wanted: readonly string[], current: AccessList | null) =>
+    wanted.filter((entry) => !entry.startsWith("mask::") && !current?.entries.includes(entry));
+  const reapplyAcl =
+    pending && state.platform !== "win32"
+      ? {
+          privateKey: missing(pending.privateKey, state.acl.privateKey),
+          certificate: missing(pending.certificate, state.acl.certificate),
+        }
+      : null;
   // With a default ACL on the directory, new files take their named entries from it, and the
   // group bits of their mode become the ACL's mask: 0600 would switch those entries off.
   const writeModes =
@@ -603,6 +736,10 @@ export function buildPlan(state: SetupState): SetupPlan {
     writeModes,
     restrictDirectory,
     restrictPrivateKey,
+    reapplyAcl:
+      reapplyAcl && reapplyAcl.privateKey.length + reapplyAcl.certificate.length > 0
+        ? reapplyAcl
+        : null,
     env,
     blockers,
     warnings,
@@ -625,15 +762,21 @@ export function planText(plan: SetupPlan, state: SetupState): string {
   lines.push("");
 
   const app = plan.application;
-  const how = { tag: `its ${SETUP_TAG} tag`, name: "its name", appId: "the --app-id option" };
-  const checked = plan.verified.length > 0 ? ` The setup checked that ${list(plan.verified)}.` : "";
+  const how = {
+    appId: "named by --app-id",
+    env: `the one ${shown(state.options.envFile)} uses`,
+  };
+  const checked =
+    plan.verified.length > 0
+      ? ` The setup checked that ${list(plan.verified)}. That is how it is now: its owners can change it at any time.`
+      : "";
   if (app.action === "create")
     lines.push(
-      `App registration: create "${plan.displayName}", a single-tenant web app with implicit grant off, tagged ${SETUP_TAG}. You become its owner.`,
+      `App registration: create "${plan.displayName}", a single-tenant web app with implicit grant off, labelled ${SETUP_TAG}. You become its owner.`,
     );
   else if (app.action === "keep")
     lines.push(
-      `App registration: keep "${plan.displayName}" (application ID ${app.appId}, found by ${how[plan.foundBy ?? "tag"]}). It already has the redirect URIs and permissions below.${checked}`,
+      `App registration: keep "${plan.displayName}" (application ID ${app.appId}, ${how[plan.foundBy ?? "appId"]}). It already has the redirect URIs and permissions below.${checked}`,
     );
   else {
     const changes = [
@@ -648,12 +791,18 @@ export function planText(plan: SetupPlan, state: SetupState): string {
           ]
         : []),
       ...(app.removedPermissions.length > 0
-        ? [`remove ${list(app.removedPermissions)} (--prune-permissions)`]
+        ? [
+            `remove the ${app.removedPermissions.length === 1 ? "request" : "requests"} for ${list(app.removedPermissions)} (--prune-permissions; this removes the request only, and consent already granted stays until it is revoked in the Entra admin center)`,
+          ]
         : []),
-      ...(app.addTag ? [`tag it ${SETUP_TAG} so the next run finds it`] : []),
+      ...(app.removedLabels.length > 0
+        ? [
+            `take off the run ${app.removedLabels.length === 1 ? "label" : "labels"} ${list(app.removedLabels)} an earlier run left`,
+          ]
+        : []),
     ];
     lines.push(
-      `App registration: update "${plan.displayName}" (application ID ${app.appId}, found by ${how[plan.foundBy ?? "tag"]}): ${list(changes)}. The update sends only ${list(Object.keys(app.patch))}.${checked}`,
+      `App registration: update "${plan.displayName}" (application ID ${app.appId}, ${how[plan.foundBy ?? "appId"]}): ${list(changes)}. The update sends only ${list(Object.keys(app.patch))}.${checked}`,
     );
   }
   lines.push(`Redirect URIs: ${list(plan.redirectUris.map((uri) => terminalText(uri, 300)))}.`);
@@ -705,10 +854,19 @@ export function planText(plan: SetupPlan, state: SetupState): string {
     lines.push(
       `Certificate: keep ${shown(state.files.certificate)} (valid until ${day(certificate.notAfter)}), which is already on the registration.`,
     );
-  if (plan.restrictDirectory)
-    lines.push(`Restrict ${shown(state.files.directory)} so only you can open it (mode 700).`);
-  if (plan.restrictPrivateKey)
-    lines.push(`Restrict ${shown(state.files.privateKey)} so only you can read it (mode 600).`);
+  const bits = (mode: number) => `mode ${mode.toString(8)}`;
+  if (plan.restrictDirectory !== null)
+    lines.push(
+      `Change ${shown(state.files.directory)} to ${bits(plan.restrictDirectory)} so others cannot open it.`,
+    );
+  if (plan.restrictPrivateKey !== null)
+    lines.push(
+      `Change ${shown(state.files.privateKey)} to ${bits(plan.restrictPrivateKey)} so others cannot read it.`,
+    );
+  if (plan.reapplyAcl)
+    lines.push(
+      "Give the key and certificate the access list entries the last rotation could not copy to them.",
+    );
   lines.push("");
 
   const envFile = shown(state.options.envFile);

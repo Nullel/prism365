@@ -216,8 +216,42 @@ export const applicationSchema = z.object({
 });
 export type GraphApplication = z.infer<typeof applicationSchema>;
 
-export const directoryObjectListSchema = z.object({
-  value: z.array(z.object({ id: guid })).max(1_000),
+export const ownerListSchema = z.object({
+  value: z
+    .array(
+      z.object({
+        id: guid,
+        displayName: z.string().max(1_024).nullable().optional(),
+        userPrincipalName: z.string().max(1_024).nullable().optional(),
+      }),
+    )
+    .max(1_000),
+  "@odata.nextLink": z.string().max(16_384).optional(),
+});
+
+// Anything in a list the setup only needs to count or show: entries are kept loose.
+export const looseListSchema = z.object({
+  value: z.array(z.object({}).loose()).max(1_000),
+  "@odata.nextLink": z.string().max(16_384).optional(),
+});
+
+export const servicePrincipalCredentialsSchema = z.object({
+  passwordCredentials: z.array(z.object({}).loose()).max(1_000).nullable().optional(),
+  keyCredentials: z.array(z.unknown()).max(500).nullable().optional(),
+});
+
+export const permissionGrantListSchema = z.object({
+  value: z
+    .array(
+      z.object({
+        id: z.string().max(200),
+        consentType: z.string().max(40).nullable().optional(),
+        principalId: z.string().max(100).nullable().optional(),
+        resourceId: z.string().max(100),
+        scope: z.string().max(20_000).nullable().optional(),
+      }),
+    )
+    .max(1_000),
   "@odata.nextLink": z.string().max(16_384).optional(),
 });
 

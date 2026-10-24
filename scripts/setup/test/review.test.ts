@@ -27,7 +27,7 @@ const someoneElsesCertificate = () =>
   );
 
 describe("adopting an existing registration (H1)", () => {
-  it("never touches a tagged registration someone else owns, and makes your own instead", async () => {
+  it("never touches a tagged registration someone else made, and makes your own instead", async () => {
     const dir = await workspace();
     const tenant = new FakeTenant();
     const planted = tenant.application({
@@ -45,19 +45,18 @@ describe("adopting an existing registration (H1)", () => {
     tenant.servicePrincipal(planted.appId);
     const output: string[] = [];
     expect(await run(tenant, optionsFor(dir), dir, output)).toBe("applied");
-    expect(tenant.writes.some((request) => request.path.includes(planted.id))).toBe(false);
+    expect(tenant.requests.some((request) => request.path.includes(planted.id))).toBe(false);
     expect(planted.keyCredentials).toEqual([]);
     expect(tenant.applications).toHaveLength(2);
     const mine = tenant.applications[1];
     expect(mine?.owners).toEqual([ADMIN_ID]);
-    expect(output[0]).toContain(`but you do not own it, so the setup leaves it alone`);
     const printed = output.join("\n");
     expect(printed).toContain(`client_id=${mine?.appId}`);
     expect(printed).not.toContain(`client_id=${planted.appId}`);
   });
 
   it("stops before any write on a registration you own that carries what Prism365 must not adopt", async () => {
-    const cases: [string, (tenant: FakeTenant) => void, string][] = [
+    const cases: [string, (tenant: FakeTenant) => { appId: string }, string][] = [
       [
         "a client secret",
         (tenant) =>
@@ -87,7 +86,7 @@ describe("adopting an existing registration (H1)", () => {
       ],
       [
         "public client flows",
-        (tenant) => tenant.application({ tags: [SETUP_TAG], isFallbackPublicClient: true }),
+        (tenant) => tenant.application({ isFallbackPublicClient: true }),
         "public client flows",
       ],
       [
@@ -107,10 +106,11 @@ describe("adopting an existing registration (H1)", () => {
       [
         "an application permission already granted",
         (tenant) => {
-          const application = tenant.application({ tags: [SETUP_TAG] });
+          const application = tenant.application();
           tenant.servicePrincipal(application.appId, {
             appRoleAssignments: [{ id: "assignment-1", resourceDisplayName: "Microsoft Graph" }],
           });
+          return application;
         },
         "has already been granted an application permission (on Microsoft Graph)",
       ],
@@ -118,11 +118,13 @@ describe("adopting an existing registration (H1)", () => {
     for (const [name, seed, message] of cases) {
       const dir = await workspace();
       const tenant = new FakeTenant();
-      seed(tenant);
+      const target = seed(tenant);
       const output: string[] = [];
       // No flag makes these acceptable: they have to be removed in the Entra admin center.
       const options = optionsFor(dir, {
+        appId: target.appId,
         prunePermissions: true,
+        keepOtherOwners: true,
         keepOtherRedirectUris: true,
         keepOtherCertificates: true,
       });
@@ -133,26 +135,33 @@ describe("adopting an existing registration (H1)", () => {
     }
   });
 
-  it("asks for --app-id when the only match is by name, and checks ownership even then", async () => {
+  it("works only on a registration you are the only owner of, unless you keep the others", async () => {
     const dir = await workspace();
     const tenant = new FakeTenant();
-    const named = tenant.application();
-    const output: string[] = [];
-    await expect(run(tenant, optionsFor(dir), dir, output)).rejects.toThrow(SetupError);
-    expect(output[0]).toContain(`run the setup again with --app-id ${named.appId}`);
-    expect(tenant.writes).toEqual([]);
-
-    expect(await run(tenant, optionsFor(dir, { appId: named.appId }), dir)).toBe("applied");
-    expect(named.tags).toEqual([SETUP_TAG]);
-
-    const other = tenant.application({ displayName: "Not mine", owners: [OTHER_ADMIN] });
-    tenant.requests.length = 0;
+    const notMine = tenant.application({ owners: [OTHER_ADMIN] });
     const refused: string[] = [];
     await expect(
-      run(tenant, optionsFor(dir, { appId: other.appId }), dir, refused),
+      run(tenant, optionsFor(dir, { appId: notMine.appId, keepOtherOwners: true }), dir, refused),
     ).rejects.toThrow(SetupError);
     expect(refused[0]).toContain("You are not an owner of");
     expect(tenant.writes).toEqual([]);
+
+    const shared = tenant.application({ owners: [ADMIN_ID, OTHER_ADMIN] });
+    tenant.servicePrincipal(shared.appId, { owners: [OTHER_ADMIN] });
+    const blocked: string[] = [];
+    await expect(
+      run(tenant, optionsFor(dir, { appId: shared.appId }), dir, blocked),
+    ).rejects.toThrow(SetupError);
+    expect(blocked[0]).toContain(`${OTHER_ADMIN}) of the registration`);
+    expect(blocked[0]).toContain(`${OTHER_ADMIN}) of its service principal`);
+    expect(blocked[0]).toContain("--keep-other-owners");
+    expect(tenant.writes).toEqual([]);
+
+    const kept: string[] = [];
+    expect(
+      await run(tenant, optionsFor(dir, { appId: shared.appId, keepOtherOwners: true }), dir, kept),
+    ).toBe("applied");
+    expect(kept[0]).toContain("They can change the registration at any time");
   });
 
   it("keeps other redirect URIs, delegated permissions and certificates only when asked", async () => {
@@ -182,9 +191,11 @@ describe("adopting an existing registration (H1)", () => {
     };
     const dir = await workspace();
     const tenant = new FakeTenant();
-    seed(tenant);
+    const target = seed(tenant);
     const output: string[] = [];
-    await expect(run(tenant, optionsFor(dir), dir, output)).rejects.toThrow(SetupError);
+    await expect(
+      run(tenant, optionsFor(dir, { appId: target.appId }), dir, output),
+    ).rejects.toThrow(SetupError);
     for (const flag of [
       "--prune-permissions",
       "--keep-other-permissions",
@@ -200,6 +211,7 @@ describe("adopting an existing registration (H1)", () => {
 
     const kept: string[] = [];
     const options = optionsFor(dir, {
+      appId: target.appId,
       keepOtherPermissions: true,
       keepOtherRedirectUris: true,
       keepOtherCertificates: true,
@@ -296,7 +308,7 @@ describe("access control lists (M2)", () => {
     const output: string[] = [];
     expect(await run(tenant, optionsFor(dir), dir, output, { acl })).toBe("unchanged");
     expect(await mode(files.privateKey)).toBe(0o640);
-    expect(output[0]).not.toContain("Restrict");
+    expect(output[0]).not.toContain("Change secrets");
     expect(output[0]).toContain("has an access control list (ACL)");
 
     const rotated: string[] = [];
@@ -316,19 +328,40 @@ describe("access control lists (M2)", () => {
     await run(tenant2, optionsFor(dir2, { rotateCertificate: true }), dir2, printed, {
       acl: failing,
     });
-    expect(printed.join("\n")).toContain(`setfacl -m user:1000:r-- '${files2.privateKey}'`);
+    expect(printed.join("\n")).toContain(`setfacl -m 'user:1000:r--' '${files2.privateKey}'`);
   });
 
-  it("does not tighten a group-readable key it cannot read the access list of", async () => {
+  it("on Linux, leaves group bits it cannot read the access list of, but never access for others", async () => {
     const dir = await workspace();
     const files = certificateFiles(join(dir, "secrets"));
     const tenant = new FakeTenant();
     await run(tenant, optionsFor(dir), dir);
-    await chmod(files.privateKey, 0o640);
+    await chmod(files.privateKey, 0o644);
     const output: string[] = [];
-    await run(tenant, optionsFor(dir), dir, output);
+    await run(tenant, optionsFor(dir), dir, output, { platform: "linux" });
     expect(await mode(files.privateKey)).toBe(0o640);
-    expect(output[0]).toContain("which may be an access control list's mask");
+    expect(output[0]).toContain("which on Linux may be an access control list's mask");
+
+    // On macOS group bits are plain permissions, and the key goes back to owner-only.
+    const mac: string[] = [];
+    await run(tenant, optionsFor(dir), dir, mac, { platform: "darwin" });
+    expect(await mode(files.privateKey)).toBe(0o600);
+  });
+
+  it("removes access for others even from a key and folder that have an access list", async () => {
+    const dir = await workspace();
+    const files = certificateFiles(join(dir, "secrets"));
+    const tenant = new FakeTenant();
+    await run(tenant, optionsFor(dir), dir);
+    await chmod(files.privateKey, 0o644);
+    await chmod(files.directory, 0o755);
+    const acl = {
+      read: async () => ({ entries: ["user:1000:r--", "mask::r--"], defaults: [] }),
+      apply: async () => true,
+    };
+    await run(tenant, optionsFor(dir), dir, [], { acl, platform: "linux" });
+    expect(await mode(files.privateKey)).toBe(0o640);
+    expect(await mode(files.directory)).toBe(0o750);
   });
 
   it("writes keys so a directory's default access list applies to them", async () => {
@@ -380,10 +413,11 @@ describe("the certificate list update (L2)", () => {
   it("stops when the registration's certificates changed after the plan was made", async () => {
     const dir = await workspace();
     const tenant = new FakeTenant();
-    const application = tenant.application({ tags: [SETUP_TAG] });
+    const application = tenant.application();
     tenant.servicePrincipal(application.appId);
     const output: string[] = [];
-    const failure = await run(tenant, optionsFor(dir, { yes: false }), dir, output, {
+    const options = optionsFor(dir, { yes: false, appId: application.appId });
+    const failure = await run(tenant, options, dir, output, {
       // While the plan is on screen, someone uploads a certificate in the portal.
       confirm: async () => {
         application.keyCredentials.push({
@@ -450,12 +484,12 @@ describe("Windows (L6)", () => {
     const tenant = new FakeTenant();
     const output: string[] = [];
     await run(tenant, optionsFor(dir, { dryRun: true }), dir, output, { platform: "win32" });
-    expect(output[0]).not.toContain("Restrict");
+    expect(output[0]).not.toContain("Change secrets");
     expect(output[0]).not.toContain("readable only by you");
     expect(output[0]).toContain("on Windows the folder's access control list decides");
 
     const unix: string[] = [];
     await run(tenant, optionsFor(dir, { dryRun: true }), dir, unix, { platform: "darwin" });
-    expect(unix[0]).toContain("Restrict secrets so only you can open it (mode 700).");
+    expect(unix[0]).toContain("Change secrets to mode 700 so others cannot open it.");
   });
 });

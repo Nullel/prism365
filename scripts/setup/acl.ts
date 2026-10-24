@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
+import { access, constants } from "node:fs/promises";
 
 // POSIX access control lists on the secrets. On Linux the Docker install's container reads the
 // key as user ID 1000, and an administrator whose account has another ID gives it access with
-// setfacl (docs/SETUP.md). The setup must not undo that: a chmod rewrites the ACL's mask, and a
-// rotation's new files would not carry the entries. Node has no ACL API, so this asks getfacl and
-// setfacl, with fixed argument lists and no shell. Where they are missing, or on other systems,
-// the ACL is unknown and callers fall back to leaving group permission bits alone.
+// setfacl (docs/SETUP.md). The setup must not undo that: a chmod of the group bits rewrites the
+// ACL's mask, and a rotation's new files would not carry the entries. Node has no ACL API, so this
+// runs getfacl and setfacl from /usr/bin or /bin (never whatever PATH finds), with fixed argument
+// lists and no shell. Where they are missing, or on other systems, the ACL is unknown.
 
 export interface AccessList {
   // Named entries and the mask on the file itself, as getfacl prints them ("user:1000:r--").
@@ -37,10 +38,16 @@ export function parseGetfacl(output: string): AccessList {
   return { entries, defaults };
 }
 
-// The command an administrator can run by hand when the setup could not re-apply an ACL.
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const named = (entries: readonly string[]) =>
+  entries.filter((entry) => !entry.startsWith("mask::"));
+
+// The command an administrator can run by hand when the setup could not re-apply an ACL. Every
+// entry and the path are single-quoted: a user or group name can hold shell characters.
 export function setfaclCommand(path: string, entries: readonly string[]): string {
-  const named = entries.filter((entry) => !entry.startsWith("mask::"));
-  return `setfacl -m ${named.join(",")} '${path.replaceAll("'", "'\\''")}'`;
+  return `setfacl ${named(entries)
+    .map((entry) => `-m ${quote(entry)}`)
+    .join(" ")} ${quote(path)}`;
 }
 
 function run(command: string, args: string[]): Promise<string | null> {
@@ -51,28 +58,62 @@ function run(command: string, args: string[]): Promise<string | null> {
   });
 }
 
+export const ACL_TOOL_DIRECTORIES = ["/usr/bin", "/bin"] as const;
+
+async function tool(name: "getfacl" | "setfacl"): Promise<string | null> {
+  for (const directory of ACL_TOOL_DIRECTORIES) {
+    const path = `${directory}/${name}`;
+    if (
+      await access(path, constants.X_OK).then(
+        () => true,
+        () => false,
+      )
+    )
+      return path;
+  }
+  return null;
+}
+
 export const systemAcl: AclTools = {
   async read(path) {
-    if (process.platform !== "linux") return null;
-    const output = await run("getfacl", ["--omit-header", "--absolute-names", "--", path]);
+    const getfacl = process.platform === "linux" ? await tool("getfacl") : null;
+    if (!getfacl) return null;
+    const output = await run(getfacl, ["--omit-header", "--absolute-names", "--", path]);
     return output === null ? null : parseGetfacl(output);
   },
   async apply(path, entries) {
-    const named = entries.filter((entry) => !entry.startsWith("mask::"));
-    if (process.platform !== "linux" || named.length === 0) return named.length === 0;
-    return (await run("setfacl", ["-m", named.join(","), "--", path])) !== null;
+    const wanted = named(entries);
+    if (wanted.length === 0) return true;
+    const setfacl = process.platform === "linux" ? await tool("setfacl") : null;
+    if (!setfacl) return false;
+    // One -m per entry, so a name holding a comma cannot split an entry in two.
+    const args = wanted.flatMap((entry) => ["-m", entry]);
+    return (await run(setfacl, [...args, "--", path])) !== null;
   },
 };
 
-// What the setup may do to an existing file or directory's mode. It tightens only what is
-// plainly too open, and never what an ACL or a deliberate group setting may depend on.
-export type ModeDecision = "fine" | "tighten" | "keep-acl" | "keep-group";
+// The permission bits the setup may set on an existing key or secrets directory. Access for
+// everyone else is always removed: no ACL needs it, and clearing it leaves an ACL's mask alone.
+// Group bits are removed too, except where they may be an ACL's mask (an ACL was read and has
+// entries, or on Linux, where the ACL could not be read). On other systems they are plain group
+// permissions. `change` is null when nothing needs changing.
+export interface ModeDecision {
+  change: number | null;
+  kept: "acl" | "group" | null;
+}
 
-export function modeDecision(mode: number | null, acl: AccessList | null): ModeDecision {
-  if (mode === null || (mode & 0o077) === 0) return "fine";
-  if (acl && acl.entries.length > 0) return "keep-acl";
-  // Without an ACL reading, group bits may be an ACL's mask; only access for everyone else is
-  // certainly wrong for a key.
-  if (!acl && (mode & 0o007) === 0) return "keep-group";
-  return "tighten";
+export function modeDecision(
+  mode: number | null,
+  acl: AccessList | null,
+  platform: NodeJS.Platform,
+): ModeDecision {
+  if (mode === null || platform === "win32") return { change: null, kept: null };
+  let target = mode & ~0o007;
+  let kept: ModeDecision["kept"] = null;
+  if ((mode & 0o070) !== 0) {
+    if (acl && acl.entries.length > 0) kept = "acl";
+    else if (!acl && platform === "linux") kept = "group";
+    else target &= ~0o070;
+  }
+  return { change: target === mode ? null : target, kept };
 }

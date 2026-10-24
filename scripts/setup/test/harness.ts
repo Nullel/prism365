@@ -39,6 +39,7 @@ export function optionsFor(dir: string, overrides: Partial<SetupOptions> = {}): 
     keepOtherPermissions: false,
     keepOtherRedirectUris: false,
     keepOtherCertificates: false,
+    keepOtherOwners: false,
     ...overrides,
   };
 }

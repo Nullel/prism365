@@ -164,6 +164,8 @@ export interface CertificateFiles {
   pendingCertificate: string;
   previousKey: string;
   previousCertificate: string;
+  // What the setup remembers between runs (see SetupRecord). No key material.
+  record: string;
 }
 
 export function certificateFiles(directory: string): CertificateFiles {
@@ -175,6 +177,7 @@ export function certificateFiles(directory: string): CertificateFiles {
     pendingCertificate: join(directory, "entra-public.new.pem"),
     previousKey: join(directory, "entra-private.previous.pem"),
     previousCertificate: join(directory, "entra-public.previous.pem"),
+    record: join(directory, "setup-state.json"),
   };
 }
 
@@ -451,13 +454,65 @@ export async function promotePending(files: CertificateFiles) {
   }
 }
 
-// Removes a rotation's new pair that never reached the registration.
-export async function discardPending(files: CertificateFiles) {
-  await removeQuietly(files.pendingKey);
-  await removeQuietly(files.pendingCertificate);
+// What the setup remembers between runs, in setup-state.json beside the key (mode 0600). It
+// holds a thumbprint and ACL entries, never key material.
+export interface SetupRecord {
+  // The SHA-256 thumbprint of the certificate the last rotation replaced, so a later run can say
+  // which certificate on the registration it is once the .previous files are gone.
+  replacedThumbprint: string | null;
+  // ACL entries a rotation could not give the new files; the next run tries again.
+  pendingAcl: { privateKey: string[]; certificate: string[] } | null;
 }
 
-// Tightens one file or directory to its owner, when the plan decided to.
-export async function restrictToOwner(path: string, mode: number) {
+const emptyRecord: SetupRecord = { replacedThumbprint: null, pendingAcl: null };
+const ENTRY = /^(?:user|group):[^:]+:[rwx-]{3}$|^mask::[rwx-]{3}$/;
+
+export async function readRecord(files: CertificateFiles): Promise<SetupRecord> {
+  const bytes = await readIfPresent(files.record);
+  if (!bytes) return emptyRecord;
+  try {
+    const value = JSON.parse(bytes.toString("utf8")) as Partial<SetupRecord>;
+    const entries = (list: unknown) =>
+      Array.isArray(list)
+        ? list.filter((item): item is string => typeof item === "string" && ENTRY.test(item))
+        : [];
+    return {
+      replacedThumbprint:
+        typeof value.replacedThumbprint === "string" &&
+        /^[0-9A-F]{64}$/.test(value.replacedThumbprint)
+          ? value.replacedThumbprint
+          : null,
+      pendingAcl: value.pendingAcl
+        ? {
+            privateKey: entries(value.pendingAcl.privateKey),
+            certificate: entries(value.pendingAcl.certificate),
+          }
+        : null,
+    };
+  } catch {
+    return emptyRecord;
+  }
+}
+
+export async function writeRecord(files: CertificateFiles, record: SetupRecord) {
+  await ensureSecretsDirectory(files.directory);
+  const temporary = await temporaryFile(
+    files.record,
+    `${JSON.stringify(record, null, 2)}\n`,
+    0o600,
+  );
+  try {
+    await rename(temporary, files.record);
+  } finally {
+    await removeQuietly(temporary);
+  }
+}
+
+// The thumbprint Graph and the Entra admin center use for a certificate, without colons.
+export const thumbprintOf = (certificate: X509Certificate) =>
+  certificate.fingerprint256.replaceAll(":", "");
+
+// Sets a file or directory's permission bits, when the plan decided to.
+export async function setMode(path: string, mode: number) {
   if (process.platform !== "win32") await chmod(path, mode);
 }

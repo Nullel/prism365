@@ -34,6 +34,15 @@ describe("the setup guide", () => {
       expect(text).toContain("Consent on behalf of your organization");
     }
     expect(guide).toContain("### Revoke the setup's access");
+    // Only Application.ReadWrite.All comes out of the grant, not every consent with it.
+    expect(guide).toContain(
+      "PATCH https://graph.microsoft.com/v1.0/oauth2PermissionGrants/<grant ID>",
+    );
+    expect(guide).toContain("the same list without Application.ReadWrite.All");
+    // The registration is named, never searched for, and the checks are a snapshot.
+    expect(guide).toContain("never looks a registration up by its label or its name");
+    expect(guide).toContain("Its owners can change it at any time afterwards");
+    expect(guide).not.toContain("never makes two");
     expect(guide).toContain("14d82eec-204b-4c2f-b7e8-296a70dab67e");
     // The one-year limit is Microsoft's, and the guide says where Microsoft says it.
     expect(guide).not.toContain("the longest Microsoft accepts");

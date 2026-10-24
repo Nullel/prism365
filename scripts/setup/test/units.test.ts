@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { supportedReadFeatures } from "../../../apps/api/src/config.ts";
-import { modeDecision, parseGetfacl, setfaclCommand } from "../acl.ts";
+import { ACL_TOOL_DIRECTORIES, modeDecision, parseGetfacl, setfaclCommand } from "../acl.ts";
 import {
   CERTIFICATE_DAYS,
   certificateFiles,
@@ -520,17 +520,34 @@ describe("access control lists", () => {
     });
   });
 
-  it("never tightens what an access list or a group may depend on", () => {
+  it("always removes access for everyone else, and keeps group bits only where they may be a mask", () => {
     const acl = { entries: ["user:1000:r--", "mask::r--"], defaults: [] };
     const plain = { entries: [], defaults: [] };
-    expect(modeDecision(0o600, null)).toBe("fine");
-    expect(modeDecision(0o640, acl)).toBe("keep-acl");
-    expect(modeDecision(0o640, null)).toBe("keep-group");
-    expect(modeDecision(0o640, plain)).toBe("tighten");
-    expect(modeDecision(0o644, null)).toBe("tighten");
-    expect(setfaclCommand("/srv/prism 365/secrets/entra-private.pem", acl.entries)).toBe(
-      "setfacl -m user:1000:r-- '/srv/prism 365/secrets/entra-private.pem'",
+    expect(modeDecision(0o600, null, "linux")).toEqual({ change: null, kept: null });
+    // An ACL's mask shows in the group bits: kept, but everyone else still loses access (R-L4).
+    expect(modeDecision(0o640, acl, "linux")).toEqual({ change: null, kept: "acl" });
+    expect(modeDecision(0o644, acl, "linux")).toEqual({ change: 0o640, kept: "acl" });
+    expect(modeDecision(0o755, acl, "linux")).toEqual({ change: 0o750, kept: "acl" });
+    // On Linux without a readable ACL, group bits may be a mask; elsewhere they are real.
+    expect(modeDecision(0o640, null, "linux")).toEqual({ change: null, kept: "group" });
+    expect(modeDecision(0o644, null, "linux")).toEqual({ change: 0o640, kept: "group" });
+    expect(modeDecision(0o640, null, "darwin")).toEqual({ change: 0o600, kept: null });
+    expect(modeDecision(0o755, null, "darwin")).toEqual({ change: 0o700, kept: null });
+    expect(modeDecision(0o640, plain, "linux")).toEqual({ change: 0o600, kept: null });
+    expect(modeDecision(0o644, null, "win32")).toEqual({ change: null, kept: null });
+  });
+
+  it("quotes every entry and the path in the printed setfacl command", () => {
+    const odd = parseGetfacl(
+      "user::rw-\ngroup:ops$(touch${IFS}/tmp/x):r--\nuser:it's:r--\nmask::r--\nother::---\n",
     );
+    expect(setfaclCommand("/srv/prism 365/secrets/entra-private.pem", odd.entries)).toBe(
+      "setfacl -m 'group:ops$(touch${IFS}/tmp/x):r--' -m 'user:it'\\''s:r--' '/srv/prism 365/secrets/entra-private.pem'",
+    );
+  });
+
+  it("runs getfacl and setfacl only from the system directories, never through PATH", () => {
+    expect(ACL_TOOL_DIRECTORIES).toEqual(["/usr/bin", "/bin"]);
   });
 });
 

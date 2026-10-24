@@ -1,4 +1,4 @@
-import { X509Certificate } from "node:crypto";
+import { randomBytes, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { z } from "zod";
@@ -11,25 +11,31 @@ import {
   inspectSecrets,
   newCredential,
   promotePending,
-  restrictToOwner,
+  readRecord,
   selfSignedCertificate,
+  setMode,
+  thumbprintOf,
   writeCredential,
   writePending,
+  writeRecord,
 } from "./certificate.ts";
-import { mergeEnv, writeEnvFile } from "./env-file.ts";
+import { mergeEnv, readEnv, writeEnvFile } from "./env-file.ts";
 import {
   applicationListSchema,
   applicationSchema,
   appRoleAssignmentListSchema,
-  directoryObjectListSchema,
   explainGraphError,
   type Fetch,
   type GraphApplication,
   graphServicePrincipalSchema,
   keyCredentialsResponseSchema,
+  looseListSchema,
   meSchema,
+  ownerListSchema,
+  permissionGrantListSchema,
   SetupGraph,
   SetupGraphError,
+  servicePrincipalCredentialsSchema,
   servicePrincipalListSchema,
   servicePrincipalSchema,
 } from "./graph.ts";
@@ -47,7 +53,7 @@ import {
   managedValues,
   planText,
   type RegistrationFacts,
-  SETUP_TAG,
+  RUN_TAG_PREFIX,
   type SetupPlan,
   type SetupState,
 } from "./plan.ts";
@@ -97,8 +103,8 @@ const APPLICATION_FIELDS = [
 // A registration made moments ago can take a little while to be visible everywhere in Microsoft
 // Entra. Steps on it wait and retry, about 45 seconds in all.
 const NEW_OBJECT_DELAYS = [2_000, 4_000, 8_000, 15_000, 15_000];
-// After a create that may or may not have happened (a 5xx, a throttle, a timeout), wait this long
-// and look for the object before trying again.
+// After a service principal create that may or may not have happened, wait this long and look
+// for it before trying again.
 const UNCERTAIN_CREATE_DELAYS = [5_000, 15_000];
 
 export const CLI_TOOLS_REMINDER =
@@ -150,77 +156,14 @@ async function allPages<T>(
   return { items, complete: !next };
 }
 
-async function readOwners(graph: SetupGraph, applicationId: string) {
-  const { items, complete } = await allPages(
-    graph,
-    `applications/${applicationId}/owners?$select=id`,
-    directoryObjectListSchema,
-  );
-  return { owners: items.map((owner) => owner.id), complete };
-}
-
-const owns = (owners: readonly string[], adminId: string) =>
-  owners.some((owner) => owner.toLowerCase() === adminId.toLowerCase());
-
-async function search(graph: SetupGraph, filter: string) {
-  const page = await graph.get(
-    `applications?$filter=${encodeURIComponent(filter)}&$select=${APPLICATION_FIELDS}&$top=50`,
-    applicationListSchema,
-  );
-  return { items: page.value, more: Boolean(page["@odata.nextLink"]) };
-}
-
-// The tagged registrations the signed-in administrator owns. The tag alone proves nothing.
-async function ownedTagged(graph: SetupGraph, adminId: string) {
-  const tagged = await search(graph, `tags/any(t:t eq '${SETUP_TAG}')`);
-  const owned: { application: GraphApplication; owners: string[]; complete: boolean }[] = [];
-  const unowned: GraphApplication[] = [];
-  for (const application of tagged.items) {
-    const { owners, complete } = await readOwners(graph, application.id);
-    if (owns(owners, adminId)) owned.push({ application, owners, complete });
-    else unowned.push(application);
-  }
-  return { owned, unowned, more: tagged.more };
-}
-
-async function findApplication(graph: SetupGraph, options: SetupOptions, adminId: string) {
-  const none = { unownedTagged: [] as GraphApplication[], owners: null };
-  if (options.appId) {
-    try {
-      const application = await graph.get(
-        `applications(appId='${options.appId}')?$select=${APPLICATION_FIELDS}`,
-        applicationSchema,
-      );
-      return { ...none, application, foundBy: "appId" as const, matches: 1 };
-    } catch (error) {
-      if (error instanceof SetupGraphError && error.status === 404)
-        return { ...none, application: null, foundBy: null, matches: 0 };
-      throw error;
-    }
-  }
-  const tagged = await ownedTagged(graph, adminId);
-  if (tagged.more) return { ...none, application: null, foundBy: "tag" as const, matches: 51 };
-  const [only] = tagged.owned;
-  if (tagged.owned.length > 0)
-    return {
-      application: tagged.owned.length === 1 && only ? only.application : null,
-      foundBy: "tag" as const,
-      matches: tagged.owned.length,
-      unownedTagged: tagged.unowned,
-      owners: only ? { owners: only.owners, complete: only.complete } : null,
-    };
-  // A tagged registration someone else owns is left alone, whatever its name.
-  const named = await search(graph, `displayName eq '${options.name.replaceAll("'", "''")}'`);
-  named.items = named.items.filter((item) => !tagged.unowned.some((other) => other.id === item.id));
-  const count = named.items.length + (named.more ? 1 : 0);
+async function readOwners(graph: SetupGraph, path: string) {
+  const { items, complete } = await allPages(graph, path, ownerListSchema);
   return {
-    application: count === 1 ? (named.items[0] ?? null) : null,
-    foundBy: count > 0 ? ("name" as const) : null,
-    matches: count,
-    unownedTagged: tagged.unowned.filter(
-      (item) => !named.items.some((match) => match.id === item.id),
-    ),
-    owners: null,
+    owners: items.map((owner) => ({
+      id: owner.id,
+      name: owner.userPrincipalName ?? owner.displayName ?? null,
+    })),
+    complete,
   };
 }
 
@@ -240,6 +183,79 @@ async function readAcl(acl: AclTools, path: string): Promise<AccessList | null> 
   }
 }
 
+// The registration to work on. The setup never searches for one: a tag or a name can be put on
+// any registration by anyone allowed to register apps. It is the one named by --app-id, or the
+// one this install already uses (ENTRA_CLIENT_ID in the .env it writes), or none: a new one.
+async function findTarget(graph: SetupGraph, options: SetupOptions, envText: string) {
+  const fromEnv = readEnv(envText).get("ENTRA_CLIENT_ID")?.trim().toLowerCase() ?? "";
+  const none = { application: null, foundBy: null, missingTarget: null, invalidEnvClientId: null };
+  if (!options.appId && fromEnv && !isUuid(fromEnv))
+    return { ...none, invalidEnvClientId: fromEnv };
+  const appId = options.appId ?? (fromEnv || null);
+  if (!appId) return none;
+  const source = options.appId ? ("appId" as const) : ("env" as const);
+  try {
+    const application = await graph.get(
+      `applications(appId='${appId}')?$select=${APPLICATION_FIELDS}`,
+      applicationSchema,
+    );
+    return { ...none, application, foundBy: source };
+  } catch (error) {
+    if (error instanceof SetupGraphError && error.status === 404)
+      return { ...none, missingTarget: { appId, source } };
+    throw error;
+  }
+}
+
+async function readRegistration(
+  graph: SetupGraph,
+  application: GraphApplication,
+): Promise<RegistrationFacts> {
+  const owners = await readOwners(graph, `applications/${application.id}/owners`);
+  const federated = await allPages(
+    graph,
+    `applications/${application.id}/federatedIdentityCredentials`,
+    looseListSchema,
+  );
+  const principal = await servicePrincipalOf(graph, application.appId);
+  if (!principal)
+    return {
+      owners: owners.owners,
+      ownersComplete: owners.complete,
+      federatedCredentials: federated.items.length,
+      servicePrincipal: null,
+    };
+  const principalOwners = await readOwners(graph, `servicePrincipals/${principal}/owners`);
+  const credentials = await graph.get(
+    `servicePrincipals/${principal}?$select=passwordCredentials,keyCredentials`,
+    servicePrincipalCredentialsSchema,
+  );
+  const assignments = await allPages(
+    graph,
+    `servicePrincipals/${principal}/appRoleAssignments?$select=id,resourceDisplayName`,
+    appRoleAssignmentListSchema,
+  );
+  const grants = await allPages(
+    graph,
+    `servicePrincipals/${principal}/oauth2PermissionGrants`,
+    permissionGrantListSchema,
+  );
+  return {
+    owners: owners.owners,
+    ownersComplete: owners.complete,
+    federatedCredentials: federated.items.length,
+    servicePrincipal: {
+      id: principal,
+      owners: principalOwners.owners,
+      ownersComplete: principalOwners.complete,
+      passwordCredentials: credentials.passwordCredentials?.length ?? 0,
+      keyCredentials: credentials.keyCredentials ?? [],
+      appRoleAssignments: assignments.items,
+      grants: grants.items,
+    },
+  };
+}
+
 export async function gatherState(
   options: SetupOptions,
   graph: SetupGraph,
@@ -253,8 +269,9 @@ export async function gatherState(
   const admin = await step("Reading the signed-in account", () =>
     graph.get("me?$select=id,userPrincipalName", meSchema),
   );
-  const found = await step("Looking for an existing Prism365 registration", () =>
-    findApplication(graph, options, admin.id),
+  const env = await readEnvSource(options, dependencies.envExample);
+  const target = await step("Reading the registration to use", () =>
+    findTarget(graph, options, env.source === "env" ? env.text : ""),
   );
   const graphPrincipal = await step("Reading Microsoft Graph's permission list", () =>
     graph.get(
@@ -262,30 +279,13 @@ export async function gatherState(
       graphServicePrincipalSchema,
     ),
   );
-  let servicePrincipal = false;
   let keyCredentials: unknown[] = [];
   let registration: RegistrationFacts | null = null;
-  const application = found.application;
+  const application = target.application;
   if (application) {
     registration = await step(
-      "Checking who owns the registration and what it was granted",
-      async () => {
-        const owners = found.owners ?? (await readOwners(graph, application.id));
-        const principal = await servicePrincipalOf(graph, application.appId);
-        servicePrincipal = principal !== null;
-        const assignments = principal
-          ? await allPages(
-              graph,
-              `servicePrincipals/${principal}/appRoleAssignments?$select=id,resourceDisplayName`,
-              appRoleAssignmentListSchema,
-            )
-          : null;
-        return {
-          owners: owners.owners,
-          ownersComplete: owners.complete,
-          appRoleAssignments: assignments?.items ?? null,
-        };
-      },
+      "Checking the registration's owners, credentials and permissions",
+      () => readRegistration(graph, application),
     );
     keyCredentials = await step("Reading the registration's certificates", async () => {
       const response = await graph.get(
@@ -303,18 +303,16 @@ export async function gatherState(
     tenantId,
     admin: { id: admin.id, userPrincipalName: admin.userPrincipalName ?? null },
     application,
-    foundBy: found.foundBy,
-    matches: found.matches,
-    unownedTagged: found.unownedTagged.map((item) => ({
-      appId: item.appId,
-      displayName: item.displayName ?? null,
-    })),
+    foundBy: target.foundBy,
+    missingTarget: target.missingTarget,
+    invalidEnvClientId: target.invalidEnvClientId,
     registration,
-    servicePrincipal,
+    servicePrincipal: registration?.servicePrincipal != null,
     graph: graphPrincipal,
     keyCredentials,
     files,
     secrets,
+    record: await readRecord(files),
     acl: {
       directory:
         secrets.directoryMode === null ? null : await readAcl(dependencies.acl, files.directory),
@@ -325,7 +323,7 @@ export async function gatherState(
       certificate:
         credential.state === "pair" ? await readAcl(dependencies.acl, files.certificate) : null,
     },
-    env: await readEnvSource(options, dependencies.envExample),
+    env,
     cwd: dependencies.cwd,
     now: dependencies.now,
     platform: dependencies.platform,
@@ -337,8 +335,9 @@ function changesNothing(plan: SetupPlan) {
     plan.application.action === "keep" &&
     plan.servicePrincipal === "keep" &&
     plan.certificate.action === "keep" &&
-    !plan.restrictDirectory &&
-    !plan.restrictPrivateKey &&
+    plan.restrictDirectory === null &&
+    plan.restrictPrivateKey === null &&
+    plan.reapplyAcl === null &&
     !plan.env.write
   );
 }
@@ -366,31 +365,67 @@ async function retryWhileNew<T>(
 const uncertain = (error: unknown) =>
   !(error instanceof SetupGraphError) || error.status >= 500 || error.status === 429;
 
-// Creates the registration once. When Microsoft's answer leaves it unclear whether the create
-// happened, the setup looks for a tagged registration the administrator owns before trying again,
-// so an answer lost on the way never leaves two registrations.
+// The registrations labelled with this run's marker that the administrator owns. Only this run
+// can know the marker, and a copy someone else made would not be theirs.
+async function findByRunLabel(graph: SetupGraph, marker: string, adminId: string) {
+  const page = await graph.get(
+    `applications?$filter=${encodeURIComponent(`tags/any(t:t eq '${marker}')`)}&$select=id,appId`,
+    applicationListSchema,
+  );
+  const mine: Pick<GraphApplication, "id" | "appId">[] = [];
+  for (const application of page.value) {
+    const { owners } = await readOwners(graph, `applications/${application.id}/owners`);
+    if (owners.some((owner) => owner.id.toLowerCase() === adminId.toLowerCase()))
+      mine.push({ id: application.id, appId: application.appId });
+  }
+  return mine;
+}
+
+// Creates the registration, labelled with a marker unique to this run. When Microsoft's answer
+// leaves it unclear whether the create happened (a server error, a throttle, no answer), the setup
+// looks for that marker for as long as Entra may take to show a new object, and sends the create
+// again only once the registration is confirmed absent after that whole wait. A registration that
+// takes even longer to appear could still end up twice, so the failure message names the marker.
 async function createApplication(
   graph: SetupGraph,
   body: Record<string, unknown>,
   adminId: string,
   sleep: (milliseconds: number) => Promise<void>,
-): Promise<Pick<GraphApplication, "id" | "appId">> {
-  for (let attempt = 0; ; attempt += 1) {
+): Promise<{ application: Pick<GraphApplication, "id" | "appId">; marker: string }> {
+  const marker = `${RUN_TAG_PREFIX}${randomBytes(8).toString("hex")}`;
+  const labelled = { ...body, tags: [...((body.tags as string[] | undefined) ?? []), marker] };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      return await graph.post("applications", body, applicationSchema);
+      return { application: await graph.post("applications", labelled, applicationSchema), marker };
     } catch (error) {
-      const delay = UNCERTAIN_CREATE_DELAYS[attempt];
-      if (delay === undefined || !uncertain(error)) throw error;
-      await sleep(delay);
-      const { owned } = await ownedTagged(graph, adminId);
-      if (owned.length > 1)
-        throw new SetupError(
-          `Microsoft did not answer the create clearly, and you now own ${owned.length} registrations tagged ${SETUP_TAG}. Delete the extra one in the Entra admin center, then run the setup again with --app-id.`,
-        );
-      const [made] = owned;
-      if (made) return made.application;
+      if (!uncertain(error)) throw error;
+      for (const delay of NEW_OBJECT_DELAYS) {
+        await sleep(delay);
+        const found = await findByRunLabel(graph, marker, adminId);
+        if (found.length > 1)
+          throw new SetupError(
+            `Microsoft made ${found.length} registrations labelled ${marker}. Delete all but one in the Entra admin center, then run the setup again with --app-id for the one you keep.`,
+          );
+        const [made] = found;
+        if (made) return { application: made, marker };
+      }
     }
   }
+  throw new SetupError(
+    `Microsoft did not confirm the new registration. It may still appear: in the Entra admin center, look for a registration with the label ${marker}. If you find it, run the setup again with --app-id and its application ID; otherwise run it again as before.`,
+  );
+}
+
+// Takes this run's marker (and any an interrupted run left) off the registration. Not fatal.
+async function removeRunLabels(graph: SetupGraph, applicationId: string) {
+  const current = await graph.get(
+    `applications/${applicationId}?$select=id,appId,tags`,
+    applicationSchema,
+  );
+  const tags = current.tags ?? [];
+  const kept = tags.filter((tag) => !tag.startsWith(RUN_TAG_PREFIX));
+  if (kept.length !== tags.length)
+    await graph.patch(`applications/${applicationId}`, { tags: kept });
 }
 
 async function createServicePrincipal(
@@ -483,30 +518,68 @@ async function addCertificate(
   return "added";
 }
 
-// After a rotation's files are in place, give them the access list the old ones had.
-async function reapplyAcl(state: SetupState, acl: AclTools, print: (text: string) => void) {
-  for (const [path, previous, mode] of [
-    [
-      state.files.privateKey,
-      state.acl.privateKey,
-      state.secrets.credential.state === "pair" ? state.secrets.credential.privateKeyMode : null,
-    ],
-    [state.files.certificate, state.acl.certificate, null],
+// Gives the key and certificate ACL entries, printing the exact command for whatever could not be
+// applied. Returns what is still missing, for the next run to try again.
+async function applyAcl(
+  state: SetupState,
+  acl: AclTools,
+  wanted: { privateKey: readonly string[]; certificate: readonly string[] },
+  print: (text: string) => void,
+): Promise<{ privateKey: string[]; certificate: string[] } | null> {
+  const failed = { privateKey: [] as string[], certificate: [] as string[] };
+  for (const [which, path] of [
+    ["privateKey", state.files.privateKey],
+    ["certificate", state.files.certificate],
   ] as const) {
+    const named = wanted[which].filter((entry) => !entry.startsWith("mask::"));
+    if (named.length === 0) continue;
     const shown = relative(state.cwd, path) || path;
-    const named = previous?.entries.filter((entry) => !entry.startsWith("mask::")) ?? [];
-    if (named.length > 0) {
-      if (await acl.apply(path, named).catch(() => false))
-        print(`Gave the new ${shown} the access list the old one had.`);
-      else
-        print(
-          `The old ${shown} had an access list the setup could not copy. Run: ${setfaclCommand(path, named)}`,
-        );
-    } else if (!previous && mode !== null && (mode & 0o070) !== 0 && state.platform !== "win32")
+    if (await acl.apply(path, named).catch(() => false))
+      print(`Gave ${shown} its access list entries (${named.join(", ")}).`);
+    else {
+      failed[which] = named;
       print(
-        `The old ${shown} could be read by its group or an access list (mode ${mode.toString(8)}), and the new one is mode 600. If the Docker install read it that way, give that access again (docs/SETUP.md).`,
+        `${shown} needs access list entries the setup could not give it. Run: ${setfaclCommand(path, named)}`,
       );
+    }
   }
+  return failed.privateKey.length + failed.certificate.length > 0 ? failed : null;
+}
+
+// After a rotation's files are in place: the new files get the access list the old ones had, and
+// the record names the certificate that was replaced, so later runs can say which one it is and
+// try again with any entries that could not be applied.
+async function afterRotation(
+  state: SetupState,
+  plan: SetupPlan,
+  acl: AclTools,
+  replaced: X509Certificate | null,
+  print: (text: string) => void,
+) {
+  const pendingAcl = await applyAcl(
+    state,
+    acl,
+    {
+      privateKey: state.acl.privateKey?.entries ?? [],
+      certificate: state.acl.certificate?.entries ?? [],
+    },
+    print,
+  );
+  const credential = state.secrets.credential;
+  const oldMode = credential.state === "pair" ? credential.privateKeyMode : null;
+  if (
+    !state.acl.privateKey &&
+    oldMode !== null &&
+    (oldMode & 0o070) !== 0 &&
+    state.platform !== "win32"
+  )
+    print(
+      `The old key could be read by its group or an access list (mode ${oldMode.toString(8)}), and the new one is mode ${plan.writeModes.privateKey.toString(8)}. If the Docker install read it that way, give that access again (docs/SETUP.md).`,
+    );
+  await writeRecord(state.files, {
+    replacedThumbprint: replaced ? thumbprintOf(replaced) : state.record.replacedThumbprint,
+    pendingAcl,
+  });
 }
 
 function finish(
@@ -592,12 +665,15 @@ export async function runSetup(
 
   // 1. The registration.
   let application: Pick<GraphApplication, "id" | "appId">;
+  let marker: string | null = null;
   const fresh = plan.application.action === "create";
   if (plan.application.action === "create") {
     const body = plan.application.body;
-    application = await step("Creating the app registration", () =>
+    const created = await step("Creating the app registration", () =>
       createApplication(graph, body, state.admin.id, sleep),
     );
+    application = created.application;
+    marker = created.marker;
     dependencies.print(`Created the app registration (application ID ${application.appId}).`);
   } else {
     application = { id: plan.application.id, appId: plan.application.appId };
@@ -610,7 +686,20 @@ export async function runSetup(
     }
   }
 
-  // 2. Its service principal.
+  // 2. .env, as soon as the registration exists: a run that stops after this point is picked up
+  // again by the next one, which works on the registration ENTRA_CLIENT_ID names. Read again in
+  // case it changed while the plan was on screen.
+  const source = await readEnvSource(options, dependencies.envExample);
+  const merged = mergeEnv(source.text, managedValues({ ...state, env: source }, application.appId));
+  if (!source.exists || merged.text !== source.text) {
+    await writeEnvFile(options.envFile, merged.text);
+    const keys = merged.changes.map((change) => change.key);
+    dependencies.print(
+      `${source.exists ? "Updated" : "Created"} ${relative(state.cwd, options.envFile) || options.envFile}${keys.length > 0 ? `: ${keys.join(", ")}` : ""}.`,
+    );
+  }
+
+  // 3. Its service principal.
   if (plan.servicePrincipal === "create") {
     await step("Creating the service principal", () =>
       createServicePrincipal(graph, application.appId, fresh, sleep),
@@ -618,11 +707,12 @@ export async function runSetup(
     dependencies.print("Created the service principal.");
   }
 
-  // 3. Permissions on the secrets the plan chose to tighten.
-  if (plan.restrictDirectory) await restrictToOwner(state.files.directory, 0o700);
-  if (plan.restrictPrivateKey) await restrictToOwner(state.files.privateKey, 0o600);
+  // 4. Permissions on the secrets, as the plan decided.
+  if (plan.restrictDirectory !== null) await setMode(state.files.directory, plan.restrictDirectory);
+  if (plan.restrictPrivateKey !== null)
+    await setMode(state.files.privateKey, plan.restrictPrivateKey);
 
-  // 4. The certificate. A new key is always saved here before its certificate reaches the
+  // 5. The certificate. A new key is always saved here before its certificate reaches the
   // registration. A rotation keeps the working pair in place until the new certificate is on
   // the registration, so a failure in between leaves Prism365 signing in as before.
   const files = state.files;
@@ -638,6 +728,16 @@ export async function runSetup(
     );
   };
   const shown = (path: string) => relative(state.cwd, path) || path;
+  // The certificate a rotation replaces: the working one, unless it is already the new one.
+  const replaced = (() => {
+    const pending = state.secrets.pending?.certificate;
+    const current =
+      credential.state === "pair" || credential.state === "mismatch"
+        ? credential.certificate
+        : null;
+    if (current && !(pending && Buffer.compare(pending.raw, current.raw) === 0)) return current;
+    return state.secrets.previous;
+  })();
   switch (plan.certificate.action) {
     case "create": {
       const made = newCredential(request);
@@ -669,7 +769,7 @@ export async function runSetup(
       dependencies.print(
         `Moved the new pair into place. The old one is ${shown(files.previousKey)} and ${shown(files.previousCertificate)}; delete them once you have removed the old certificate from the registration.`,
       );
-      await reapplyAcl(state, acl, dependencies.print);
+      await afterRotation(state, plan, acl, replaced, dependencies.print);
       break;
     }
     case "promote":
@@ -677,23 +777,37 @@ export async function runSetup(
       dependencies.print(
         `Finished the earlier rotation. The old pair is ${shown(files.previousKey)} and ${shown(files.previousCertificate)}.`,
       );
-      await reapplyAcl(state, acl, dependencies.print);
+      await afterRotation(state, plan, acl, replaced, dependencies.print);
       break;
     case "keep":
     case "blocked":
       break;
   }
 
-  // 5. .env, read again in case it changed while the plan was on screen.
-  const source = await readEnvSource(options, dependencies.envExample);
-  const merged = mergeEnv(source.text, managedValues({ ...state, env: source }, application.appId));
-  if (!source.exists || merged.text !== source.text) {
-    await writeEnvFile(options.envFile, merged.text);
-    const keys = merged.changes.map((change) => change.key);
-    dependencies.print(
-      `${source.exists ? "Updated" : "Created"} ${relative(state.cwd, options.envFile) || options.envFile}${keys.length > 0 ? `: ${keys.join(", ")}` : ""}.`,
+  // 6. Access list entries an earlier rotation could not apply.
+  if (plan.reapplyAcl) {
+    const pendingAcl = await applyAcl(state, acl, plan.reapplyAcl, dependencies.print);
+    await writeRecord(files, { ...state.record, pendingAcl });
+  }
+
+  // 7. The run labels come off once the run has finished. A first create Microsoft only showed
+  // after the second one was made would carry the same marker: if one is there now, it is named.
+  if (marker) {
+    const label = marker;
+    const extras = await findByRunLabel(graph, label, state.admin.id)
+      .then((found) => found.filter((item) => item.id !== application.id))
+      .catch(() => []);
+    for (const extra of extras)
+      dependencies.print(
+        `Microsoft made a second registration, ${extra.appId}, from a create it had not confirmed. It is not used: delete it in the Entra admin center.`,
+      );
+    await removeRunLabels(graph, application.id).catch(() =>
+      dependencies.print(
+        `The registration still carries the label ${label}. It does no harm; the next run takes it off.`,
+      ),
     );
   }
+
   dependencies.print("");
   finish(plan, state, application.appId, dependencies.print);
   return "applied";

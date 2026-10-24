@@ -34,7 +34,7 @@ Global Administrator).
 
 2. Read the plan it prints, and type `yes` to apply it. It then:
 
-   - registers a single-tenant web app (tagged `prism365-setup`, implicit grant off, with you as
+   - registers a single-tenant web app (labelled `prism365-setup`, implicit grant off, with you as
      its owner) with the redirect URI `https://localhost:8443/api/v1/auth/callback` and the
      delegated Microsoft Graph permissions the chosen features need, and creates its service
      principal;
@@ -94,14 +94,15 @@ Pass them after `--`, as in `npm run setup -- --tenant contoso.onmicrosoft.com -
 | `--origin <origin>` | Where Prism365 runs. Default `https://localhost:8443`, the Docker install. The redirect URI is this origin plus `/api/v1/auth/callback`, and it becomes `PUBLIC_ORIGIN`. |
 | `--dev` | Also registers the development server's redirect URI, `http://localhost:5173/api/v1/auth/callback`. |
 | `--features <list>` | Comma-separated read packs to enable, or `all`. Default: the core packs above. |
-| `--app-id <application ID>` | The registration to use: when several match, or when the only match is by name. |
+| `--app-id <application ID>` | Use this existing registration. Without it, the setup uses the one `ENTRA_CLIENT_ID` in the settings file names, or creates a new one. |
 | `--secrets-dir <dir>` | Where the certificate goes. Default `./secrets`. |
 | `--env-file <file>` | The settings file to write. Default `.env`. |
 | `--rotate-certificate` | Makes a new key and certificate even when a pair exists. |
-| `--prune-permissions` | Removes delegated permissions on an existing registration that the chosen features do not use. |
+| `--prune-permissions` | Removes requests for delegated permissions on an existing registration that the chosen features do not use. Consent already granted for them stays until you revoke it. |
 | `--keep-other-permissions` | Keeps those delegated permissions instead. The admin consent link then grants them too. |
 | `--keep-other-redirect-uris` | Keeps redirect URIs outside the chosen origins on an existing registration. |
-| `--keep-other-certificates` | Keeps certificates this setup did not make on an existing registration. |
+| `--keep-other-certificates` | Keeps certificates this setup did not make on an existing registration or its service principal. |
+| `--keep-other-owners` | Uses an existing registration that has owners besides you. They can change it at any time. |
 | `--dry-run` | Signs in, reads, prints the plan and stops. Nothing is written anywhere. |
 | `--yes` | Applies the plan without asking. |
 
@@ -110,28 +111,47 @@ Pass them after `--`, as in `npm run setup -- --tenant contoso.onmicrosoft.com -
 Every step checks what is already there first, so running the setup again is safe and finishes
 a run that stopped halfway. A second run on a finished install changes nothing.
 
-It looks for registrations tagged `prism365-setup` that you own. The tag is only a search aid:
-anyone allowed to register apps can put it on theirs, so a tagged registration someone else
-owns is left alone, named in the plan, and the setup makes your own. If no tagged registration
-of yours exists but one has the same name, it stops and asks you to pass `--app-id` for it, or
-a different `--name`. A create that Microsoft answers with an error or not at all may still
-have happened, so before trying again the setup looks for it, and never makes two.
+The setup never looks a registration up by its label or its name: anyone allowed to register
+apps can give theirs the same ones. It works on the registration you name with `--app-id`, or
+else on the one `ENTRA_CLIENT_ID` in the settings file names (the one this install already
+uses), or else it creates a new one. It writes `ENTRA_CLIENT_ID` as soon as the registration
+exists, so a run that stops after that is picked up again by the next one. If the settings file
+names a registration the tenant does not have, it stops rather than make another.
 
-Before it changes an existing registration, it checks that you own it, and stops without
-changing anything if the registration:
+The `prism365-setup` label on a registration it creates is only a label. A create also carries a
+second label unique to the run, so that when Microsoft answers a create with an error or not at
+all, the setup can look for exactly that registration. It keeps looking for about 45 seconds,
+the time a new registration can take to show, and creates again only if none has appeared by
+then. A registration Microsoft takes even longer to show could still end up twice; the setup
+then names the extra one at the end of the run, or names the label to look for if it stops. The
+run label comes off when the run finishes.
 
-- has a client secret (anyone holding it could sign in as Prism365);
-- allows sign-in from mobile, desktop or single-page applications, or public client flows;
-- asks for, or has been granted, any application permission;
-- asks for delegated permissions Prism365 does not use, unless you pass `--prune-permissions`
-  or `--keep-other-permissions`;
-- sends sign-ins to an address outside the chosen origins, unless you pass
+Before it changes an existing registration, it checks it, and stops without changing anything
+if:
+
+- you are not one of its owners, or it or its service principal has other owners, unless you
+  pass `--keep-other-owners` (any owner can change it at any time);
+- it or its service principal has a client secret, or it has a federated credential (anyone
+  holding them could sign in as Prism365);
+- it allows sign-in from mobile, desktop or single-page applications, or public client flows;
+- it asks for, or has been granted, any application permission;
+- consent has been given for delegated permissions Prism365 never asks for, or on another API;
+- it asks for delegated permissions the chosen features do not use, unless you pass
+  `--prune-permissions` or `--keep-other-permissions`;
+- it sends sign-ins to an address outside the chosen origins, unless you pass
   `--keep-other-redirect-uris`;
-- has a certificate this setup did not make, unless you pass `--keep-other-certificates`.
+- it or its service principal has a certificate this setup did not make, unless you pass
+  `--keep-other-certificates`. When that certificate is the one its last rotation replaced, it
+  says so.
 
-The first three have no option on purpose: remove them in the Entra admin center first. When
-it updates a registration, the plan names each property it sends; nothing else on the
-registration changes.
+Secrets, federated credentials, other sign-in platforms, application permissions and extra
+consent have no option on purpose: remove them in the Entra admin center first. The setup never
+removes consent itself, and `--prune-permissions` only removes requests: consent already given
+stays until you revoke it there. When it updates a registration, the plan names each property it
+sends; nothing else on the registration changes.
+
+These checks describe the registration as it is when the setup runs. Its owners can change it at
+any time afterwards, which is why the setup wants you to be its only owner.
 
 The certificate's private key is never overwritten. If the key exists without its certificate,
 the setup makes a certificate for that same key. If the two files do not belong together, the
@@ -200,8 +220,12 @@ remove it:
    `GET https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq '14d82eec-204b-4c2f-b7e8-296a70dab67e'&$select=id`
    gives the tool's ID; then
    `GET https://graph.microsoft.com/v1.0/oauth2PermissionGrants?$filter=clientId eq '<that ID>' and principalId eq '<your object ID>'`
-   lists your grant, and `DELETE https://graph.microsoft.com/v1.0/oauth2PermissionGrants/<grant ID>`
-   removes it.
+   lists your grant. Its `scope` holds every permission you consented to for the tool, so take
+   out only this one: send
+   `PATCH https://graph.microsoft.com/v1.0/oauth2PermissionGrants/<grant ID>` with the body
+   `{ "scope": "<the same list without Application.ReadWrite.All>" }`. If nothing else is left
+   in it, `DELETE https://graph.microsoft.com/v1.0/oauth2PermissionGrants/<grant ID>` removes the
+   grant instead.
 4. Open Users and groups and remove your own assignment if you are listed. That alone does not
    remove the consent, which is why step 3 matters.
 

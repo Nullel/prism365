@@ -27,6 +27,7 @@ export interface SetupOptions {
   keepOtherPermissions: boolean;
   keepOtherRedirectUris: boolean;
   keepOtherCertificates: boolean;
+  keepOtherOwners: boolean;
 }
 
 export class UsageError extends Error {
@@ -46,7 +47,7 @@ It shows its plan and asks before changing anything.
   --origin <origin>           Where Prism365 runs (default ${DEFAULT_ORIGIN})
   --dev                       Also allow sign-in from the development server (${DEV_ORIGIN})
   --features <list>           Comma-separated read packs, or "all" (default: the core packs)
-  --app-id <app ID>           Use this registration when several match or only its name does
+  --app-id <app ID>           Use this existing registration (default: the one in .env, or a new one)
   --secrets-dir <dir>         Where the certificate goes (default ./secrets)
   --env-file <file>           The settings file to write (default .env)
   --rotate-certificate        Make a new certificate even if one exists
@@ -54,6 +55,7 @@ It shows its plan and asks before changing anything.
   --keep-other-permissions    Keep them instead (the consent link grants them too)
   --keep-other-redirect-uris  Keep redirect URIs outside --origin
   --keep-other-certificates   Keep certificates this setup did not make
+  --keep-other-owners         Use a registration that has owners besides you
   --dry-run                   Sign in, read and show the plan, then stop without changing anything
   --yes                       Apply the plan without asking
   --help                      Show this text`;
@@ -175,6 +177,7 @@ export function parseOptions(argv: string[], cwd: string): SetupOptions | "help"
     keepOtherPermissions: Boolean(values["keep-other-permissions"]),
     keepOtherRedirectUris: Boolean(values["keep-other-redirect-uris"]),
     keepOtherCertificates: Boolean(values["keep-other-certificates"]),
+    keepOtherOwners: Boolean(values["keep-other-owners"]),
   };
 }
 
@@ -197,6 +200,7 @@ function read(argv: string[]) {
       "keep-other-permissions": { type: "boolean" },
       "keep-other-redirect-uris": { type: "boolean" },
       "keep-other-certificates": { type: "boolean" },
+      "keep-other-owners": { type: "boolean" },
       "dry-run": { type: "boolean" },
       yes: { type: "boolean" },
       help: { type: "boolean" },

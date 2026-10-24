@@ -50,6 +50,7 @@ export interface FakeApplication {
   spa: { redirectUris: string[] };
   isFallbackPublicClient: boolean | null;
   owners: string[];
+  federatedIdentityCredentials: Record<string, unknown>[];
   // Key IDs whose key value the fake leaves out, as Microsoft does on list queries.
   hiddenKeys?: string[];
 }
@@ -58,8 +59,15 @@ export interface FakeServicePrincipal {
   id: string;
   appId: string;
   tags: string[];
+  owners: string[];
+  passwordCredentials: Record<string, unknown>[];
+  keyCredentials: Record<string, unknown>[];
   appRoleAssignments: { id: string; resourceDisplayName: string }[];
+  grants: { id: string; consentType: string; resourceId: string; scope: string }[];
 }
+
+// Microsoft Graph's own service principal in the fake tenant.
+export const GRAPH_PRINCIPAL_ID = "33333333-3333-4333-8333-333333333333";
 
 const APPLICATION_FIELDS = [
   "id",
@@ -106,6 +114,7 @@ export class FakeTenant {
       // A registration someone made through the admin centre is owned by them; tests that mean
       // the signed-in administrator's own registration say so.
       owners: [ADMIN_ID],
+      federatedIdentityCredentials: [],
       ...overrides,
     };
     this.applications.push(application);
@@ -117,7 +126,11 @@ export class FakeTenant {
       id: randomUUID(),
       appId,
       tags: [],
+      owners: [],
+      passwordCredentials: [],
+      keyCredentials: [],
       appRoleAssignments: [],
+      grants: [],
       ...overrides,
     };
     this.servicePrincipals.push(principal);
@@ -149,7 +162,7 @@ export class FakeTenant {
     if (method === "GET" && path === "me") return Response.json(this.me);
     if (method === "GET" && path === `servicePrincipals(appId='${GRAPH_RESOURCE_APP_ID}')`)
       return Response.json({
-        id: "33333333-3333-4333-8333-333333333333",
+        id: GRAPH_PRINCIPAL_ID,
         oauth2PermissionScopes: [...scopeIds].map(([value, id]) => ({
           id,
           value,
@@ -172,19 +185,37 @@ export class FakeTenant {
       const principal = this.servicePrincipal(body.appId, { tags: body.tags });
       return Response.json({ id: principal.id, appId: principal.appId }, { status: 201 });
     }
-    const assignedTo = /^servicePrincipals\/([^/]+)\/appRoleAssignments$/.exec(path)?.[1];
-    if (method === "GET" && assignedTo) {
-      const principal = this.servicePrincipals.find((item) => item.id === assignedTo);
-      return principal
-        ? Response.json({ value: principal.appRoleAssignments })
-        : error(404, "Request_ResourceNotFound");
+    const owner = (id: string) => ({ id, displayName: `Owner ${id.slice(0, 8)}` });
+    const principalPath =
+      /^servicePrincipals\/([^/(]+)(?:\/(appRoleAssignments|owners|oauth2PermissionGrants))?$/.exec(
+        path,
+      );
+    if (method === "GET" && principalPath) {
+      const principal = this.servicePrincipals.find((item) => item.id === principalPath[1]);
+      if (!principal) return error(404, "Request_ResourceNotFound");
+      if (principalPath[2] === "appRoleAssignments")
+        return Response.json({ value: principal.appRoleAssignments });
+      if (principalPath[2] === "owners")
+        return Response.json({ value: principal.owners.map(owner) });
+      if (principalPath[2] === "oauth2PermissionGrants")
+        return Response.json({ value: principal.grants });
+      return Response.json({
+        passwordCredentials: principal.passwordCredentials,
+        keyCredentials: principal.keyCredentials,
+      });
     }
-    const ownersOf = /^applications\/([^/]+)\/owners$/.exec(path)?.[1];
-    if (method === "GET" && ownersOf) {
-      const application = this.applications.find((item) => item.id === ownersOf);
-      return application
-        ? Response.json({ value: application.owners.map((id) => ({ id })) })
-        : error(404, "Request_ResourceNotFound");
+    const applicationPath = /^applications\/([^/]+)\/(owners|federatedIdentityCredentials)$/.exec(
+      path,
+    );
+    if (method === "GET" && applicationPath) {
+      const application = this.applications.find((item) => item.id === applicationPath[1]);
+      if (!application) return error(404, "Request_ResourceNotFound");
+      return Response.json({
+        value:
+          applicationPath[2] === "owners"
+            ? application.owners.map(owner)
+            : application.federatedIdentityCredentials,
+      });
     }
     if (method === "GET" && path === "applications") {
       const tag = /^tags\/any\(t:t eq '([^']+)'\)$/.exec(filter)?.[1];
@@ -216,6 +247,8 @@ export class FakeTenant {
     const id = /^applications\/([^/]+)$/.exec(path)?.[1];
     const application = this.applications.find((item) => item.id === id);
     if (id && !application) return error(404, "Request_ResourceNotFound");
+    if (method === "GET" && application && query.get("$select") === "id,appId,tags")
+      return Response.json(listed(application));
     if (method === "GET" && application && query.get("$select") === "keyCredentials")
       return Response.json({
         keyCredentials: application.keyCredentials.map((credential) =>

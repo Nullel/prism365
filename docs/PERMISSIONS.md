@@ -69,10 +69,13 @@ in with a device code through Microsoft's public client for the Microsoft Graph 
 tools (`14d82eec-204b-4c2f-b7e8-296a70dab67e`), asking for delegated `Application.ReadWrite.All`
 and `User.Read`, and keeps the token in memory only. With it, it creates or updates Prism365's
 own registration and service principal and adds a certificate. It never grants consent to that
-registration, never creates a secret, and never asks for an application permission. It adopts
-an existing registration only when the signed-in administrator owns it and it has no client
-secret, no application permission, no other sign-in platform, and nothing else the consent link
-would grant beyond Prism365's own permissions unless the administrator chose to keep it.
+registration, never creates a secret, never removes consent, and never asks for an application
+permission. It never looks a registration up by label or name: it works on the one named with
+`--app-id` or by `ENTRA_CLIENT_ID` in the install's settings, or creates one. It uses an existing
+registration only when the signed-in administrator is its only owner (and the only owner of its
+service principal, unless they choose to keep the others), and neither has a client secret, a
+federated credential, an application permission, consent beyond Prism365's permissions, or
+another sign-in platform. Those checks are a snapshot: owners can change a registration later.
 
 That `Application.ReadWrite.All` is the one exception to the rule below against `*.ReadWrite.*`
 permissions. It is never on Prism365's registration or held by the running app, but the consent

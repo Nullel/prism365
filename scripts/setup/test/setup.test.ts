@@ -28,9 +28,15 @@ describe("npm run setup against a fake tenant", () => {
       "POST applications",
       "POST servicePrincipals",
       `PATCH applications/${tenant.applications[0]?.id}`,
+      `PATCH applications/${tenant.applications[0]?.id}`,
     ]);
     const application = tenant.applications[0];
     expect(tenant.applications).toHaveLength(1);
+    // Created with the label and a marker for this run only; the marker comes off at the end.
+    const created = tenant.writes[0]?.body as { tags: string[] };
+    expect(created.tags[0]).toBe(SETUP_TAG);
+    expect(created.tags[1]).toMatch(/^prism365-setup-run-[0-9a-f]{16}$/);
+    expect(tenant.writes[3]?.body).toEqual({ tags: [SETUP_TAG] });
     expect(application?.tags).toEqual([SETUP_TAG]);
     expect(application?.signInAudience).toBe("AzureADMyOrg");
     expect(application?.web).toEqual({
@@ -125,7 +131,7 @@ describe("npm run setup against a fake tenant", () => {
     expect(output.join("\n")).toContain("already in place");
   });
 
-  it("updates a registration you own found by its tag, keeping what you chose to keep", async () => {
+  it("updates the registration named by --app-id, keeping what you chose to keep", async () => {
     const dir = await workspace();
     const tenant = new FakeTenant();
     const otherCertificate = new X509Certificate(
@@ -168,6 +174,7 @@ describe("npm run setup against a fake tenant", () => {
     tenant.servicePrincipal(seeded.appId);
 
     const options = optionsFor(dir, {
+      appId: seeded.appId,
       features: ["audit.signins.read"],
       keepOtherPermissions: true,
       keepOtherRedirectUris: true,
@@ -175,7 +182,8 @@ describe("npm run setup against a fake tenant", () => {
     });
     const output: string[] = [];
     expect(await run(tenant, options, dir, output)).toBe("applied");
-    expect(output[0]).toContain("The setup checked that you own it");
+    expect(output[0]).toContain("The setup checked that you are its only owner");
+    expect(output[0]).toContain("its owners can change it at any time");
     expect(output[0]).toContain(
       "You chose to keep them, so the admin consent link grants them too.",
     );
@@ -235,12 +243,16 @@ describe("npm run setup against a fake tenant", () => {
     const output: string[] = [];
     await run(
       tenant,
-      optionsFor(dir, { features: ["audit.signins.read"], prunePermissions: true }),
+      optionsFor(dir, {
+        appId: seeded.appId,
+        features: ["audit.signins.read"],
+        prunePermissions: true,
+      }),
       dir,
       output,
     );
     expect(output[0]).toContain(
-      `remove Mail.Read and a delegated permission of another API (${OTHER_API}) (--prune-permissions)`,
+      `remove the requests for Mail.Read and a delegated permission of another API (${OTHER_API}) (--prune-permissions; this removes the request only, and consent already granted stays until it is revoked in the Entra admin center)`,
     );
     expect(seeded.requiredResourceAccess).toEqual([
       {
@@ -268,7 +280,7 @@ describe("npm run setup against a fake tenant", () => {
     expect(await readdir(dir)).toEqual([]);
     const plan = output[0] ?? "";
     expect(plan).toContain(
-      'App registration: create "Prism365", a single-tenant web app with implicit grant off, tagged prism365-setup.',
+      'App registration: create "Prism365", a single-tenant web app with implicit grant off, labelled prism365-setup.',
     );
     expect(plan).toContain("  openid, profile, offline_access and User.Read for sign-in");
     expect(plan).toContain("  User.Read.All for directory.users.read");
@@ -294,12 +306,22 @@ describe("npm run setup against a fake tenant", () => {
     expect(tenant.applications[0]?.keyCredentials).toEqual([]);
     const privateKey = await readFile(join(dir, "secrets/entra-private.pem"), "utf8");
     const certificate = new X509Certificate(await readFile(join(dir, "secrets/entra-public.pem")));
-    await expect(stat(join(dir, ".env"))).rejects.toThrow();
+    // .env names the registration as soon as it exists, so the next run carries on with it.
+    expect(await readFile(join(dir, ".env"), "utf8")).toContain(
+      `ENTRA_CLIENT_ID=${tenant.applications[0]?.appId}`,
+    );
 
     tenant.intercept = null;
     tenant.requests.length = 0;
-    expect(await run(tenant, optionsFor(dir), dir)).toBe("applied");
-    expect(tenant.writes.map((request) => request.method)).toEqual(["PATCH"]);
+    const output: string[] = [];
+    expect(await run(tenant, optionsFor(dir), dir, output)).toBe("applied");
+    expect(output[0]).toContain("the one .env uses");
+    // The run label the failed run left comes off, and the certificate goes on.
+    expect(tenant.writes.map((request) => Object.keys(request.body as object))).toEqual([
+      ["tags"],
+      ["keyCredentials"],
+    ]);
+    expect(tenant.applications[0]?.tags).toEqual([SETUP_TAG]);
     expect(tenant.applications).toHaveLength(1);
     expect(tenant.servicePrincipals).toHaveLength(1);
     expect(await readFile(join(dir, "secrets/entra-private.pem"), "utf8")).toBe(privateKey);
@@ -352,30 +374,51 @@ describe("npm run setup against a fake tenant", () => {
     expect(await readFile(join(dir, "secrets/entra-private.pem"), "utf8")).toBe(privateKey);
   });
 
-  it("stops when several registrations match", async () => {
+  it("never searches: registrations others tagged or named Prism365 change nothing", async () => {
     const dir = await workspace();
     const tenant = new FakeTenant();
-    tenant.application({ tags: [SETUP_TAG] });
-    tenant.application({ tags: [SETUP_TAG] });
+    // Someone allowed to register apps tags sixty of their own, and names one Prism365.
+    for (let index = 0; index < 60; index += 1)
+      tenant.application({
+        tags: [SETUP_TAG],
+        displayName: index === 0 ? "Prism365" : `junk ${index}`,
+        owners: ["99999999-0000-4000-8000-000000000009"],
+      });
     const output: string[] = [];
-    await expect(run(tenant, optionsFor(dir), dir, output)).rejects.toThrow(SetupError);
-    expect(output[0]).toContain("2 app registrations match");
-    expect(output[0]).toContain("--app-id");
-    expect(tenant.writes).toEqual([]);
-    expect(await readdir(dir)).toEqual([]);
+    expect(await run(tenant, optionsFor(dir), dir, output)).toBe("applied");
+    // The only search is for this run's own marker, never the public label or a name.
+    const searches = tenant.requests.filter(
+      (request) => request.method === "GET" && request.path === "applications",
+    );
+    for (const search of searches)
+      expect(search.query.get("$filter")).toMatch(
+        /^tags\/any\(t:t eq 'prism365-setup-run-[0-9a-f]{16}'\)$/,
+      );
+    const mine = tenant.applications[60];
+    expect(
+      tenant.requests.filter(
+        (request) => request.path.endsWith("/owners") && !request.path.includes(mine?.id ?? "-"),
+      ),
+    ).toEqual([]);
+    expect(tenant.applications).toHaveLength(61);
+    expect(tenant.applications.slice(0, 60).every((item) => item.keyCredentials.length === 0)).toBe(
+      true,
+    );
   });
 
   it("stops before any change when a certificate's key cannot be read in full", async () => {
     const dir = await workspace();
     const tenant = new FakeTenant();
     const hidden = "77777777-7777-4777-8777-777777777777";
-    tenant.application({
+    const target = tenant.application({
       tags: [SETUP_TAG],
       keyCredentials: [{ keyId: hidden, type: "AsymmetricX509Cert", usage: "Verify", key: "AAAA" }],
       hiddenKeys: [hidden],
     });
     const output: string[] = [];
-    await expect(run(tenant, optionsFor(dir), dir, output)).rejects.toThrow(SetupError);
+    await expect(
+      run(tenant, optionsFor(dir, { appId: target.appId }), dir, output),
+    ).rejects.toThrow(SetupError);
     expect(output[0]).toContain(`did not return the full key of ${hidden}`);
     expect(tenant.writes).toEqual([]);
   });
@@ -387,16 +430,18 @@ describe("npm run setup against a fake tenant", () => {
       newCredential(certificateRequest("other.example", new Date())).certificatePem,
     );
     const keyId = "88888888-8888-4888-8888-888888888888";
-    tenant.application({
+    const target = tenant.application({
       tags: [SETUP_TAG],
       keyCredentials: [
         { keyId, type: "AsymmetricX509Cert", usage: "Verify", key: kept.raw.toString("base64") },
       ],
     });
     tenant.dropOnPatch = [keyId];
-    const failure = await run(tenant, optionsFor(dir, { keepOtherCertificates: true }), dir).catch(
-      (caught: unknown) => caught,
-    );
+    const failure = await run(
+      tenant,
+      optionsFor(dir, { appId: target.appId, keepOtherCertificates: true }),
+      dir,
+    ).catch((caught: unknown) => caught);
     expect(failure).toBeInstanceOf(KeyCredentialSafetyError);
     expect((failure as Error).message).toContain(keyId);
   });
