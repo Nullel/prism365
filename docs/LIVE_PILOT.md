@@ -178,7 +178,7 @@ Production constraints apply: an HTTPS reverse proxy with a real origin, a certi
 to the registration and referenced by `ENTRA_CERTIFICATE_PATH` and `ENTRA_PRIVATE_KEY_PATH`,
 PostgreSQL and the encryption key. Not needed to get out of demo on this Mac.
 
-## 3. Phase 2: make the Overview live (YELLOW, spec-builder, about two days)
+## 3. Phase 2: make the Overview live (YELLOW, about two days)
 
 After Phase 1 the Overview is still a placeholder. The existing `dashboardSummarySchema`
 (metrics, sign-in trend, recent activity, time window) can be filled on request from the

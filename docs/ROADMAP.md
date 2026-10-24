@@ -120,7 +120,7 @@ Decided 2026-10-22. Prism365 never writes to a tenant, in any release. The value
 product is that it structurally cannot overreach, and a write path, however guarded, makes
 that claim conditional. Lifecycle changes (onboard, role change, offboard) belong to the
 separate plan-then-apply tool, Tenure, which carries its own write identity, dry-run diff,
-confirmation, audit chain and refuter review.
+confirmation, audit chain and adversarial review.
 
 What this means for code that already exists:
 
