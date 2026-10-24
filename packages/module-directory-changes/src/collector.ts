@@ -51,9 +51,11 @@ const STRIKE_SPREAD_MS = 10 * MINUTE;
 const DETECTION_BATCH = 500;
 // Window size of the best-effort re-read of recent records that have not settled yet.
 const FRESH_WINDOW_MS = 30 * MINUTE;
-// A gap finding that a later complete read covered is retitled to this, so it is not retitled
-// again on every run.
-export const HEALED_TITLE = "A gap in directory changes was read later";
+// A gap finding whose span the settle lane read again and found changes in is retitled to this,
+// so it is not retitled again on every run. It stays open for a person to check.
+export const READ_AGAIN_TITLE = "A gap in directory changes was read again";
+// Fresh spans kept for the settle lane; beyond this the two closest are merged.
+const FRESH_SPANS = 16;
 
 const iso = (value: Date | number) => new Date(value).toISOString();
 
@@ -87,6 +89,8 @@ interface Run {
   complete: boolean;
   // Pages Microsoft has answered in this run.
   answers: number;
+  // A window failed in this run, or a lane is held at one that keeps failing.
+  troubled: boolean;
 }
 
 // One lane's reading position and window state (see cursor.ts).
@@ -97,7 +101,11 @@ interface Lane {
   // busy or too slow, so the next window does not grow straight back into it.
   hold: number | null;
   trying: number | null;
+  grown: boolean;
+  backoff: number;
+  ceiling: { span: number; until: number } | null;
   strikes: { at: string; count: number; since?: string | undefined } | undefined;
+  uncounted: { at: number; failure: Exclude<Failure, "stopped"> } | null;
 }
 
 type WindowStatus = "complete" | "overflow" | "stopped";
@@ -448,10 +456,12 @@ interface OpenGap {
   end: number;
 }
 
-// A gap that a later complete read covered: the same finding, saying nothing is missing. The
-// module cannot change a finding's state, so it says so and leaves resolving it to a person.
-function healedFinding(gap: OpenGap, at: number): FindingInput {
+// A gap whose span the settle lane read again and found changes in: the same finding, saying how
+// many. A read that returns changes can still be partial, so it stays open, and a person resolves
+// it after checking the Entra audit log.
+function readAgainFinding(gap: OpenGap, at: number, found: number): FindingInput {
   const span = `between ${iso(gap.start)} and ${iso(gap.end)}`;
+  const changes = found === 1 ? "1 change" : `${found} changes`;
   return {
     ruleId: GAP_RULE,
     ruleVersion: RULES_VERSION,
@@ -460,17 +470,24 @@ function healedFinding(gap: OpenGap, at: number): FindingInput {
     severity: "medium",
     score: 40,
     subject: { kind: "service", id: MODULE_ID, label: "Directory change collection" },
-    title: HEALED_TITLE,
-    summary: `Prism365 could not read the directory changes ${span} at first. It read the whole span later (${iso(at)}), so nothing is missing from it. Resolve this finding.`,
+    title: READ_AGAIN_TITLE,
+    summary: `Prism365 could not read the directory changes ${span} at first. It read the span again on ${iso(at)} and found ${changes} in it, now in the feed and judged by the rules. Microsoft can answer only part of a span under load, so some may still be missing: check the Entra audit log for this span, then resolve this finding.`,
     evidence: [
       {
         source: "Prism365 directory change collector",
         ref: `${iso(gap.start)}/${iso(gap.end)}`,
         observedAt: iso(at),
-        fields: { readLater: true, windowStart: iso(gap.start), windowEnd: iso(gap.end) },
+        fields: {
+          readAgain: true,
+          found,
+          windowStart: iso(gap.start),
+          windowEnd: iso(gap.end),
+        },
       },
     ],
-    limitations: ["Read later; nothing is missing from this span."],
+    limitations: [
+      "A later read can be incomplete too; finding changes in the span does not prove none are missing.",
+    ],
     window: { start: new Date(gap.start), end: new Date(gap.end) },
     observedAt: new Date(at),
   };
@@ -487,7 +504,7 @@ async function openGaps(context: CollectorContext): Promise<OpenGap[]> {
         WHERE tenant_id = $1 AND module = $2 AND rule_id = $3 AND state <> 'resolved'
           AND title <> $4
         ORDER BY first_seen LIMIT 200`,
-      [context.tenantId, MODULE_ID, GAP_RULE, HEALED_TITLE],
+      [context.tenantId, MODULE_ID, GAP_RULE, READ_AGAIN_TITLE],
     ),
   );
   // Only a span that was never read can be read whole later. A span that held too many records
@@ -506,6 +523,23 @@ async function openGaps(context: CollectorContext): Promise<OpenGap[]> {
 function shrink(lane: Lane, from: number, end: number): void {
   lane.span = Math.max(MIN_SPAN_MS, Math.floor((end - from) / 2));
   lane.hold = end;
+  lane.grown = false;
+}
+
+// A window that failed right after the lane grew to it: that size is too much for now. Windows
+// grow back only to half of it until the lane is past it by as much again as it was long, and
+// each time in a row that happens doubles how far that is. Any other failure only halves, so
+// narrowing down to a millisecond that never answers lets the lane grow back at once after it.
+const MAX_BACKOFF = 10;
+function shrinkAfterFailure(lane: Lane, from: number, end: number): void {
+  const grown = lane.grown;
+  shrink(lane, from, end);
+  if (!grown) return;
+  lane.backoff = Math.min(MAX_BACKOFF, lane.backoff + 1);
+  lane.ceiling = {
+    span: lane.span,
+    until: end + (end - from) * (2 ** lane.backoff - 1),
+  };
 }
 
 // A window that failed: one that can still be split is halved and tried again; one that cannot
@@ -513,7 +547,7 @@ function shrink(lane: Lane, from: number, end: number): void {
 // collection.
 function windowFailed(lane: Lane, from: number, end: number, now: number): "retry" | "give_up" {
   if (end - from > MIN_SPAN_MS) {
-    shrink(lane, from, end);
+    shrinkAfterFailure(lane, from, end);
     return "retry";
   }
   const earlier = lane.strikes?.at === iso(from) ? lane.strikes : undefined;
@@ -544,7 +578,15 @@ function toLane(at: string, state: LaneState): Lane {
     span: state.span ?? MAX_SPAN_MS,
     hold: state.hold ? Date.parse(state.hold) : null,
     trying: state.trying ? Date.parse(state.trying) : null,
+    grown: state.grown === true,
+    backoff: state.backoff ?? 0,
+    ceiling: state.ceiling
+      ? { span: state.ceiling.span, until: Date.parse(state.ceiling.until) }
+      : null,
     strikes: state.strikes,
+    uncounted: state.uncounted
+      ? { at: Date.parse(state.uncounted.at), failure: state.uncounted.failure }
+      : null,
   };
 }
 
@@ -553,7 +595,15 @@ function laneState(lane: Lane): LaneState {
     ...(lane.span < MAX_SPAN_MS ? { span: lane.span } : {}),
     ...(lane.hold !== null ? { hold: iso(lane.hold) } : {}),
     ...(lane.trying !== null ? { trying: iso(lane.trying) } : {}),
+    ...(lane.grown ? { grown: true as const } : {}),
+    ...(lane.backoff > 0 ? { backoff: lane.backoff } : {}),
+    ...(lane.ceiling
+      ? { ceiling: { span: lane.ceiling.span, until: iso(lane.ceiling.until) } }
+      : {}),
     ...(lane.strikes ? { strikes: lane.strikes } : {}),
+    ...(lane.uncounted
+      ? { uncounted: { at: iso(lane.uncounted.at), failure: lane.uncounted.failure } }
+      : {}),
   };
 }
 
@@ -562,7 +612,11 @@ const newLane = (at: number): Lane => ({
   span: MAX_SPAN_MS,
   hold: null,
   trying: null,
+  grown: false,
+  backoff: 0,
+  ceiling: null,
   strikes: undefined,
+  uncounted: null,
 });
 
 // How a walk ended: at its end, or with more to read. `waiting` means it stopped at a window
@@ -576,6 +630,28 @@ interface WalkResult {
 interface SpanMark {
   from: number;
   to: number;
+}
+
+// The fresh spans the settle lane has not passed yet.
+function trimFresh(fresh: readonly SpanMark[], at: number): SpanMark[] {
+  return fresh
+    .filter((mark) => mark.to > at)
+    .map((mark) => ({ from: Math.max(mark.from, at), to: mark.to }));
+}
+
+// Two neighbouring spans with the least between them, as one. What lay between them counts as
+// fresh too, which can only widen a finding, never drop one.
+function mergeClosest(fresh: readonly SpanMark[]): SpanMark[] {
+  let best = 1;
+  for (let index = 2; index < fresh.length; index += 1) {
+    const gap = (fresh[index]?.from ?? 0) - (fresh[index - 1]?.to ?? 0);
+    const bestGap = (fresh[best]?.from ?? 0) - (fresh[best - 1]?.to ?? 0);
+    if (gap < bestGap) best = index;
+  }
+  const merged = [...fresh];
+  const [left, right] = [merged[best - 1], merged[best]];
+  if (left && right) merged.splice(best - 1, 2, { from: left.from, to: right.to });
+  return merged;
 }
 
 const toMark = (value: { from: string; to: string } | undefined): SpanMark | null =>
@@ -609,6 +685,7 @@ export async function collectDirectoryChanges(
     size: PAGE_SIZES[0],
     complete: true,
     answers: 0,
+    troubled: false,
   };
   const now = context.now.getTime();
   const oldest = now - HISTORY_DAYS * DAY;
@@ -626,9 +703,13 @@ export async function collectDirectoryChanges(
   const settle = saved ? toLane(saved.settle.at, saved.settle) : newLane(oldest);
   let missed = toMark(saved?.missed);
   let unsettled = toMark(saved?.unsettled);
-  let fresh = saved?.fresh ? Date.parse(saved.fresh) : null;
-  const persist = () =>
-    context.cursor.set(
+  let fresh: SpanMark[] = (saved?.fresh ?? []).map((value) => ({
+    from: Date.parse(value.from),
+    to: Date.parse(value.to),
+  }));
+  const persist = () => {
+    fresh = trimFresh(fresh, settle.at);
+    return context.cursor.set(
       JSON.stringify({
         v: 1,
         phase,
@@ -638,9 +719,12 @@ export async function collectDirectoryChanges(
         settle: { at: iso(settle.at), ...laneState(settle) },
         ...(missed ? { missed: fromMark(missed) } : {}),
         ...(unsettled ? { unsettled: fromMark(unsettled) } : {}),
-        ...(fresh !== null ? { fresh: iso(fresh) } : {}),
+        ...(fresh.length > 0
+          ? { fresh: fresh.map((mark) => ({ from: iso(mark.from), to: iso(mark.to) })) }
+          : {}),
       } satisfies DirectoryChangesCursor),
     );
+  };
   // One finding for a span that keeps growing: a new span that starts within the margin of the
   // last one's end continues it.
   const widen = (mark: SpanMark | null, from: number, to: number): SpanMark =>
@@ -660,7 +744,8 @@ export async function collectDirectoryChanges(
     settle.trying = null;
     settle.at =
       ahead > margin ? Math.max(start, oldest) : Math.min(settle.at, Math.max(start, settledBy));
-    fresh = Math.min(fresh ?? settle.at, settle.at);
+    // Everything the settle lane reads again from here was read fresh, as far as anyone knows.
+    fresh = settle.at < main.at ? [{ from: settle.at, to: main.at }] : [];
   }
   settle.at = Math.min(settle.at, main.at);
 
@@ -671,13 +756,17 @@ export async function collectDirectoryChanges(
   // history load, a catch-up) count as settled.
   const settleFloor = Math.min(oldest, main.at);
   if (settle.at < settleFloor) {
-    if (fresh !== null && Math.max(settle.at, fresh) < settleFloor) {
-      unsettled = widen(unsettled, Math.max(settle.at, fresh), settleFloor);
+    const skipped = fresh
+      .map((mark) => ({ from: Math.max(mark.from, settle.at), to: Math.min(mark.to, settleFloor) }))
+      .filter((mark) => mark.from < mark.to);
+    const first = skipped[0];
+    const last = skipped.at(-1);
+    if (first && last) {
+      unsettled = widen(unsettled, first.from, last.to);
       await upsertSafely(context, gapFinding("unsettled", unsettled.from, unsettled.to));
       run.complete = false;
     }
     settle.at = settleFloor;
-    fresh = fresh !== null && main.at > settleFloor ? Math.max(fresh, settleFloor) : null;
   }
 
   // The main lane is behind what Microsoft still keeps. When it had read nothing yet (the first
@@ -696,24 +785,33 @@ export async function collectDirectoryChanges(
   start = Math.min(start, settle.at);
 
   const advance = (lane: Lane, end: number) => {
-    // The main lane passing what is younger than the margin: from here on, the settle lane
-    // reads again what it reads.
-    if (lane === main && end > settledBy) fresh ??= Math.max(lane.at, settledBy);
+    // What the main lane passes while it is younger than the margin was read fresh: the settle
+    // lane reads it again. What it passes older than that was already settled when read.
+    if (lane === main && end > settledBy) markFresh(Math.max(lane.at, settledBy), end);
     lane.at = Math.max(lane.at, end);
     if (lane.strikes && Date.parse(lane.strikes.at) < end) lane.strikes = undefined;
     if (lane.hold !== null && end >= lane.hold) lane.hold = null;
+    if (lane.ceiling && end >= lane.ceiling.until) lane.ceiling = null;
     if (phase === "history" && main.at >= now) phase = "live";
   };
 
+  const markFresh = (from: number, to: number) => {
+    const last = fresh.at(-1);
+    if (last && from <= last.to) last.to = Math.max(last.to, to);
+    else fresh.push({ from, to });
+    if (fresh.length > FRESH_SPANS) fresh = mergeClosest(fresh);
+  };
+
   const gaps = await openGaps(context);
-  // A gap the settle lane later read whole, and that read returned records inside it, is
-  // retitled to say nothing is missing. A read that came back with nothing proves nothing: Learn
-  // says this API can answer empty under load, which is when windows fail.
-  const heal = async (from: number, end: number, times: readonly number[]) => {
+  // A gap the settle lane later read whole, when that read returned changes inside it, is
+  // retitled to say how many were found; it stays open. A read that came back with nothing says
+  // nothing: Learn says this API can answer empty under load, which is when windows fail.
+  const readAgain = async (from: number, end: number, times: readonly number[]) => {
     for (const gap of [...gaps]) {
       if (gap.start < from || gap.end > end) continue;
-      if (!times.some((at) => at >= gap.start && at <= gap.end)) continue;
-      await upsertSafely(context, healedFinding(gap, now));
+      const found = times.filter((at) => at >= gap.start && at <= gap.end).length;
+      if (found === 0) continue;
+      await upsertSafely(context, readAgainFinding(gap, now, found));
       gaps.splice(gaps.indexOf(gap), 1);
     }
   };
@@ -740,17 +838,17 @@ export async function collectDirectoryChanges(
   // Where the main lane stood when this run began: earlier runs read everything before it.
   const savedThrough = main.at;
 
-  // A window that fails is blamed on the window only when Microsoft answers other requests: for
-  // making it smaller, anything answered in this run; for a strike against a window that cannot
-  // be split, something answered since the last failure. Without that, a one-millisecond read of
-  // now tells. If that fails too, Microsoft is failing rather than the window (an outage, or
-  // throttling): the run ends with that failure and changes nothing, so it leaves no gap and
-  // the next try waits for the cadence.
+  // Halving a window loses nothing, so a window that can still be split is halved on any
+  // failure. A try against a window that cannot be split counts only when Microsoft answered
+  // something since the last failure; without that, a one-millisecond read of now tells. If that
+  // fails too, Microsoft is failing rather than the window (an outage, or throttling): the run
+  // ends with that failure and counts nothing, so it leaves no gap and the next try waits for the
+  // cadence. If the run is out of time before it knows, the try is marked uncounted and the next
+  // run finds out first.
   let answeredAtFailure = 0;
-  const blameWindow = async (splittable: boolean): Promise<boolean> => {
-    const enough = splittable ? 0 : answeredAtFailure;
+  const answering = async (): Promise<boolean> => {
     try {
-      if (run.answers > enough) return true;
+      if (run.answers > answeredAtFailure) return true;
       return (await readWindow(run, now, now)).status !== "stopped";
     } catch (error) {
       await persist();
@@ -759,6 +857,36 @@ export async function collectDirectoryChanges(
       answeredAtFailure = run.answers;
     }
   };
+  const countTry = async (
+    lane: Lane,
+    from: number,
+    end: number,
+    failure: Exclude<Failure, "stopped">,
+  ): Promise<"retry" | "given_up"> => {
+    if (windowFailed(lane, from, end, now) === "retry") return "retry";
+    await giveUp(from, end, failure);
+    advance(lane, end);
+    return "given_up";
+  };
+
+  // Tries a previous run could not count: Microsoft answering now, before anything else is
+  // read, says they were the window's. Failing now says Microsoft is failing, so the try was not
+  // the window's: it is dropped, nothing is counted, and the run waits for the cadence.
+  for (const lane of [main, settle]) {
+    const uncounted = lane.uncounted;
+    if (!uncounted) continue;
+    run.troubled = true;
+    lane.uncounted = null;
+    if (uncounted.at !== lane.at) continue;
+    run.deadline = began + budget;
+    if (!(await answering())) {
+      lane.uncounted = uncounted;
+      continue;
+    }
+    await countTry(lane, uncounted.at, windowEnd(uncounted.at, lane.span, now), uncounted.failure);
+    await persist();
+  }
+  settle.at = Math.min(settle.at, main.at);
 
   // Reads one lane forward to `until`, one window at a time, saving its place after each. A
   // window that failed is tried again at once, smaller, and given up after its strikes, while
@@ -768,14 +896,18 @@ export async function collectDirectoryChanges(
     while (lane.at < until) {
       const from = lane.at;
       const end = windowEnd(from, lane.span, until);
-      if (lastTryWaits(lane, from, now)) return { done: false, waiting: true };
+      if (lane.uncounted) return { done: false };
+      if (lastTryWaits(lane, from, now)) {
+        run.troubled = true;
+        return { done: false, waiting: true };
+      }
       // A window that had less than half the run's budget and still could not be finished
       // proves nothing about its size; only one that had the time counts as failed.
       const hadTime = deadline - clock() >= budget / 2;
       // Saved before reading, so a run stopped mid-window is visible to the next one.
       lane.trying = from;
       await persist();
-      let outcome: WindowRead | { status: "given_up"; read: 0; times: [] };
+      let outcome: WindowRead;
       try {
         outcome = await readWindow(run, from, end);
       } catch (error) {
@@ -785,23 +917,29 @@ export async function collectDirectoryChanges(
           await persist();
           throw error;
         }
-        // Out of time before Microsoft's health was known: nothing is counted.
-        if (!(await blameWindow(end - from > MIN_SPAN_MS))) {
-          await persist();
-          return { done: false };
-        }
-        if (windowFailed(lane, from, end, now) === "retry") {
+        run.troubled = true;
+        if (end - from > MIN_SPAN_MS) {
+          shrinkAfterFailure(lane, from, end);
+          answeredAtFailure = run.answers;
           await persist();
           continue;
         }
-        await giveUp(from, end, failure);
-        outcome = { status: "given_up", read: 0, times: [] };
+        if (!(await answering())) {
+          lane.uncounted = { at: from, failure };
+          await persist();
+          return { done: false };
+        }
+        await countTry(lane, from, end, failure);
+        await persist();
+        await judgePending(context);
+        continue;
       }
       lane.trying = null;
 
       if (outcome.status === "stopped") {
         // The time ran out inside this window. When the window had the time to itself, it
         // cannot be read in one run at this size, so the next run tries a smaller one.
+        if (hadTime) run.troubled = true;
         if (!hadTime || windowFailed(lane, from, end, now) === "retry") {
           await persist();
           return { done: false };
@@ -823,10 +961,20 @@ export async function collectDirectoryChanges(
         );
         run.complete = false;
       } else if (outcome.status === "complete") {
-        if (lane === settle) await heal(from, end, outcome.times);
-        // Past the busy stretch and quiet again: grow back toward full-size windows.
-        if (lane.hold === null && outcome.read * 2 < config.windowRecordLimit)
-          lane.span = Math.min(MAX_SPAN_MS, lane.span * 2);
+        if (lane === settle) await readAgain(from, end, outcome.times);
+        // Only a window of the lane's full size says anything about that size; one the grid or
+        // the walk's end cut shorter leaves the lane as it is.
+        if (end - from >= lane.span) {
+          // The size the lane had just grown to read fine: it works again.
+          if (lane.grown) lane.backoff = 0;
+          // Past the busy stretch and quiet again: grow back toward full-size windows.
+          const largest = Math.min(MAX_SPAN_MS, lane.ceiling?.span ?? MAX_SPAN_MS);
+          lane.grown =
+            lane.hold === null &&
+            lane.span < largest &&
+            outcome.read * 2 < config.windowRecordLimit;
+          if (lane.grown) lane.span = Math.min(largest, lane.span * 2);
+        }
       }
       advance(lane, end);
       await persist();
@@ -843,8 +991,13 @@ export async function collectDirectoryChanges(
   const mainWalk = await walk(main, now, mainDeadline);
   await persist();
   // While history loads, the settle lane waits: it reads all of history again afterwards.
-  const behind = (walked: WalkResult) => !walked.done && !walked.waiting;
-  if (phase === "history") return { complete: run.complete, more: behind(mainWalk) };
+  // A run that leaves a lane short of its goal because of failing windows says so: it is
+  // partial, not a plain success, even while it asks to run again.
+  const finish = (...walks: WalkResult[]): CollectorResult => ({
+    complete: run.complete && !(run.troubled && walks.some((walked) => !walked.done)),
+    more: walks.some((walked) => !walked.done && !walked.waiting),
+  });
+  if (phase === "history") return finish(mainWalk);
 
   const settleWalk = await walk(settle, Math.min(main.at, settledBy), began + budget);
   await persist();
@@ -866,5 +1019,5 @@ export async function collectDirectoryChanges(
     to = from;
   }
   await judgePending(context);
-  return { complete: run.complete, more: behind(mainWalk) || behind(settleWalk) };
+  return finish(mainWalk, settleWalk);
 }

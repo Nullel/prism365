@@ -231,6 +231,8 @@ const roleAssigned: ChangeRule = {
     "add member to role scoped over restricted management administrative unit",
     "add member to role in pim completed (permanent)",
     "add member to role in pim completed (timebound)",
+    "add eligible member to role in pim completed (permanent)",
+    "add eligible member to role in pim completed (timebound)",
     PIM_ACTIVATION,
   ],
   judge(event, tenantId, related) {
@@ -275,6 +277,11 @@ const roleAssigned: ChangeRule = {
       fields: { role },
       limitations: [
         "Roles granted through membership of a role-assignable group show up as a group change, not here.",
+        ...(addedByPim(event)
+          ? [
+              "PIM writes this directory record for activations too. It is counted with an activation only when Microsoft gives both records the same correlation id, never by time, so an activation recorded with different ids also raises this finding.",
+            ]
+          : []),
       ],
     });
   },

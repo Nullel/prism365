@@ -24,6 +24,18 @@ const laneState = {
   // answer for it, and doubled after each quiet window once the lane is past `hold`.
   span: z.number().int().min(MIN_SPAN_MS).max(MAX_SPAN_MS).optional(),
   hold: z.string().datetime().optional(),
+  // The window size was just doubled. When a window of a size the lane had just grown to fails,
+  // windows stay at most `ceiling.span` until the lane passes `ceiling.until`, and each such
+  // failure in a row (`backoff`) doubles how far that is, so a size Microsoft cannot answer is
+  // not tried again every other window.
+  grown: z.literal(true).optional(),
+  backoff: z.number().int().min(1).max(10).optional(),
+  ceiling: z
+    .object({
+      span: z.number().int().min(MIN_SPAN_MS).max(MAX_SPAN_MS),
+      until: z.string().datetime(),
+    })
+    .optional(),
   // The start of the window being read when the cursor was last saved. Still set when the next
   // run starts means the run was stopped mid-window (its time limit, or a restart), so that
   // window counts as failed instead of being retried at the same size forever.
@@ -35,6 +47,15 @@ const laneState = {
       at: z.string().datetime(),
       count: z.number().int().min(0).max(100),
       since: z.string().datetime().optional(),
+    })
+    .optional(),
+  // A try at the minimum-size window starting at `at` that failed and could not be counted: the
+  // run ran out of time before it knew whether Microsoft was answering anything. The next run
+  // finds out first.
+  uncounted: z
+    .object({
+      at: z.string().datetime(),
+      failure: z.enum(["slow", "failing", "refused", "unreadable"]),
     })
     .optional(),
 };
@@ -54,12 +75,12 @@ export const cursorSchema = z
     // within the margin of the last one's end widens the same finding instead of raising another.
     missed: span.optional(),
     unsettled: span.optional(),
-    // Where the changes the main lane read while they were younger than the late-arrival margin
-    // begin. Before it, the main lane read changes that were already old enough to have settled
-    // (the history load, a catch-up after collection was stopped), so the settle lane losing them
-    // to Microsoft's retention loses nothing. Unset while there are none the settle lane could
-    // still read.
-    fresh: z.string().datetime().optional(),
+    // The spans the main lane read while they were younger than the late-arrival margin and the
+    // settle lane has not read again yet, oldest first. What the main lane read when it was
+    // already old enough to have settled (the history load, a catch-up after collection was
+    // stopped) is not in them, so the settle lane losing it to Microsoft's retention loses
+    // nothing.
+    fresh: z.array(span).max(16).optional(),
   })
   .refine(
     (value) =>

@@ -500,8 +500,38 @@ describe("role activations through Privileged Identity Management", () => {
       title: "Global Administrator assigned",
       dedupeKey: "Directory_2026-10-21T15:00:02.000Z_c-1",
     });
+    // It says why it may stand beside an activation.
+    expect(unpaired?.limitations.join(" ")).toContain("never by time");
     // A permanent assignment outside PIM stays one finding per event.
     expect(judged(roleAdded({ id: globalAdministrator }))[0]?.dedupeKey).toBe("Directory_rule_1");
+  });
+
+  it("flags making someone eligible for a privileged role in PIM, permanently or for a time", () => {
+    const other = { kind: "user" as const, id: adminId, name: "Synthetic Admin", principal: null };
+    for (const activity of [
+      "Add eligible member to role in PIM completed (permanent)",
+      "Add eligible member to role in PIM completed (timebound)",
+    ]) {
+      const [finding] = judged(role("2026-10-21T15:00:00.000Z", activity, other, "c-7"));
+      expect(finding).toMatchObject({
+        ruleId: "role.privileged-assigned",
+        severity: "critical",
+        title: "Global Administrator assigned",
+        dedupeKey: "Directory_2026-10-21T15:00:00.000Z_c-7",
+      });
+      expect(finding?.summary).toContain("as an eligible assignment");
+    }
+    // A request that has not completed changes nothing yet.
+    expect(
+      judged(
+        role(
+          "2026-10-21T15:00:00.000Z",
+          "Add eligible member to role in PIM requested (permanent)",
+          other,
+          "c-8",
+        ),
+      ),
+    ).toEqual([]);
   });
 });
 

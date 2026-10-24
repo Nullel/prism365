@@ -1,6 +1,6 @@
 # Module: directory.changes
 
-Status: built (TL-030), first and second adversarial reviews fixed, third review pending. Package: `packages/module-directory-changes`.
+Status: built (TL-030), three adversarial reviews fixed, fourth review pending. Package: `packages/module-directory-changes`.
 
 ## 1. What it answers
 
@@ -62,8 +62,8 @@ at most 25 seconds and starts no request after that, so the last request has its
 finish. Each request the module makes starts at least 2.2 seconds after the previous one
 finished, across runs, so the module's requests stay within the 5 per 10 seconds Microsoft allows
 per app and tenant. When Microsoft answers 429, the Graph client retries inside that one request
-after the wait Microsoft gives; those retries are Microsoft's pace, not the
-module's. A wait carried over from an earlier run is never longer than one interval, so a clock
+after the wait Microsoft gives; those retries are Microsoft's pace, not the module's. A wait
+carried over from an earlier run is never longer than one interval, so a clock
 that stepped back cannot hold collection.
 
 - The first run starts 30 days back (Microsoft's longest retention) and reads forward in windows
@@ -85,30 +85,42 @@ that stepped back cannot hold collection.
   stopped mid-window is seen by the next one, which counts that window as failed.
 - A window holding more than 5,000 records is split in half and read again from the same place,
   down to a single millisecond (Microsoft's filter is millisecond-precise). A window that fails
-  is halved and read again at once, in the same run while it has time: one that times out, that
+  is halved too, whatever the cause, since halving loses nothing: one that times out, that
   Microsoft answers with a server error or a request to wait longer than the client waits (a
   deferred 429), that Microsoft refuses (400) or answers too large at both page sizes, whose
   answer is malformed or pages in a loop, or that could not be finished in a run that gave it at
-  least half its time. A run still narrowing one down asks to run again within seconds. Only a
-  window that cannot be split further is given up: one that still holds too much keeps what it
-  read and is recorded as a gap; one that keeps failing is tried three times, the last at least
-  10 minutes after the first (on a later scheduled run), then recorded as a gap that says why,
-  and the lane moves past it. The wait keeps a burst of failures that has nothing to do with the
-  window from using up its tries within seconds. The window after it, which starts on its last
-  millisecond (both bounds are inclusive), counts from the same first failure. Windows lie on a grid of their own size, and
-  gap findings are keyed by the minute they start in, so the same span is one finding however
-  often it is read.
-- A failure is blamed on the window only while Microsoft answers other requests: to halve a
-  window, anything answered in the run; to count a try against a millisecond, something
-  answered since the last failure. Otherwise a one-millisecond read of the present tells. When
-  that fails too, Microsoft is failing rather than the window (an outage, or throttling): the run
-  fails with that error and changes nothing, so an outage leaves no gap and the next try waits
-  for the cadence. A 401, a 403 or a missing credential also fails the run and keeps the lane
-  where it is.
+  least half its time. A run reads the smaller window at once while it has time; a failure that
+  took the run's whole budget (a 90-second timeout, a 504 after a minute) leaves the halving to
+  the next run, which comes within seconds.
+- Only a window that cannot be split further is given up: one that still holds too much keeps
+  what it read and is recorded as a gap; one that keeps failing is tried three times, the last
+  at least 10 minutes after the first (on a later scheduled run), then recorded as a gap that
+  says why, and the lane moves past it. The wait keeps a burst of failures that has nothing to
+  do with the window from using up its tries within seconds. The window after it, which starts
+  on its last millisecond (both bounds are inclusive), counts from the same first failure.
+  Windows lie on a grid of their own size, and gap findings are keyed by the minute they start
+  in, so the same span is one finding however often it is read.
+- A try against a millisecond counts only when Microsoft answered something since the last
+  failure; otherwise a one-millisecond read of the present tells. When that fails too,
+  Microsoft is failing rather than the window (an outage, or throttling): the run fails with
+  that error and counts nothing, so an outage leaves no gap and the next try waits for the
+  cadence. When the run is out of time before it can tell, the try is saved as uncounted, and
+  the next run reads the present first: an answer counts the try, a failure drops it. A 401, a
+  403 or a missing credential fails the run and keeps the lane where it is.
+- A run that ends with a lane short of where it was going because windows failed, or with a
+  lane waiting at a millisecond's last try, is reported as partial, never as a plain success,
+  even while it asks to run again.
+- After a quiet window the lane doubles its window size again. When a window of the size it
+  had just grown to fails, windows grow back only to half that size until the lane is past it
+  by as much again as that window was long, and each such failure in a row doubles how far
+  that is. A tenant where Microsoft cannot answer windows over an hour then loses one timeout
+  every so often rather than every other window. Only a window of the lane's full size changes
+  this; one the grid or the end of the read cut shorter says nothing about the size.
 - A gap that the settle lane later reads whole, when that read returns changes inside it, is
-  retitled "A gap in directory changes was read later" and says nothing is missing; a person
-  resolves it. A read that comes back with nothing leaves the gap open, since Microsoft can answer
-  empty under load. The best-effort re-read stores what it finds in a gap but does not retitle
+  retitled "A gap in directory changes was read again" with the number of changes found. It
+  stays open: a read that returns changes can still be partial under load, so a person checks
+  the Entra audit log for the span and resolves it. A read that comes back with nothing leaves
+  the gap as it was. The best-effort re-read stores what it finds in a gap but does not retitle
   it.
 - Events are stored by id; a record read again changes nothing, and neither do its subjects.
 - If the main lane falls behind what Microsoft still keeps after it had read something,
@@ -117,9 +129,11 @@ that stepped back cannot hold collection.
 - If the settle lane falls behind what Microsoft still keeps, it moves to what Microsoft keeps.
   The part of the span it skipped that the main lane read while it was fresh (younger than the
   margin) is recorded as "Late directory changes may be missing": a change Microsoft published
-  late there may never have been read. What the main lane read when it was already old (the
-  history load, a catch-up) counts as settled. For both kinds, a new span that starts within the
-  margin of the last one's end widens the same finding.
+  late there may never have been read. The cursor keeps those fresh spans (up to 16; beyond
+  that the two closest are merged, which can only widen a finding), so what the main lane read
+  when it was already old (the history load, a catch-up after a stop) counts as settled and is
+  never claimed. For both kinds, a new span that starts within the margin of the last one's end
+  widens the same finding.
 - A saved position in the future (a clock that ran ahead and came back) brings the main lane
   back to now. When the clock ran ahead by more than the margin, the settle lane reads
   everything Microsoft still keeps again, since changes made meanwhile may lie behind it.
@@ -137,7 +151,7 @@ audit log activity reference"; role template IDs from "Microsoft Entra built-in 
 
 | Rule | Category | Activities | Severity | Subject |
 |---|---|---|---|---|
-| `role.privileged-assigned` | RoleManagement | Add member to role; Add eligible member to role; Add scoped member to role; Add member to role scoped over Restricted Management Administrative Unit; Add member to role in PIM completed (permanent); Add member to role in PIM completed (timebound); Add member to role completed (PIM activation) | critical for Global Administrator; high for Privileged Role, Privileged Authentication, Security, Conditional Access, Exchange, SharePoint, User, Application, Cloud Application, Authentication and Intune Administrator | the person (or group or app) added |
+| `role.privileged-assigned` | RoleManagement | Add member to role; Add eligible member to role; Add scoped member to role; Add member to role scoped over Restricted Management Administrative Unit; Add member to role in PIM completed (permanent); Add member to role in PIM completed (timebound); Add eligible member to role in PIM completed (permanent); Add eligible member to role in PIM completed (timebound); Add member to role completed (PIM activation) | critical for Global Administrator; high for Privileged Role, Privileged Authentication, Security, Conditional Access, Exchange, SharePoint, User, Application, Cloud Application, Authentication and Intune Administrator | the person (or group or app) added |
 | `app.credential-added` | ApplicationManagement | Add service principal credentials; Update application - Certificates and secrets management (when a key ID appears that was not there before, or the key list is missing or too long to compare) | high | the application |
 | `app.consent-granted` | ApplicationManagement | Consent to application | high when ConsentContext.OnBehalfOfAll is true (or, without it, IsAdminConsent), medium otherwise | the application |
 | `policy.conditional-access-changed` | Policy | Add, Update, Delete Conditional Access policy | medium; high for a deletion | the policy |
@@ -152,8 +166,12 @@ shares that record's correlation id. Activations are one finding per account, ro
 counting each one. Everything else is one finding per event, titled as an assignment: permanent
 and timebound assignments made in PIM, eligible assignments, and an MS-PIM record with no
 activation beside it. So an assignment never folds into an activation someone has already
-acknowledged. When the directory's record is judged before PIM's own record is stored (Microsoft
-published it later, or it sits in the next window), it stands as its own assignment finding.
+acknowledged. The two records are paired by correlation id only, never by time, since pairing by
+time would let an assignment made minutes after an activation fold into it. So when Microsoft
+gives an activation's two records different correlation ids, or the directory's record is
+judged before PIM's own record is stored (Microsoft published it later, or it sits in the next
+window), the directory's record raises its own "assigned through Privileged Identity Management"
+finding beside the activation; the finding's limitations say so. That is noise kept on purpose.
 Learn's reference has no federation-specific "Update domain" activity, so that match depends on
 the property name.
 
@@ -199,7 +217,9 @@ row holds is listed in `docs/PRIVACY.md`.
 - Learn notes that the API can answer with empty results under heavy load. Every window the main
   lane read is read again by the settle lane, so a record is lost only if both reads come back
   empty. A span the main lane gave up is read only by the settle lane (and, without saving
-  anything, the best-effort re-read); if that read comes back empty, its gap finding stays open.
+  anything, the best-effort re-read); if that read comes back empty, its gap finding stays open,
+  and if it returns changes the finding says how many but stays open, since that read too may
+  have been partial.
 - A millisecond Microsoft never answers for is given up and its changes are missing; everything
   around it is read.
 - A record exactly on a millisecond boundary sits in the windows on both sides of it, so a gap
@@ -213,14 +233,18 @@ row holds is listed in `docs/PRIVACY.md`.
 pacing on every lane, the page-size fallback and back-to-back runs, and a clock that stepped
 back; late records on the best-effort re-read and on the settle lane with no time to spare; the
 240-minute default; repeats; a budget running out mid-window; splitting below a minute; a
-one-millisecond gap found once; a window that never answers and one that keeps failing, both
-narrowed at once and given up on a scheduled run ten minutes on, the second healed when the
-settle lane reads its change; a burst of failures shorter than ten minutes giving nothing up; gap findings left open on an empty read and not healed by the best-effort re-read;
+one-millisecond gap found once; a window that never answers (each try costing a 90-second
+timeout) narrowed a run per failure and given up on its third try ten minutes on, with every
+run that met it partial; one that keeps failing given up the same way and retitled as read again
+when the settle lane finds its change; wide windows timing out or answering 504 after a minute
+after a stop, caught up within three polls; a history load where every window over an hour
+times out, with the growth ceiling keeping timeouts rare; a burst of failures shorter than ten
+minutes giving nothing up; gap findings left open on an empty read and not retitled by the best-effort re-read;
 answers too large, refused or paging in a loop at both page sizes; gateway errors on wide windows
 caught up in one poll; an outage that changes nothing; throttling that starts mid-run; empty
 answers in the history load and a catch-up; a run stopped mid-request; strikes cleared; refused
 access raising nothing; widening findings for a span Microsoft dropped, for the span the settle
-lane skipped, and at the retention edge; a clock that ran ahead; the settle lane's third of the
+lane skipped, and at the retention edge; a catch-up whose old reads a later skip does not claim; a clock that ran ahead; the settle lane's third of the
 run; an acknowledged PIM activation followed by a permanent assignment; unreadable records;
 garbage cursors; the smaller page size; rules restarting; the language-policy fallback; settings
 and retention. Each rule against its near misses, including PIM activations and assignments,

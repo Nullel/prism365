@@ -14,10 +14,10 @@ import {
   createDirectoryChangesModule,
   type DirectoryChangesConfig,
   defaultDirectoryChangesConfig,
-  HEALED_TITLE,
   MAX_SPAN_MS,
   PAGE_INTERVAL_MS,
   type Pacer,
+  READ_AGAIN_TITLE,
 } from "../src/index.ts";
 
 // Each scenario opens PGlite inside the test; on a loaded machine that cold start alone can pass
@@ -71,8 +71,16 @@ let answerWith: ((request: { from: number; to: number; url: URL }) => Response |
 // Answers a request with an empty page instead of the log, when it returns true.
 let emptyWhen: ((request: { from: number; to: number }) => boolean) | null;
 let onRequest: ((url: URL) => void) | null;
-// A moment Microsoft never answers for in time, at any window size.
+// A moment Microsoft never answers for in time, at any window size. Each such request costs the
+// collector the client's whole timeout (90 seconds, as background readers are given) before it
+// fails.
 let slowAt: number | null;
+// Windows Microsoft never answers in time, the same way, when it returns true.
+let slowWhen: ((request: { from: number; to: number }) => boolean) | null;
+const SLOW_COST = 90_000;
+// Collector-clock time a request takes beyond `requestCost`, when it returns one: a 504 that
+// comes back after 60 seconds, say.
+let costWith: ((request: { from: number; to: number }) => number) | null;
 // Every wait the collector asked for between requests.
 let slept: number[];
 let database: PGliteModuleDatabase;
@@ -134,6 +142,8 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
   );
   const begun = elapsed;
   elapsed += requestCost;
+  if (match?.[1] && match[2])
+    elapsed += costWith?.({ from: Date.parse(match[1]), to: Date.parse(match[2]) }) ?? 0;
   const log = (status: number) =>
     sent.push({
       url,
@@ -166,9 +176,12 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
     log(status);
     return json(status);
   }
+  const slow =
+    (slowAt !== null && fromMs <= slowAt && toMs >= slowAt) ||
+    (slowWhen?.({ from: fromMs, to: toMs }) ?? false);
+  if (slow) elapsed += SLOW_COST;
   log(200);
-  if (slowAt !== null && fromMs <= slowAt && toMs >= slowAt)
-    await new Promise((resolve) => setTimeout(resolve, 300));
+  if (slow) await new Promise((resolve) => setTimeout(resolve, 300));
   if (emptyWhen?.({ from: fromMs, to: toMs })) return Response.json({ value: [] });
   const value = records
     .filter((record) => {
@@ -261,10 +274,12 @@ interface StoredCursor {
   hold?: string;
   trying?: string;
   strikes?: { at: string; count: number };
+  uncounted?: { at: string; failure: string };
+  backoff?: number;
   settle?: { at: string; span?: number; trying?: string };
   missed?: { from: string; to: string };
   unsettled?: { from: string; to: string };
-  fresh?: string;
+  fresh?: { from: string; to: string }[];
 }
 const cursor = async (): Promise<StoredCursor> =>
   JSON.parse(
@@ -351,6 +366,34 @@ async function scheduled(polls: number, after?: () => Promise<void>) {
   }
 }
 
+// Scheduled runs ten minutes apart with the runs each asks for, until `done` holds. Records each
+// run's status and whether it made a request `marked` picks out.
+async function tracked(
+  polls: number,
+  marked: (request: Sent) => boolean,
+  done: () => Promise<boolean>,
+): Promise<{ polls: number; runs: { status: string; marked: boolean }[] }> {
+  const ran: { status: string; marked: boolean }[] = [];
+  let index = 0;
+  for (; index < polls && !(await done()); index += 1) {
+    wait(10 * MINUTE);
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const sentBefore = sent.length;
+      const runsBefore = (await allRuns()).length;
+      await scheduler.tick();
+      const after = await allRuns();
+      if (after.length > runsBefore)
+        ran.push({
+          status: after.at(-1)?.status ?? "",
+          marked: sent.slice(sentBefore).some(marked),
+        });
+      if ((await cursor()).through === clock.toISOString() || (await done())) break;
+      wait(5_000);
+    }
+  }
+  return { polls: index, runs: ran };
+}
+
 // Scheduled runs that may fail, ten minutes apart.
 async function runFor(polls: number, after?: () => Promise<void>) {
   for (let index = 0; index < polls; index += 1) {
@@ -373,6 +416,8 @@ beforeEach(() => {
   slept = [];
   onRequest = null;
   slowAt = null;
+  slowWhen = null;
+  costWith = null;
 });
 
 afterEach(async () => {
@@ -687,20 +732,35 @@ describe("directory change collector", () => {
     expect((await cursor()).strikes).toBeUndefined();
   });
 
-  it("narrows a window Microsoft never answers to a millisecond at once and gives it up on the third try, ten minutes on", async () => {
+  it("narrows a window Microsoft never answers to a millisecond, a run per slow failure, gives it up on the third try ten minutes on, and says so while it is stuck", async () => {
     slowAt = start.getTime() - 3 * DAY + 90 * 1_000;
     const slow = slowAt;
+    const coversSlow = (request: Sent) => request.from <= slow && request.to >= slow;
     records.push(audit(new Date(start.getTime() - 5 * DAY)));
     records.push(audit(new Date(start.getTime() - DAY)));
     await setup({}, { requestTimeoutMilliseconds: 100 });
-    // The first scheduled run and the runs it asks for narrow the window down and try the
-    // millisecond twice; its last try waits for the next scheduled run.
-    const seen: number[] = [];
-    await scheduled(2, async () => {
-      seen.push((await cursor()).strikes?.count ?? 0);
-    });
-    expect(seen[0]).toBe(2);
+    // Each run, with whether it made one of the slow requests. Every slow request takes the
+    // client's whole timeout, more than a run's budget.
+    const ran: { status: string; slow: boolean }[] = [];
+    let polls = 0;
+    for (; polls < 10 && (await cursor()).phase !== "live"; polls += 1) {
+      wait(10 * MINUTE);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const sentBefore = sent.length;
+        const runsBefore = (await allRuns()).length;
+        await scheduler.tick();
+        const after = await allRuns();
+        if (after.length > runsBefore)
+          ran.push({
+            status: after.at(-1)?.status ?? "",
+            slow: sent.slice(sentBefore).some(coversSlow),
+          });
+        if ((await cursor()).phase === "live") break;
+        wait(5_000);
+      }
+    }
     expect((await cursor()).phase).toBe("live");
+    expect(polls).toBeLessThanOrEqual(4);
     expect(await count()).toBe(2);
     const [gap] = await findings();
     expect(gap?.summary).toContain("did not answer in time, on 3 tries");
@@ -709,24 +769,25 @@ describe("directory change collector", () => {
     expect(from).toBeLessThanOrEqual(slow);
     expect(to).toBeGreaterThanOrEqual(slow);
     expect(to - from).toBeLessThanOrEqual(2);
-    // Each millisecond window around it was tried three times, then given up.
-    const tries = new Map<string, number>();
+    // Each millisecond window around it was tried three times, the last at least ten minutes
+    // after the first, then given up.
+    const tries = new Map<string, number[]>();
     for (const request of sent)
-      if (request.to - request.from <= 1 && request.from <= slow && request.to >= slow) {
+      if (request.to - request.from <= 1 && coversSlow(request)) {
         const key = `${request.from}/${request.to}`;
-        tries.set(key, (tries.get(key) ?? 0) + 1);
+        tries.set(key, [...(tries.get(key) ?? []), request.start]);
       }
     expect(tries.size).toBeGreaterThan(0);
-    for (const count of tries.values()) expect(count).toBe(3);
-    // The last try came at least ten minutes after the first.
-    const times = sent
-      .filter(
-        (request) => request.to - request.from <= 1 && request.from <= slow && request.to >= slow,
-      )
-      .map((request) => request.start);
-    expect(Math.max(...times) - Math.min(...times)).toBeGreaterThanOrEqual(10 * MINUTE);
-    // Microsoft answered everything else, so no run failed.
-    expect((await allRuns()).map((run) => run.status)).not.toContain("failed");
+    const first = [...tries.values()][0] ?? [];
+    expect(first).toHaveLength(3);
+    expect(Math.max(...first) - Math.min(...first)).toBeGreaterThanOrEqual(10 * MINUTE);
+    for (const times of tries.values()) expect(times.length).toBeLessThanOrEqual(3);
+    // No run that met a slow answer called itself a plain success, and none failed: Microsoft
+    // answered everything else.
+    const metSlow = ran.filter((entry) => entry.slow);
+    expect(metSlow.length).toBeGreaterThan(5);
+    expect(metSlow.map((entry) => entry.status)).not.toContain("succeeded");
+    expect(ran.map((entry) => entry.status)).not.toContain("failed");
   });
 
   it("shrinks windows Microsoft answers with a gateway error and catches up in the same poll", async () => {
@@ -767,16 +828,18 @@ describe("directory change collector", () => {
     expect(
       Date.parse(gap?.windowEnd ?? "") - Date.parse(gap?.windowStart ?? ""),
     ).toBeLessThanOrEqual(2);
-    // Microsoft recovers; the settle lane reads the whole span later, with its change, and the
-    // finding says so.
+    // Microsoft recovers; the settle lane reads the span again and finds its change. The finding
+    // says how many it found and stays open: a read that returns changes can still be partial.
     failing = false;
     await poll();
     await settleUp();
     expect(await count("event", `id = '${String(inside.id)}'`)).toBe(1);
-    const healed = await findings();
-    expect(healed).toHaveLength(1);
-    expect(healed[0]?.title).toBe(HEALED_TITLE);
-    expect(healed[0]?.summary).toContain("nothing is missing");
+    const readAgain = await findings();
+    expect(readAgain).toHaveLength(1);
+    expect(readAgain[0]).toMatchObject({ title: READ_AGAIN_TITLE, state: "open" });
+    expect(readAgain[0]?.summary).toContain("found 1 change in it");
+    expect(readAgain[0]?.summary).toContain("some may still be missing");
+    expect(readAgain[0]?.summary).not.toContain("nothing is missing");
   });
 
   it("leaves a gap open when the later read of it comes back empty", async () => {
@@ -804,7 +867,7 @@ describe("directory change collector", () => {
     expect(gap?.state).toBe("open");
   });
 
-  it("heals a gap only when the settle lane reads it, not when the early re-read does", async () => {
+  it("retitles a gap only when the settle lane reads it again, not when the early re-read does", async () => {
     records.push(audit(ago(DAY)));
     await setup();
     await loadHistory();
@@ -818,17 +881,81 @@ describe("directory change collector", () => {
     expect(Date.parse((await cursor()).through ?? "")).toBeGreaterThan(failAt);
     expect((await findings())[0]?.title).toBe("Some directory changes could not be read");
     // Microsoft recovers. The best-effort re-read of recent changes reads that span again and
-    // stores the change, but only the settle lane's read says nothing is missing.
+    // stores the change, but only the settle lane's read retitles the finding.
     failing = false;
     await poll();
     expect(await count("event", `id = '${String(inside.id)}'`)).toBe(1);
     expect(Date.parse((await cursor()).settle?.at ?? "")).toBeLessThan(failAt);
     expect((await findings())[0]?.title).toBe("Some directory changes could not be read");
     for (let index = 0; index < 14; index += 1) await poll();
-    expect((await findings())[0]?.title).toBe(HEALED_TITLE);
+    expect((await findings())[0]).toMatchObject({ title: READ_AGAIN_TITLE, state: "open" });
   });
 
-  it("changes nothing and leaves no gap while Microsoft fails every request, then catches up", async () => {
+  it.each([
+    ["times out after 90 seconds", "timeout"],
+    ["answers 504 after 60 seconds", "504"],
+  ])(
+    "catches up when Microsoft %s for wide windows after a stop, and says so meanwhile",
+    async (_label, mode) => {
+      for (let days = 25; days >= 1; days -= 3) records.push(audit(ago(days * DAY)));
+      await setup({}, { requestTimeoutMilliseconds: 100 });
+      await loadHistory();
+      // Off for six hours. When collection resumes, Microsoft cannot answer a window longer than
+      // an hour that touches that stretch.
+      const busyFrom = clock.getTime() + 5 * MINUTE;
+      clock = new Date(clock.getTime() + 6 * HOUR);
+      elapsed += 6 * HOUR;
+      const stretch: FakeAudit[] = [];
+      for (let minutes = 10; minutes < 6 * 60; minutes += 20)
+        stretch.push(audit(new Date(busyFrom + minutes * MINUTE)));
+      records.push(...stretch);
+      const wide = (request: { from: number; to: number }) =>
+        request.to - request.from > HOUR && request.to >= busyFrom;
+      if (mode === "504") {
+        costWith = (request) => (wide(request) ? 60_000 : 0);
+        failWith = (request) => (wide(request) ? 504 : null);
+      } else slowWhen = wide;
+      const { polls, runs } = await tracked(
+        12,
+        (request) => wide(request),
+        async () => {
+          const stored = await storedIds();
+          return stretch.every((record) => stored.has(String(record.id)));
+        },
+      );
+      expect(polls).toBeLessThanOrEqual(3);
+      expect(await findings()).toEqual([]);
+      const metWide = runs.filter((entry) => entry.marked);
+      expect(metWide.length).toBeGreaterThan(0);
+      expect(metWide.map((entry) => entry.status)).not.toContain("succeeded");
+    },
+  );
+
+  it("loads history when Microsoft times out for every window longer than an hour, without retrying that size every other window", async () => {
+    const old: FakeAudit[] = [];
+    for (let days = 25; days >= 1; days -= 3) old.push(audit(ago(days * DAY)));
+    records.push(...old);
+    slowWhen = (request) => request.to - request.from > HOUR;
+    await setup({}, { requestTimeoutMilliseconds: 100 });
+    const wide = (request: Sent) => request.to - request.from > HOUR;
+    // The first change, five days into the history Microsoft keeps.
+    const first = String(old[0]?.id);
+    const { runs } = await tracked(
+      12,
+      wide,
+      async () => (await count("event", `id = '${first}'`)) === 1,
+    );
+    expect(await count("event", `id = '${first}'`)).toBe(1);
+    expect(runs.length).toBeLessThanOrEqual(40);
+    // Each failed try at a size the lane had just grown to keeps it smaller twice as far.
+    expect(sent.filter(wide).length).toBeLessThanOrEqual(15);
+    expect((await cursor()).backoff ?? 0).toBeGreaterThanOrEqual(3);
+    const metWide = runs.filter((entry) => entry.marked);
+    expect(metWide.map((entry) => entry.status)).not.toContain("succeeded");
+    expect(runs.map((entry) => entry.status)).not.toContain("failed");
+  });
+
+  it("gives nothing up and leaves no gap while Microsoft fails every request, then catches up", async () => {
     for (let days = 5; days >= 1; days -= 2) records.push(audit(ago(days * DAY)));
     await setup();
     await loadHistory();
@@ -845,12 +972,15 @@ describe("directory change collector", () => {
     const held = await cursor();
     expect(held.through).toBe(before.through);
     expect(held.settle?.at).toBe(before.settle?.at);
-    expect(held.span).toBeUndefined();
+    // Windows were halved (that loses nothing), but no try was counted against one.
     expect(held.strikes).toBeUndefined();
-    // Each run tried one window and checked whether Microsoft answers anything, then waited.
-    expect(sent.length - sentBefore).toBeLessThanOrEqual(36 * 2);
+    expect(held.uncounted).toBeUndefined();
+    // Once a window cannot be split, each run tries it once and checks whether Microsoft
+    // answers anything, then waits for the cadence.
+    expect(sent.length - sentBefore).toBeLessThanOrEqual(36 * 12);
     const outage = (await allRuns()).slice(-36);
-    expect(outage.every((run) => run.status === "failed")).toBe(true);
+    expect(outage.map((run) => run.status)).not.toContain("succeeded");
+    expect(outage.slice(-30).every((run) => run.status === "failed")).toBe(true);
     expect(outage.map((run) => run.error_category)).toContain("provider_unavailable");
     failWith = null;
     await poll();
@@ -1013,6 +1143,36 @@ describe("directory change collector", () => {
     expect(await count()).toBe(2);
   });
 
+  it("counts what a catch-up read when it was already old as settled, so a later skip claims none of it", async () => {
+    records.push(audit(ago(DAY)));
+    await setup();
+    await loadHistory();
+    await settleUp();
+    // Collection is off for 20 days, then catches up: almost all of it is read when it is
+    // already old.
+    const stopped = clock.getTime();
+    clock = new Date(stopped + 20 * DAY);
+    elapsed += 20 * DAY;
+    await poll();
+    const caughtUp = await cursor();
+    const margin = MARGIN_MINUTES * MINUTE;
+    for (const mark of caughtUp.fresh ?? [])
+      expect(Date.parse(mark.from)).toBeGreaterThanOrEqual(clock.getTime() - margin - 10 * MINUTE);
+    // The settle lane falls a few days behind in that span, then collection is off for 15 more
+    // days: Microsoft no longer keeps where the settle lane stands.
+    await setCursor(
+      JSON.stringify({ ...caughtUp, settle: { at: new Date(stopped + DAY).toISOString() } }),
+    );
+    clock = new Date(clock.getTime() + 15 * DAY);
+    elapsed += 15 * DAY;
+    await poll();
+    expect(
+      (await findings()).filter(
+        (finding) => finding.title === "Late directory changes may be missing",
+      ),
+    ).toEqual([]);
+  });
+
   it("keeps one missed-span finding while a lane recovering at the retention edge falls behind it again", async () => {
     await setup();
     await loadHistory();
@@ -1032,7 +1192,7 @@ describe("directory change collector", () => {
         span: 1,
         hold: iso(through + 2),
         settle: { at: iso(through - 4 * HOUR), span: 1, hold: iso(through - 4 * HOUR + 2) },
-        fresh: iso(now - 40 * DAY),
+        fresh: [{ from: iso(through - 4 * HOUR), to: iso(through) }],
       }),
     );
     // Runs six seconds apart: each reads a little, and the edge moves on meanwhile.
