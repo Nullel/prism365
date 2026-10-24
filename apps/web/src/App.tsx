@@ -25,6 +25,7 @@ import {
   ChevronIcon,
   GridIcon,
   LockIcon,
+  ReportIcon,
   SearchIcon,
   SettingsIcon,
   ShieldIcon,
@@ -65,6 +66,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "",
     items: [
       { label: "Overview", icon: GridIcon, view: "overview" },
+      { label: "This week", icon: ReportIcon, view: "week" },
       { label: "Notifications", icon: BellIcon, view: "notifications" },
       { label: "People", icon: UsersIcon, view: "people" },
     ],
@@ -93,7 +95,7 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
   week: {
     title: "This week",
     description:
-      "What changed in the last seven days: new findings, accounts gone quiet, licence and MFA drift, directory changes and Microsoft deadlines.",
+      "What changed in the last day, week or month: new findings, directory changes, accounts that went quiet, audit numbers that moved and Microsoft deadlines.",
   },
   notifications: {
     title: "Notifications",
@@ -561,6 +563,7 @@ export interface Route {
 
 const workspaceViews: readonly WorkspaceView[] = [
   "overview",
+  "week",
   "notifications",
   "people",
   "audits",
@@ -635,6 +638,10 @@ export function App() {
   const openPerson = (userId: string) => {
     setPerson(userId);
     setView("people");
+  };
+  const openAudit = (auditId: string) => {
+    setAudit(auditId);
+    setView("audits");
   };
   const navigate = (next: WorkspaceView) => {
     if (next === "people") setPerson(null);
@@ -910,6 +917,7 @@ export function App() {
                   session={session}
                   onNavigate={navigate}
                   onOpenPerson={openPerson}
+                  onOpenAudit={openAudit}
                 />
               ) : null}
               {view === "changes" ? (

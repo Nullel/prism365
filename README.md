@@ -36,10 +36,28 @@ inactive accounts, MFA registration (admins without MFA, phone-only methods), gu
 license capacity, Conditional Access policies (legacy authentication, MFA for administrators,
 exclusions), risky users, managed devices, app consents (high-risk and unverified apps),
 Microsoft 365 app usage and account activity (is an account really unused, and does anyone still
-open its files). Results are kept, filterable, sortable and exportable as CSV. Each audit
-runs only when its own read pack is enabled, and says what it needs when it is not.
+open its files). Results are kept, filterable, sortable and exportable as CSV, each audit's
+numbers are kept as a trend, and any audit can run daily or weekly on its own. Each audit runs
+only when its own read pack is enabled, and says what it needs when it is not.
 
 ![The license capacity audit: products with no seats left, more assigned than owned, or an expired subscription](docs/images/license-capacity.jpg)
+
+### Directory changes
+
+Every Microsoft Entra directory change (who changed which account, group, role, app, policy or
+domain, and what changed) kept for years, where Microsoft keeps 7 or 30 days. Searchable, on each
+person's page too, with findings for the changes that matter: a new privileged role, credentials
+added to an app, tenant-wide consent, a Conditional Access or federation change.
+
+![The directory change feed: collection status and flagged changes, such as a credential added to an application and a Global Administrator assignment](docs/images/directory-changes.jpg)
+
+### This week
+
+One page for the last seven days: new findings, accounts that went quiet, audit numbers that
+moved, directory changes, Microsoft deadlines and the health of collection, built from what
+Prism365 already stored.
+
+![This week: sign-in findings opened in the last seven days and the directory changes flagged by the rules](docs/images/this-week.jpg)
 
 ### Service health and notifications
 
@@ -83,7 +101,7 @@ Some of the parts I care most about:
 - Modules (sign-in audit, service health, Message center) declare their permissions, tables,
   retention and collectors, and run in a scheduler that owns credentials and storage.
 - Every RED-class change (storage, auth, collection) went through adversarial review passes
-  whose findings were reproduced with scripts before they were fixed. More than 330 automated
+  whose findings were reproduced with scripts before they were fixed. More than 1,300 automated
   tests, including PostgreSQL 17 suites.
 
 ## Run it
@@ -110,7 +128,7 @@ each step, the manual path, and what each feature needs.
 
 ## Documentation
 
-[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
+[Setup](docs/SETUP.md), [Audits](docs/audits.md), [This week](docs/this-week.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
 [Service health](docs/modules/service-health.md), [Module runtime](docs/MODULES.md),
 [Permissions](docs/PERMISSIONS.md), [Privacy](docs/PRIVACY.md), [Architecture](docs/ARCHITECTURE.md),
 [Roadmap](docs/ROADMAP.md), and the decision records in [docs/decisions](docs/decisions).

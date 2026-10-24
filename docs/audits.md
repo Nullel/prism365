@@ -544,6 +544,10 @@ Reading a trend is not an access-ledger event: points are counts, like the run h
 rows, and neither reads Microsoft. The route returns at most 1,000 points and says when the range
 held more.
 
+The This week page (`docs/this-week.md`) reads the same points: for each audit it compares the newest
+point before the end of its range with the newest point at or before the start, and lists the tiles
+whose value differs.
+
 ## 15. Schedules
 
 An audit can run on its own, daily or weekly. Run automatically on the audit's page has Off, Daily

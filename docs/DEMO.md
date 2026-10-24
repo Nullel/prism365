@@ -100,6 +100,8 @@ Add `"!**/dist-demo"` to `files.includes` in `biome.json`, or delete the folder 
   reviewed, done, muted or read, changing a finding's state, saving notification settings,
   starting and stopping collection, and running an audit again all work. A new audit run shows
   as running and finishes two seconds later with the recorded rows.
+- This week is replayed from the recording for its four ranges (the last day, 7, 14 and 30 days).
+  It does not follow what the visitor changes, such as resolving a finding or stopping collection.
 - The CSV export is built in the browser from the recorded rows, with the same filters and sort
   the page shows.
 - The people search works on the recorded list. Looking someone up by email, and the Live lookup
