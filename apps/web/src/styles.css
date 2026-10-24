@@ -3529,3 +3529,33 @@ button.audit-tile:hover {
     max-width: none;
   }
 }
+
+/* Handoffs -------------------------------------------------------------- */
+
+.handoff-intro,
+.handoff-import {
+  padding: 14px 16px;
+}
+.handoff-intro p {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.handoff-intro p + p {
+  margin-top: 8px;
+}
+.handoff-import .field {
+  margin-bottom: 8px;
+}
+.handoff-result {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.handoff-note {
+  margin-top: 10px;
+}
+.handoff-match {
+  margin-left: 6px;
+}

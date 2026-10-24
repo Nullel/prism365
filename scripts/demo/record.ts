@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { canonicalJson } from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
 import {
   DIRECTORY_CHANGES_MODULE as CHANGES,
@@ -368,6 +370,76 @@ async function main() {
   await record("/api/v1/automation/packages");
   await record("/api/v1/ai/status");
 
+  // A handoff from the inactive accounts audit, and a receipt from an invented action tool for
+  // some of its accounts, so the Handoffs page and those people's pages have something to show.
+  // The export is stored as the page would receive it; the replay builds others from it.
+  const inactive = (
+    await getJson<{ runs: { id: string; status: string }[] }>(
+      "/api/v1/audits/accounts.inactive/runs",
+    )
+  ).runs.find((run) => run.status === "succeeded");
+  if (!inactive) throw new Error("The inactive accounts audit has no result to hand off.");
+  const exportUrl = `/api/v1/audit-runs/${inactive.id}/handoff.json?view=d30&sort=days&direction=desc`;
+  const exported = await call("GET", exportUrl);
+  if (exported.statusCode !== 200)
+    throw new Error(
+      `The handoff export answered ${exported.statusCode}: ${exported.body.slice(0, 200)}`,
+    );
+  const handoff = exported.json<{
+    id: string;
+    items: { userId: string; userPrincipalName: string | null }[];
+  }>();
+  responses[normalizeKey("GET", exportUrl)] = { status: 200, body: handoff };
+  const [released, blocked, kept, refused] = handoff.items;
+  if (!released || !blocked || !kept || !refused)
+    throw new Error("The inactive accounts audit handed off fewer than four accounts.");
+  const reported = (
+    account: { userId: string; userPrincipalName: string | null },
+    action: string,
+    status: "done" | "failed" | "skipped",
+    detail: string,
+  ) => ({
+    userId: account.userId,
+    userPrincipalName: account.userPrincipalName,
+    action,
+    status,
+    detail,
+  });
+  const receipt = {
+    format: "prism365.receipt",
+    version: 1,
+    id: randomUUID(),
+    handoffId: handoff.id,
+    tool: { name: "Example action tool", version: "1.4.0" },
+    performedAt: new Date(anchor.getTime() - 40 * 60_000).toISOString(),
+    performedBy: "Jordan Vale",
+    items: [
+      reported(released, "account.sign-in-blocked", "done", "Sign-in blocked after review."),
+      reported(released, "license.removed", "done", "Released the license for reuse."),
+      reported(blocked, "account.sign-in-blocked", "done", "Sign-in blocked after review."),
+      reported(
+        kept,
+        "account.sign-in-blocked",
+        "skipped",
+        "The manager asked to keep it until the end of the month.",
+      ),
+      reported(
+        refused,
+        "account.sign-in-blocked",
+        "failed",
+        "The tool's account lacked the role to change this account.",
+      ),
+    ],
+  };
+  const imported = await call("POST", "/api/v1/receipts", receipt);
+  if (imported.statusCode !== 201)
+    throw new Error(
+      `The receipt import answered ${imported.statusCode}: ${imported.body.slice(0, 200)}`,
+    );
+  await record("/api/v1/handoffs");
+  await record(`/api/v1/receipts/${receipt.id}?limit=200`);
+  log(`Handed off ${handoff.items.length} inactive accounts and imported a receipt for four.`);
+
   const audits = await record<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
   const accounts: { id: string; principal: string }[] = [];
   for (const entry of audits.audits) {
@@ -400,11 +472,19 @@ async function main() {
     await recordPages(`/api/v1/people/${encodeURIComponent(id)}/changes?limit=20`);
     await record(`/api/v1/people/lookup?email=${encodeURIComponent(principal)}`);
     await record(`/api/v1/investigations/user?email=${encodeURIComponent(principal)}`);
+    // Recorded without the principal name: the replay answers the page's request, which names
+    // it, from this one, and the demo receipt names every account by its id.
+    await record(`/api/v1/people/${encodeURIComponent(id)}/receipts`);
   }
   log(`Recorded ${Object.keys(responses).length} responses for ${accounts.length} accounts.`);
 
   // 6. Check, write and format.
-  const fixtures: Fixtures = { recordedAt: new Date().toISOString(), responses };
+  // The receipt's body as sent, so the replay can tell the same receipt from a different one.
+  const fixtures: Fixtures = {
+    recordedAt: new Date().toISOString(),
+    responses,
+    receipts: { [receipt.id]: canonicalJson(receipt) },
+  };
   const text = JSON.stringify(fixtures);
   assertSynthetic(text, tenant.addresses);
   await mkdir(dirname(output), { recursive: true });

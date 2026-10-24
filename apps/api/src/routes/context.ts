@@ -29,6 +29,8 @@ export interface RouteSettings {
   readonly certificate: { readonly thumbprintSha256: string; readonly expiresAt: string } | null;
   // Module data and sessions survive a restart (PostgreSQL, or PGlite on disk).
   readonly durableStorage: boolean;
+  // How long handoffs and receipts are kept, in days (HANDOFF_RETENTION_DAYS).
+  readonly handoffRetentionDays: number;
 }
 
 // Module storage for reading what was collected, and the collection status. Starting, stopping

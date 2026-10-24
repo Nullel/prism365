@@ -60,7 +60,13 @@ export interface AppConfig {
   // The configured public certificate's fingerprint and expiry, for the setup checklist. Public
   // facts only; the private key stays in identity.credential.
   certificate?: { thumbprintSha256: string; expiresAt: string };
+  // How long handoffs and receipts are kept (HANDOFF_RETENTION_DAYS). Unset means the default.
+  handoffRetentionDays?: number;
 }
+
+// Handoffs and receipts are kept three years unless the operator chooses otherwise: long enough
+// to answer what was done to an account at the last access review, no longer by default.
+export const DEFAULT_HANDOFF_RETENTION_DAYS = 1_095;
 
 export function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
@@ -165,6 +171,14 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     if (!/^[0-3]$/.test(env.TRUST_PROXY_HOPS))
       throw new Error("TRUST_PROXY_HOPS must be a whole number from 0 to 3.");
     base.trustProxyHops = Number(env.TRUST_PROXY_HOPS);
+  }
+  if (env.HANDOFF_RETENTION_DAYS) {
+    const days = /^\d{1,4}$/.test(env.HANDOFF_RETENTION_DAYS)
+      ? Number(env.HANDOFF_RETENTION_DAYS)
+      : Number.NaN;
+    if (!(days >= 30 && days <= 3_650))
+      throw new Error("HANDOFF_RETENTION_DAYS must be a whole number of days from 30 to 3650.");
+    base.handoffRetentionDays = days;
   }
   if (env.PRISM_DATA_DIR) {
     if (/[\0\n\r]/.test(env.PRISM_DATA_DIR)) throw new Error("PRISM_DATA_DIR is not a valid path.");

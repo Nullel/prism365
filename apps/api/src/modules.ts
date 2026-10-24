@@ -125,7 +125,14 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
       // verified, so starting before `npm run db:migrate` finished would refuse every query on
       // them until a restart; refusing to start makes the container retry instead.
       if (tenantId)
-        for (const table of ["prism365_attention", "prism365_preference", "prism365_audit_run"]) {
+        for (const table of [
+          "prism365_attention",
+          "prism365_preference",
+          "prism365_audit_run",
+          "prism365_handoff",
+          "prism365_receipt",
+          "prism365_receipt_item",
+        ]) {
           const exists = await postgres.tenant(tenantId, (sql) =>
             sql.query<{ present: boolean }>("SELECT to_regclass($1) IS NOT NULL AS present", [
               `public.${table}`,

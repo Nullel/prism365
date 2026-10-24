@@ -18,14 +18,12 @@ import { DemoBanner } from "./demo/DemoBanner.tsx";
 import { localDemoDashboard } from "./demo.ts";
 import { Handoffs } from "./Handoffs.tsx";
 import {
-  ActivityIcon,
   ArrowUpRightIcon,
   BellIcon,
   ChecklistIcon,
   ChevronIcon,
   GridIcon,
   LockIcon,
-  ReportIcon,
   SearchIcon,
   SettingsIcon,
   ShieldIcon,
@@ -66,7 +64,6 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "",
     items: [
       { label: "Overview", icon: GridIcon, view: "overview" },
-      { label: "This week", icon: ReportIcon, view: "week" },
       { label: "Notifications", icon: BellIcon, view: "notifications" },
       { label: "People", icon: UsersIcon, view: "people" },
     ],
@@ -76,7 +73,6 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [
       { label: "Audits", icon: ChecklistIcon, view: "audits" },
       { label: "Sign-in audit", icon: ShieldIcon, view: "signins" },
-      { label: "Directory changes", icon: ActivityIcon, view: "changes" },
     ],
   },
   {
@@ -563,12 +559,10 @@ export interface Route {
 
 const workspaceViews: readonly WorkspaceView[] = [
   "overview",
-  "week",
   "notifications",
   "people",
   "audits",
   "signins",
-  "changes",
   "users",
   "handoffs",
   "lifecycle",

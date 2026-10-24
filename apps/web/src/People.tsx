@@ -784,7 +784,7 @@ function PersonProfile({
       ) : null}
 
       <PersonChanges session={session} userId={userId} />
-      <PersonReceipts session={session} userId={userId} />
+      <PersonReceipts session={session} userId={userId} principal={upn} />
 
       <section className="panel signin-table person-grid person-history">
         <div className="panel__header">
