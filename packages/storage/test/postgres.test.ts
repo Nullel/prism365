@@ -86,6 +86,8 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
       );
     }
     bootstrap = new Pool({ connectionString: parsed.toString(), connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
     const role = await bootstrap.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname='prism365_app'",
     );
@@ -106,6 +108,8 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
     parsed.pathname = `/${databaseName}`;
     fixtureAdminUrl = parsed.toString();
     administrator = new Pool({ connectionString: fixtureAdminUrl, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    administrator.on("error", () => {});
     const migration = await readFile(
       new URL("../migrations/001-state.sql", import.meta.url),
       "utf8",
@@ -115,6 +119,8 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
     parsed.password = syntheticPassword;
     const appUrl = parsed.toString();
     restricted = new Pool({ connectionString: appUrl, max: 3, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    restricted.on("error", () => {});
     store = new PostgresStateStore({ connectionString: appUrl, encryptionKey });
     await store.verifyRole();
     parsed.username = ownerRole;
@@ -345,6 +351,8 @@ isolationSuite(
       connectionString: parsed.toString(),
       connectionTimeoutMillis: 5_000,
     });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
     const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
     const createdAppRole = existing.rowCount === 0;
     await bootstrap.query(`CREATE DATABASE ${identifier(moduleDatabase)}`);
@@ -359,6 +367,8 @@ isolationSuite(
       `CREATE ROLE ${identifier(memberRole)} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${syntheticPassword}' IN ROLE prism365_app`,
     );
     const owner = new Pool({ connectionString: moduleAdminUrl, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    owner.on("error", () => {});
     parsed.username = memberRole;
     parsed.password = syntheticPassword;
     const database = new PostgresModuleDatabase({ connectionString: parsed.toString() });
@@ -410,6 +420,8 @@ trendMigrationSuite(
       connectionString: parsed.toString(),
       connectionTimeoutMillis: 5_000,
     });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
     const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
     const createdAppRole = existing.rowCount === 0;
     if (createdAppRole)
@@ -420,6 +432,8 @@ trendMigrationSuite(
     parsed.pathname = `/${trendDatabase}`;
     const trendAdminUrl = parsed.toString();
     const owner = new Pool({ connectionString: trendAdminUrl, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    owner.on("error", () => {});
     for (const migration of await migrationsBeforeTrends()) await owner.query(migration.sql);
     return {
       owner: async (sql: string, params?: unknown[]) => {
@@ -487,6 +501,8 @@ describe.skipIf(!adminUrl)("PostgreSQL: audit schedule saves at the same moment"
     if (!["localhost", "127.0.0.1"].includes(parsed.hostname) || parsed.pathname !== "/prism365_ci")
       throw new Error("TEST_DATABASE_ADMIN_URL must point to a disposable prism365_ci database.");
     bootstrap = new Pool({ connectionString: parsed.toString(), connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
     const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
     createdAppRole = existing.rowCount === 0;
     await bootstrap.query(`CREATE DATABASE ${identifier(scheduleDatabase)}`);
