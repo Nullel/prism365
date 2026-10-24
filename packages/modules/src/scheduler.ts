@@ -508,6 +508,8 @@ export class ModuleScheduler {
           get: (path, graphContext, schema) => handled(scoped.get(path, graphContext, schema)),
           getCollection: (path, graphContext, options) =>
             handled(scoped.getCollection(path, graphContext, options)),
+          getReport: (path, graphContext, options) =>
+            handled(scoped.getReport(path, graphContext, options)),
         } satisfies CollectorContext["graph"];
       })(),
       table: (name) => {

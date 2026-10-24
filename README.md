@@ -70,7 +70,8 @@ Some of the parts I care most about:
   query is checked on PostgreSQL's own parse tree (libpg-query) against a per-call table
   allowlist and a function allowlist, so quoting or comments cannot sneak a statement past it.
 - The Microsoft Graph boundary allows only the endpoints each permission pack declares, only
-  read methods, no redirects, bounded response sizes and times, and honours `Retry-After`.
+  read methods, bounded response sizes and times, and honours `Retry-After`. It follows no
+  redirect except Microsoft's usage report download, and sends that one no token (ADR-0010).
 - Sign-in collection is built never to lose data silently. Two saved positions follow the log:
   one reads new sign-ins, the other re-reads an hour behind for records Microsoft publishes
   late. Windows shrink when Microsoft is slow or busy, a stopped run is detected and recovered,

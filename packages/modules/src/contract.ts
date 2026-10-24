@@ -1,5 +1,5 @@
 import type { Severity } from "@prism365/contracts";
-import type { GraphFeatureId, GraphRequestContext } from "@prism365/graph";
+import type { CsvTable, GraphFeatureId, GraphRequestContext } from "@prism365/graph";
 import type { FindingPurpose, FindingSubject } from "@prism365/policy";
 import type { SqlClient } from "@prism365/storage";
 import type { z } from "zod";
@@ -98,6 +98,15 @@ export interface ScopedGraph {
       deadline?: number;
     },
   ): Promise<{ items: T[]; complete: boolean; stopped?: "deadline" }>;
+  // One Microsoft 365 usage report (ADR-0010), reports.usage.read only: the redirect to Microsoft's
+  // download is checked and followed without the token, and the CSV is parsed with fixed limits.
+  // Map values by header name, never by position; `skippedRows` and `truncated` say what was left
+  // out. `maxBytes` caps the download (16 MiB unless set, at most 32 MiB).
+  getReport(
+    path: string,
+    context: GraphRequestContext,
+    options?: { maxBytes?: number },
+  ): Promise<CsvTable>;
 }
 
 export interface CollectorContext {
