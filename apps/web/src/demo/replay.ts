@@ -6,6 +6,8 @@ import {
   type AuditRun,
   type AuditRunDetail,
   type AuditScheduleSettings,
+  type ChangeEvent,
+  type ChangeFeed,
   type AuditSettings,
   attentionPreferencesSchema,
   auditCsv,
@@ -28,6 +30,7 @@ import {
   type PersonRecord,
   type PersonSigninPage,
   queryAuditRows,
+  searchKey,
   type ReceiptSummary,
   receiptProblem,
   receiptSchema,
@@ -399,6 +402,72 @@ function personRecord(state: DemoState, id: string): DemoResponse | null {
   const base = bodyOf<PersonRecord>(state.responses, `GET ${API}/people/${id}`);
   if (!base) return null;
   return json(200, { ...base, findings: clone(withFindingStates(state, base.findings)) });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Directory changes
+// ---------------------------------------------------------------------------------------------
+
+// Every change the recording holds for one range, following its pages to the end.
+function recordedChanges(
+  state: DemoState,
+  days: string,
+): { base: ChangeFeed; items: ChangeEvent[] } | null {
+  const path = `${API}/changes?days=${days}&limit=200`;
+  const base = bodyOf<ChangeFeed>(state.responses, normalizeKey("GET", path));
+  if (!base) return null;
+  const items = [...base.items];
+  let next = base.next;
+  for (let page = 0; next && page < 50; page += 1) {
+    const more = bodyOf<ChangeFeed>(
+      state.responses,
+      normalizeKey("GET", `${path}&before=${encodeURIComponent(next)}`),
+    );
+    if (!more) break;
+    items.push(...more.items);
+    next = more.next;
+  }
+  return { base, items };
+}
+
+// The feed's filters and pages are worked out from the recording of each range, the way the
+// server works them out: category without case, "failure" for anything that did not succeed,
+// and the search over the activity, who made the change, and its targets' names and sign-in
+// names.
+function listChanges(state: DemoState, url: URL): DemoResponse | null {
+  const recorded = recordedChanges(state, url.searchParams.get("days") ?? "7");
+  if (!recorded) return null;
+  const category = (url.searchParams.get("category") ?? "").trim().toLowerCase();
+  const result = url.searchParams.get("result") ?? "";
+  const search = searchKey((url.searchParams.get("search") ?? "").trim().slice(0, 200));
+  const requested = Number(url.searchParams.get("limit") ?? "100");
+  const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 100, 1), 200);
+  const matching = recorded.items.filter(
+    (item) =>
+      (!category || (item.category ?? "").toLowerCase() === category) &&
+      (!result || (result === "success") === (item.result === "success")) &&
+      (!search ||
+        [
+          item.activity,
+          item.initiatedBy.name,
+          item.initiatedBy.principal,
+          ...item.targets.flatMap((target) => [target.name, target.principal]),
+        ]
+          .map((value) => searchKey(value ?? ""))
+          .some((value) => value.includes(search))),
+  );
+  const position = (item: ChangeEvent) => `${item.activityAt}|${item.id}`;
+  const before = url.searchParams.get("before");
+  const start = before ? matching.findIndex((item) => position(item) === before) + 1 : 0;
+  if (before && start === 0)
+    return json(400, { error: "invalid_request", message: "Reload the page." });
+  const items = matching.slice(start, start + limit);
+  const last = items.at(-1);
+  return json(200, {
+    ...recorded.base,
+    items: clone(items),
+    next: start + limit < matching.length && last ? position(last) : null,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -793,6 +862,7 @@ function handleGet(state: DemoState, path: string, url: URL, request: DemoReques
   else if (path === "/findings") answer = listFindings(state, url);
   else if (path === "/modules") answer = listModules(state);
   else if (path === "/people") answer = listPeople(state, url);
+  else if (path === "/changes") answer = listChanges(state, url);
   else if (first === "people" && second && second !== "lookup" && segments.length === 2)
     answer = personRecord(state, second);
   else if (first === "people" && second && third === "signins" && segments.length === 3) {

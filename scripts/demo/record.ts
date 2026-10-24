@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { canonicalJson } from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
 import {
+  DIRECTORY_CHANGES_MODULE as CHANGES,
+  changeCoverage,
+} from "@prism365/module-directory-changes";
+import {
   MODULE_ID as SIGNINS,
   signinsAuditConfigSchema,
   summarizeSignins,
@@ -225,14 +229,22 @@ async function main() {
     const summary = await database.tenant(tenantId, (sql) =>
       summarizeSignins(sql, tenantId, new Date(), 7),
     );
+    const changes = await database.tenant(tenantId, (sql) => changeCoverage(sql, tenantId));
     const run = (module: string) => runs.find((candidate) => candidate.module === module);
-    return { run, phase: summary.history.phase, events: summary.coverage.events };
+    return {
+      run,
+      phase: summary.history.phase,
+      changes: changes.phase,
+      events: summary.coverage.events,
+    };
   };
+  const collected = ["signins.audit", "service.health", "service.messages", CHANGES];
   const converged = async (at: Date, phase: string) => {
     const now = await status();
     return (
       now.phase === phase &&
-      ["signins.audit", "service.health", "service.messages"].every((module) => {
+      now.changes === phase &&
+      collected.every((module) => {
         const run = now.run(module);
         return run?.status === "succeeded" && Date.parse(run.startedAt) === at.getTime();
       })
@@ -245,8 +257,8 @@ async function main() {
     }
     const now = await status();
     throw new Error(
-      `Collection did not converge: phase ${now.phase}, runs ${JSON.stringify(
-        ["signins.audit", "service.health", "service.messages"].map((module) => now.run(module)),
+      `Collection did not converge: phase ${now.phase}, changes ${now.changes}, runs ${JSON.stringify(
+        collected.map((module) => now.run(module)),
       )}`,
     );
   }
@@ -254,7 +266,7 @@ async function main() {
   log(`History loaded: ${(await status()).events} sign-ins stored.`);
   clock = anchor;
   await collectUntil(clock, "live");
-  log("Newest sign-ins read; service health and Message center checked.");
+  log("Newest sign-ins read; service health, Message center and directory changes checked.");
 
   // 2. The stories must have been found by the real rules.
   const findings = (
@@ -277,6 +289,18 @@ async function main() {
   if (expected.travel?.severity !== "critical")
     throw new Error(`Impossible travel was rated ${expected.travel?.severity}, not critical.`);
   log(`Rules flagged ${findings.length} findings, including all six planted stories.`);
+  const changeFindings = (
+    await getJson<{ items: Finding[] }>(`/api/v1/findings?module=${CHANGES}&limit=100`)
+  ).items;
+  for (const ruleId of [
+    "role.privileged-assigned",
+    "app.credential-added",
+    "policy.conditional-access-changed",
+    "app.consent-granted",
+  ])
+    if (!changeFindings.some((item) => item.ruleId === ruleId))
+      throw new Error(`The change rules did not flag the planted ${ruleId} story.`);
+  log(`Change rules flagged ${changeFindings.length} directory changes.`);
 
   // 3. Leave the findings in a lived-in state: one acknowledged, two resolved, the rest open.
   const setState = async (finding: Finding | undefined, state: string) => {
@@ -346,6 +370,20 @@ async function main() {
     await record(`/api/v1/findings?module=${SIGNINS}&state=${state}&limit=100`);
   for (const days of [7, 30]) await record(`/api/v1/modules/${SIGNINS}/summary?days=${days}`);
   for (const days of [7, 30]) await record(`/api/v1/people?days=${days}`);
+  for (const state of ["open", "acknowledged", "resolved"])
+    await record(`/api/v1/findings?module=${CHANGES}&state=${state}&limit=100`);
+  // Every page of each range the change feed offers; the demo works the filters out from them.
+  // Page positions are "<time>|<id>", which the replay leaves alone when it moves the dates.
+  async function recordPages(path: string) {
+    let next: string | null = null;
+    for (let page = 0; page < 50; page += 1) {
+      const url: string = next ? `${path}&before=${encodeURIComponent(next)}` : path;
+      next = (await record<{ next: string | null }>(url)).next;
+      if (!next) return;
+    }
+    throw new Error(`${path} has more than 50 pages.`);
+  }
+  for (const days of [7, 30, 90, 365]) await recordPages(`/api/v1/changes?days=${days}&limit=200`);
   for (const filter of ["open", "unread", "all", "muted"])
     await record(`/api/v1/attention?filter=${filter}&limit=200`);
   await record("/api/v1/attention?filter=unread&limit=1");
@@ -458,6 +496,7 @@ async function main() {
       `/api/v1/people/${encodeURIComponent(id)}/signins?result=all&limit=100`,
     );
     if (page.next !== null) throw new Error(`${principal} has more sign-ins than one page.`);
+    await recordPages(`/api/v1/people/${encodeURIComponent(id)}/changes?limit=20`);
     await record(`/api/v1/people/lookup?email=${encodeURIComponent(principal)}`);
     await record(`/api/v1/investigations/user?email=${encodeURIComponent(principal)}`);
     // Recorded without the principal name: the replay answers the page's request, which names

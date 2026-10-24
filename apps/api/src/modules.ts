@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { GraphHttpClient } from "@prism365/graph";
+import { createDirectoryChangesModule } from "@prism365/module-directory-changes";
 import {
   createMessageCenterModule,
   createServiceHealthModule,
@@ -36,7 +37,8 @@ export function createModuleRegistry(config?: AppConfig): ModuleRegistry {
   return new ModuleRegistry()
     .register(createSigninsAuditModule(config?.signinsAudit))
     .register(createServiceHealthModule())
-    .register(createMessageCenterModule());
+    .register(createMessageCenterModule())
+    .register(createDirectoryChangesModule(config?.directoryChanges));
 }
 
 // Collects with the signed-in operator's delegated session. The session handle stays in process

@@ -66,6 +66,31 @@ The "Check Have I Been Pwned" button on a person page opens haveibeenpwned.com w
 address in the link, so the administrator's browser, not Prism365, sends it to HIBP, only when
 the button is pressed. The address also lands in that browser's history.
 
+## Directory changes
+
+The directory change feed (`docs/modules/directory-changes.md`) keeps every Microsoft Entra
+directory audit event it collects. Each stored event holds:
+
+- the event id, when it happened, the activity, its category, the operation type, the result
+  and Microsoft's result reason, the service that logged it and the correlation id;
+- who made the change: whether it was a user, an application or not stated, with the directory
+  id, the display name, and the sign-in name or application ID, never the IP address;
+- the accounts and objects it was made to (id, display name, type and sign-in name, at most 50),
+  each with its changed properties before and after (at most 50, each value cut to 400
+  characters);
+- Microsoft's additional details (at most 20), without the ones that describe the client the
+  change came from: User-Agent, client IP address, browser and device information are left out;
+- a folded copy (lower case, accents removed) of the activity and the names above, up to 8,000
+  characters, for the search;
+- which accounts and objects the event involves, as actor or target, for a person's page.
+
+Microsoft keeps these events 7 or 30 days; keeping them longer is the reason the feature exists.
+The scheduler's daily retention deletes them after 10 years by default, or after
+`DIRECTORY_CHANGES_RETENTION_DAYS` (365 to 3650). A route to delete them sooner does not exist
+yet and is required before a stable release, as for findings. Opening the feed or a person's
+changes writes an access-ledger entry (`changes.viewed`, `person.changes.viewed`) that names the
+dataset and the range in days, not a person, a search text or a value.
+
 ## Audit results
 
 Each audit run stores the rows it found in `prism365_audit_run`: account names, sign-in names,

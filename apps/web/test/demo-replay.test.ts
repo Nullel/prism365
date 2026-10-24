@@ -853,3 +853,92 @@ describe("the synthetic tenant behind the recording", () => {
       );
   });
 });
+
+describe("directory changes", () => {
+  const change = (id: string, activityAt: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    activityAt,
+    activity: "Update user",
+    category: "UserManagement",
+    operationType: "Update",
+    result: "success",
+    resultReason: null,
+    loggedByService: "Core Directory",
+    correlationId: null,
+    initiatedBy: { kind: "user", id: "u-9", name: "Avery Example", principal: null },
+    targets: [{ id: "u-1", name: "Blake Example", type: "User", principal: null, properties: [] }],
+    details: [],
+    ...extra,
+  });
+  const base = {
+    days: 7,
+    categories: [],
+    coverage: { from: null, through: null, lastCollected: null, phase: "live" },
+  };
+  const changes: Fixtures = {
+    recordedAt,
+    responses: {
+      [normalizeKey("GET", "/api/v1/changes?days=7&limit=200")]: {
+        status: 200,
+        body: {
+          ...base,
+          items: [
+            change("c-3", "2026-10-20T09:00:00.000Z", {
+              targets: [
+                { id: "u-1", name: "Blake Example", type: "User", principal: null, properties: [] },
+                {
+                  id: "u-2",
+                  name: "İlker ΟΔΥΣΣΕΥΣ",
+                  type: "User",
+                  principal: null,
+                  properties: [],
+                },
+              ],
+            }),
+            change("c-2", "2026-10-19T09:00:00.000Z", {
+              category: "RoleManagement",
+              activity: "Add member to role",
+            }),
+          ],
+          next: "2026-10-19T09:00:00.000Z|c-2",
+        },
+      },
+      [normalizeKey(
+        "GET",
+        `/api/v1/changes?days=7&limit=200&before=${encodeURIComponent("2026-10-19T09:00:00.000Z|c-2")}`,
+      )]: {
+        status: 200,
+        body: {
+          ...base,
+          items: [change("c-1", "2026-10-18T09:00:00.000Z", { result: "timeout" })],
+          next: null,
+        },
+      },
+    },
+  };
+
+  it("filters and pages the recorded range the way the server does", () => {
+    const state = createDemoState(changes, now(recordedAt));
+    const get = (url: string) => handleRequest(state, { method: "GET", url });
+    const ids = (url: string) =>
+      (get(url).body as { items: { id: string }[] }).items.map((entry) => entry.id);
+    expect(ids("/api/v1/changes?days=7&limit=100")).toEqual(["c-3", "c-2", "c-1"]);
+    expect(ids("/api/v1/changes?days=7&limit=100&category=rolemanagement")).toEqual(["c-2"]);
+    expect(ids("/api/v1/changes?days=7&limit=100&result=failure")).toEqual(["c-1"]);
+    expect(ids("/api/v1/changes?days=7&limit=100&search=BLAKE")).toEqual(["c-3", "c-2", "c-1"]);
+    expect(ids("/api/v1/changes?days=7&limit=100&search=role")).toEqual(["c-2"]);
+    // Folded the way the server folds it: dotted capitals and final sigma.
+    expect(ids("/api/v1/changes?days=7&limit=100&search=ilker")).toEqual(["c-3"]);
+    expect(ids(`/api/v1/changes?days=7&limit=100&search=${encodeURIComponent("ΟΔΥΣ")}`)).toEqual([
+      "c-3",
+    ]);
+    const first = get("/api/v1/changes?days=7&limit=2").body as { next: string | null };
+    expect(first.next).toBe("2026-10-19T09:00:00.000Z|c-2");
+    expect(
+      ids(`/api/v1/changes?days=7&limit=2&before=${encodeURIComponent(first.next ?? "")}`),
+    ).toEqual(["c-1"]);
+    expect(get("/api/v1/changes?days=7&before=nowhere").status).toBe(400);
+    // A range nobody recorded is not available.
+    expect(get("/api/v1/changes?days=30&limit=100").status).toBe(404);
+  });
+});
