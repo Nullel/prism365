@@ -1,6 +1,7 @@
-import { GraphHttpClient } from "@prism365/graph";
+import { GraphHttpClient, GraphReportDownloadError, GraphReportHostError } from "@prism365/graph";
 import { describe, expect, it } from "vitest";
 import { ModuleBoundaryError, scopeGraph } from "../src/graph-scope.ts";
+import { classifyCollectorError } from "../src/scheduler.ts";
 
 // The usage report reader through a module's scoped Graph. Every value is invented.
 
@@ -35,7 +36,8 @@ describe("scopeGraph getReport", () => {
     const guarded: string[] = [];
     const scoped = scopeGraph(graph, ["reports.usage.read"], () => guarded.push("checked"));
     await expect(scoped.getReport(REPORT, usage)).resolves.toMatchObject({
-      rows: [{ "User Principal Name": "ada@lab.example", "Has Teams License": "True" }],
+      header: ["User Principal Name", "Has Teams License"],
+      rows: [["ada@lab.example", "True"]],
     });
     expect(guarded).toEqual(["checked"]);
     expect(urls).toHaveLength(2);
@@ -81,5 +83,22 @@ describe("scopeGraph getReport", () => {
     const { graph } = client(csv);
     const scoped = scopeGraph(graph, ["reports.usage.read"]);
     await expect(scoped.getReport(REPORT, usage, { maxBytes: 64 })).rejects.toThrow("maxBytes");
+  });
+});
+
+describe("collector error categories for report reads", () => {
+  it("files a failed download link under the provider, never under access denied", () => {
+    expect(classifyCollectorError(new GraphReportDownloadError(403))).toBe("provider_error");
+    expect(classifyCollectorError(new GraphReportDownloadError(401))).toBe("provider_error");
+    expect(classifyCollectorError(new GraphReportDownloadError(503))).toBe("provider_unavailable");
+    expect(
+      classifyCollectorError(
+        new GraphReportHostError(
+          "its host is not a report download host",
+          "reports.example",
+          false,
+        ),
+      ),
+    ).toBe("boundary.report_host");
   });
 });

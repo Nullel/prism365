@@ -450,8 +450,9 @@ What it cannot see:
 
 `usage.m365-apps` reads one report, `GET /reports/getM365AppUserDetail(period='D90')` with
 `$format=application/json` (Graph v1.0, checked 2026-10-22), with `Reports.Read.All`. It is the one
-usage report v1.0 documents as JSON; the others answer with a redirect to a CSV download, which the
-Graph client refuses. Microsoft's sample nests the app and platform flags under `details[]`; the
+usage report v1.0 documents as JSON; the others answer with a redirect to a CSV download, which only
+the Graph client's report reader follows (`getReport`, ADR-0010), and this audit does not use it.
+Microsoft's sample nests the app and platform flags under `details[]`; the
 audit reads that shape and the flat one. It asks for 1,000 rows to a page, which Microsoft's
 documentation neither confirms nor limits, and falls back to its default of 200 when it answers 400.
 Microsoft's documentation gives report calls a limit of 14 requests per ten minutes per app per

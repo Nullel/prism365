@@ -101,6 +101,41 @@ export class GraphBoundaryError extends Error {
   }
 }
 
+// A usage report download link refused by getReport (ADR-0010). It carries the link's host so an
+// audit can show it and the log can record it, and an operator can report a host Microsoft moved
+// to. Never the path or query: they carry the pre-authenticated token. A parsed hostname is
+// printable ASCII (the URL parser refuses control and space characters in hosts and converts other
+// names to punycode), and it is cut to the longest DNS name. `problem` is fixed text from the check.
+export class GraphReportHostError extends GraphBoundaryError {
+  readonly host: string | null;
+  // Whether the host is a listed download host, so the problem is the link's form, not its host.
+  readonly knownHost: boolean;
+  readonly problem: string;
+  constructor(problem: string, host: string | null, knownHost: boolean) {
+    const allowed = reportDownloadHosts.map((name) => `https://${name}${REPORT_DOWNLOAD_PATH}`);
+    super(
+      `Microsoft's usage report download link was refused because ${problem} (host: ${host ?? "none"}). Prism365 downloads reports only from ${allowed.join(" or ")}. If Microsoft has moved report downloads, report this host so the list can be reviewed.`,
+      "report_host",
+    );
+    this.name = "GraphReportHostError";
+    this.host = host === null ? null : host.slice(0, 253);
+    this.knownHost = knownHost;
+    this.problem = problem;
+  }
+}
+
+// A usage report download that the download host answered with anything but 200. It is not a
+// GraphRequestError: a 401 or 403 here means the short-lived link failed, not that the session or a
+// role is missing, and it keeps only the status, never the link or the host's text.
+export class GraphReportDownloadError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`Microsoft's usage report download failed with HTTP ${status}.`);
+    this.name = "GraphReportDownloadError";
+    this.status = status;
+  }
+}
+
 const collectionSchema = z.object({
   value: z.array(z.unknown()).max(1_000),
   "@odata.nextLink": z.string().max(16_384).optional(),
@@ -119,12 +154,13 @@ function boundedInteger(value: number, min: number, max: number, label: string):
 const allowedPaths: Record<GraphFeatureId, RegExp> = {
   profile: /^\/v1\.0\/me\/?$/i,
   // The user list, one user, one user's manager, or one user's direct memberships (groups,
-  // directory roles and administrative units; not transitiveMemberOf). The memberships path takes
-  // only what the user path builders produce, an id or a percent-encoded principal name, in the
-  // /users/{id} or the users('upn') form: letters, digits, ._:@'()- and well-formed percent escapes
-  // other than an encoded slash, backslash or question mark, which no id or principal name holds.
+  // directory roles and administrative units; not transitiveMemberOf), in the /users/{id} or the
+  // users('upn') form. The key takes only what the path builders (person.ts, investigation.ts)
+  // produce from an id or a principal name: what encodeURIComponent leaves as it is (letters,
+  // digits and - _ . ! ~ * ' ( )), the : and @ of raw ids, and well-formed percent escapes other
+  // than an encoded slash, backslash or question mark, which no id or principal name holds.
   "directory.users.read":
-    /^\/v1\.0\/users(?:(?:\/[^/]+|\([^/]+\))(?:\/manager)?|(?:\/(?:[A-Za-z0-9._:@'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+|\((?:[A-Za-z0-9._:@'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+\))\/memberOf)?\/?$/i,
+    /^\/v1\.0\/users(?:(?:\/(?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+|\((?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+\))(?:\/manager|\/memberOf)?)?\/?$/i,
   "user.licenses.read": /^\/v1\.0\/users(?:\/[^/]+|\([^/]+\))\/licenseDetails\/?$/i,
   "tenant.licenses.read": /^\/v1\.0\/subscribedSkus\/?$/i,
   "service.health.read":
@@ -550,7 +586,8 @@ export class GraphHttpClient {
   // The report download: a GET to the checked link with no token, no cookies and no header but
   // Accept, refusing any redirect, within the client's request timeout and the caller's signal.
   // The link is pre-authenticated and short-lived, so it is used once and never retried, and it
-  // never goes into an error or a log: whoever holds it can read the report.
+  // never goes into an error or a log: whoever holds it can read the report. Any answer but 200 is
+  // a GraphReportDownloadError, a partial (206) or empty (204) one included.
   async #download(url: URL, maxBytes: number, external: AbortSignal | undefined): Promise<string> {
     external?.throwIfAborted();
     const controller = new AbortController();
@@ -568,14 +605,14 @@ export class GraphHttpClient {
         });
         if (response.status !== 200) {
           await response.body?.cancel();
-          throw new GraphRequestError(response.status);
+          throw new GraphReportDownloadError(response.status);
         }
         return await readBoundedReport(response, maxBytes);
       } catch (error) {
         if (
           controller.signal.aborted ||
           error instanceof GraphBoundaryError ||
-          error instanceof GraphRequestError
+          error instanceof GraphReportDownloadError
         )
           throw error;
         // A network failure, or a redirect that fetch refused. The underlying error may carry
@@ -705,11 +742,8 @@ async function readBoundedBytes(
   return bytes;
 }
 
-// Checks the Location of a usage report redirect. The error names the host so an operator can
-// report a host Microsoft has moved to; it never includes the path or query, which carry the
-// pre-authenticated token. A parsed hostname is printable ASCII (the URL parser refuses control
-// and space characters in hosts and converts other names to punycode), and it is cut to the
-// longest DNS name.
+// Checks the Location of a usage report redirect. A refusal is a GraphReportHostError, which names
+// the host and nothing else of the link.
 function reportDownloadUrl(location: string): URL {
   let url: URL | undefined;
   try {
@@ -719,11 +753,11 @@ function reportDownloadUrl(location: string): URL {
   }
   const problem = downloadLinkProblem(url);
   if (url && problem === null) return url;
-  const host = url?.hostname ? url.hostname.slice(0, 253) : "none";
-  const allowed = reportDownloadHosts.map((name) => `https://${name}${REPORT_DOWNLOAD_PATH}`);
-  throw new GraphBoundaryError(
-    `Microsoft's usage report download link was refused because ${problem} (host: ${host}). Prism365 downloads reports only from ${allowed.join(" or ")}. If Microsoft has moved report downloads, report this host so the list can be reviewed.`,
-    "report_host",
+  const host = url?.hostname ? url.hostname : null;
+  throw new GraphReportHostError(
+    problem ?? "it is not an allowed link",
+    host,
+    host !== null && reportDownloadHosts.includes(host),
   );
 }
 

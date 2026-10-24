@@ -136,6 +136,7 @@ export const permissionPackSchema = z.object({
   roleNotes: z.string().min(1),
   licenseNotes: z.string().min(1),
   documentationUrl: z.string().url(),
+  relatedDocumentationUrls: z.array(z.string().url()).optional(),
   documentationLastVerified: z.string().date(),
 });
 export type PermissionPack = z.infer<typeof permissionPackSchema>;

@@ -198,7 +198,10 @@ every 3xx; `getReport()` is the one reader that follows it (ADR-0010), for eight
 reports by period, without sending the token, and parses the file with a bounded CSV reader. The
 per-user Microsoft 365 apps report (`getM365AppUserDetail`) also has a documented JSON answer,
 which the Microsoft 365 app usage audit reads. On the pilot tenant, check that the download host
-is still `reports.office.com` (a refusal names the host it saw) and how the file is encoded.
+is still `reports.office.com` and how the file is encoded. If Microsoft has moved the download, the
+audit page says "Microsoft sent the report from a host Prism365 does not recognise" with the host,
+and the server log line carries the same host with the `report_host` category; the link itself is
+never shown or logged.
 
 Deliverable: `/v1/dashboard/summary` returns live data in live mode, `MetricCard` reads
 `metric.state` instead of the hard-coded "Demo" chip, and the placeholder section goes away.

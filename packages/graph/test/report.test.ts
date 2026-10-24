@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   GraphBoundaryError,
   GraphHttpClient,
+  GraphReportDownloadError,
+  GraphReportHostError,
   GraphRequestError,
   GraphRetryDeferredError,
 } from "../src/client.ts";
@@ -107,7 +109,11 @@ describe("getReport: the Graph request and the download", () => {
     const table = await reader(fetchImplementation).getReport(REPORT, usage);
     expect(table).toEqual({
       header: ["Report Refresh Date", "User Principal Name"],
-      rows: [{ "Report Refresh Date": "2026-10-20", "User Principal Name": "ada@lab.example" }],
+      index: new Map([
+        ["Report Refresh Date", 0],
+        ["User Principal Name", 1],
+      ]),
+      rows: [["2026-10-20", "ada@lab.example"]],
       skippedRows: 0,
       truncated: false,
     });
@@ -120,6 +126,8 @@ describe("getReport: the Graph request and the download", () => {
     expect(graph?.init?.redirect).toBe("manual");
     // The download carries Accept and nothing else, refuses redirects and sends no cookies.
     expect([...(download?.headers.keys() ?? [])]).toEqual(["accept"]);
+    expect(download?.headers.get("Accept")).toBe("application/octet-stream, text/csv");
+    expect(graph?.headers.get("Accept")).toBe("application/octet-stream, application/json");
     for (const [, value] of download?.headers ?? []) expect(value).not.toContain(TOKEN);
     expect(download?.init?.redirect).toBe("error");
     expect(download?.init?.credentials).toBe("omit");
@@ -217,13 +225,13 @@ describe("getReport: the Graph request and the download", () => {
       () => redirectTo("https://elsewhere.example/report.csv"),
     );
     const handedBack = await failure(reader(answered.fetchImplementation).getReport(REPORT, usage));
-    expect(handedBack).toBeInstanceOf(GraphRequestError);
+    expect(handedBack).toBeInstanceOf(GraphReportDownloadError);
     expect(handedBack).toMatchObject({ status: 302 });
     expect(answered.sent).toHaveLength(2);
   });
 
   it("uses a download link once: a failed download is not retried", async () => {
-    for (const status of [404, 429, 500, 503]) {
+    for (const status of [401, 403, 404, 429, 500, 503]) {
       const { sent, fetchImplementation } = fakeFetch(
         () => redirectTo(LINK),
         () =>
@@ -233,11 +241,50 @@ describe("getReport: the Graph request and the download", () => {
           }),
       );
       const error = await failure(reader(fetchImplementation).getReport(REPORT, usage));
-      expect(error).toBeInstanceOf(GraphRequestError);
-      expect(error).not.toBeInstanceOf(GraphRetryDeferredError);
-      expect(error).toMatchObject({ status, requestId: undefined });
+      // Its own error, so an audit says the link failed rather than asking for a sign-in or a
+      // role, which a 401 or 403 from Graph would mean.
+      expect(error, String(status)).toBeInstanceOf(GraphReportDownloadError);
+      expect(error, String(status)).not.toBeInstanceOf(GraphRequestError);
+      expect(error).toMatchObject({ name: "GraphReportDownloadError", status });
+      expect(Object.keys(error as object).sort()).toEqual(["name", "status"]);
       expect(String(error)).not.toContain("ada@lab.example");
+      expect(String(error)).not.toContain(SECRET);
       expect(sent).toHaveLength(2);
+    }
+  });
+
+  it("refuses every download status but 200, a partial answer included", async () => {
+    for (const status of [201, 202, 203, 204, 205, 206]) {
+      const { sent, fetchImplementation } = fakeFetch(
+        () => redirectTo(LINK),
+        () =>
+          new Response(status === 204 || status === 205 ? null : CSV, {
+            status,
+            headers: { "Content-Type": "application/octet-stream" },
+          }),
+      );
+      const error = await failure(reader(fetchImplementation).getReport(REPORT, usage));
+      expect(error, String(status)).toBeInstanceOf(GraphReportDownloadError);
+      expect(error, String(status)).toMatchObject({ status });
+      expect(sent).toHaveLength(2);
+    }
+  });
+
+  it("puts the refused host on the error, for the audit page and the run log", async () => {
+    const cases: [string, string | null, boolean][] = [
+      [`https://reports.example/data/download/${SECRET}`, "reports.example", false],
+      [`https://eu.reports.office.com/data/download/${SECRET}`, "eu.reports.office.com", false],
+      [`https://reports.office.com:8443/data/download/${SECRET}`, "reports.office.com", true],
+      [`http://reports.office.com/data/download/${SECRET}`, "reports.office.com", true],
+      [`/data/download/${SECRET}`, null, false],
+    ];
+    for (const [location, host, knownHost] of cases) {
+      const { fetchImplementation } = fakeFetch(() => redirectTo(location));
+      const error = await failure(reader(fetchImplementation).getReport(REPORT, usage));
+      expect(error, location).toBeInstanceOf(GraphReportHostError);
+      expect(error, location).toBeInstanceOf(GraphBoundaryError);
+      expect(error, location).toMatchObject({ reason: "report_host", host, knownHost });
+      expect(JSON.stringify(error), location).not.toContain(SECRET);
     }
   });
 
@@ -324,7 +371,7 @@ describe("getReport: the Graph request and the download", () => {
     );
     await expect(
       reader(csvType.fetchImplementation).getReport(REPORT, usage),
-    ).resolves.toMatchObject({ rows: [{ "User Principal Name": "ada@lab.example" }] });
+    ).resolves.toMatchObject({ rows: [["2026-10-20", "ada@lab.example"]] });
   });
 
   it("reports a download that is not valid CSV with a fixed reason", async () => {
@@ -341,7 +388,7 @@ describe("getReport: the Graph request and the download", () => {
   it("parses a CSV that Graph answers itself, with the same cap", async () => {
     const { sent, fetchImplementation } = fakeFetch(() => csvResponse(CSV));
     await expect(reader(fetchImplementation).getReport(REPORT, usage)).resolves.toMatchObject({
-      rows: [{ "User Principal Name": "ada@lab.example" }],
+      rows: [["2026-10-20", "ada@lab.example"]],
     });
     expect(sent).toHaveLength(1);
     const body = largeBody();
@@ -409,6 +456,46 @@ describe("getReport: time limits, cancellation and throttling", () => {
     expect(downloadSignal?.aborted).toBe(true);
   });
 
+  it("gives the download the client's own request timeout, not a longer one", async () => {
+    let started = 0;
+    let ended = 0;
+    const { fetchImplementation } = fakeFetch(
+      () => redirectTo(LINK),
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          started = performance.now();
+          init?.signal?.addEventListener("abort", () => {
+            ended = performance.now();
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    );
+    await expect(
+      reader(fetchImplementation, { requestTimeoutMilliseconds: 100 }).getReport(REPORT, usage),
+    ).rejects.toMatchObject({ reason: "timeout" });
+    expect(ended - started).toBeGreaterThanOrEqual(90);
+    expect(ended - started).toBeLessThan(900);
+  });
+
+  it("cancels the body of a Graph answer it refuses", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"error":{"message":"refused"}}'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { fetchImplementation } = fakeFetch(
+      () => new Response(body, { status: 403, headers: { "Content-Type": "application/json" } }),
+    );
+    await expect(reader(fetchImplementation).getReport(REPORT, usage)).rejects.toBeInstanceOf(
+      GraphRequestError,
+    );
+    expect(cancelled).toBe(true);
+  });
+
   it("stops the Graph request when the caller's signal aborts", async () => {
     const aborted = { value: false };
     const controller = new AbortController();
@@ -474,7 +561,7 @@ describe("getReport: time limits, cancellation and throttling", () => {
     });
     await expect(
       reader(fetchImplementation, { sleep }).getReport(REPORT, usage),
-    ).resolves.toMatchObject({ rows: [{ "User Principal Name": "ada@lab.example" }] });
+    ).resolves.toMatchObject({ rows: [["2026-10-20", "ada@lab.example"]] });
     expect(sleep).toHaveBeenCalledWith(2_000);
     expect(sent.map((request) => new URL(request.url).hostname)).toEqual([
       "graph.microsoft.com",
@@ -701,7 +788,6 @@ describe("the usage report and membership paths", () => {
       "users/u%zz/memberOf",
       "users/u%2/memberOf",
       "users/u+1/memberOf",
-      "users/u!1/memberOf",
       "groups/g-1/memberOf",
       "users/u-1/ownedObjects",
     ])

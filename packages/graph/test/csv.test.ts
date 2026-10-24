@@ -9,6 +9,12 @@ import {
 
 // Every value here is invented: .example addresses and made-up people.
 
+// The table without its index, for comparing whole results; the index has tests of its own.
+const plain = (input: string) => {
+  const { header, rows, skippedRows, truncated } = parseCsv(input);
+  return { header, rows, skippedRows, truncated };
+};
+
 const problem = (input: string) => {
   try {
     parseCsv(input);
@@ -25,14 +31,14 @@ describe("parseCsv", () => {
     expect(parseCsv("Name,Count\r\nAda,1\r\n").header).toEqual(["Name", "Count"]);
     expect(parseCsv("\uFEFF\uFEFFName\n\uFEFFAda\n")).toMatchObject({
       header: ["\uFEFFName"],
-      rows: [{ "\uFEFFName": "\uFEFFAda" }],
+      rows: [["\uFEFFAda"]],
     });
   });
 
   it("reads CRLF, LF and mixed line endings, with or without a final one", () => {
     const expected = [
-      { Name: "Ada", Count: "1" },
-      { Name: "Brook", Count: "2" },
+      ["Ada", "1"],
+      ["Brook", "2"],
     ];
     for (const input of [
       "Name,Count\r\nAda,1\r\nBrook,2\r\n",
@@ -40,7 +46,7 @@ describe("parseCsv", () => {
       "Name,Count\r\nAda,1\nBrook,2",
       "Name,Count\nAda,1\r\nBrook,2\r",
     ])
-      expect(parseCsv(input), JSON.stringify(input)).toEqual({
+      expect(plain(input), JSON.stringify(input)).toEqual({
         header: ["Name", "Count"],
         rows: expected,
         skippedRows: 0,
@@ -53,17 +59,12 @@ describe("parseCsv", () => {
       'Display Name,Note,Products\r\n"Okafor, Ada","She said ""hi""","Line one\r\nLine two\nthree"\r\n',
     );
     expect(table.skippedRows).toBe(0);
-    expect(table.rows).toEqual([
-      {
-        "Display Name": "Okafor, Ada",
-        Note: 'She said "hi"',
-        Products: "Line one\r\nLine two\nthree",
-      },
-    ]);
+    expect(table.rows).toEqual([["Okafor, Ada", 'She said "hi"', "Line one\r\nLine two\nthree"]]);
     // A quoted header, a field that is only a quote, and a doubled quote at either end.
-    expect(parseCsv('"A ""quoted"" name",B\n"""","""x"""\n').rows).toEqual([
-      { 'A "quoted" name': '"', B: '"x"' },
-    ]);
+    expect(parseCsv('"A ""quoted"" name",B\n"""","""x"""\n')).toMatchObject({
+      header: ['A "quoted" name', "B"],
+      rows: [['"', '"x"']],
+    });
   });
 
   it("keeps values as strings with no trimming or type guessing", () => {
@@ -71,22 +72,22 @@ describe("parseCsv", () => {
       "Is Deleted,Count,Date,Padded\nFalse,0012, 2026-10-01 ,  spaced  \nTrue,1e3,,\n",
     );
     expect(table.rows).toEqual([
-      { "Is Deleted": "False", Count: "0012", Date: " 2026-10-01 ", Padded: "  spaced  " },
-      { "Is Deleted": "True", Count: "1e3", Date: "", Padded: "" },
+      ["False", "0012", " 2026-10-01 ", "  spaced  "],
+      ["True", "1e3", "", ""],
     ]);
   });
 
   it("reads empty fields, quoted empty fields and a trailing empty field", () => {
     expect(parseCsv('A,B,C\n,,\n"",x,""\na,b,\n').rows).toEqual([
-      { A: "", B: "", C: "" },
-      { A: "", B: "x", C: "" },
-      { A: "a", B: "b", C: "" },
+      ["", "", ""],
+      ["", "x", ""],
+      ["a", "b", ""],
     ]);
   });
 
   it("returns no rows for a header-only report", () => {
     for (const input of ["A,B", "A,B\r\n", "\uFEFFA,B\n\n\n"])
-      expect(parseCsv(input)).toEqual({
+      expect(plain(input)).toEqual({
         header: ["A", "B"],
         rows: [],
         skippedRows: 0,
@@ -96,11 +97,24 @@ describe("parseCsv", () => {
 
   it("ignores empty lines, which hold no field, but keeps a row of one quoted empty value", () => {
     expect(parseCsv("A\n\nx\r\n\r\n\ny\n")).toMatchObject({
-      rows: [{ A: "x" }, { A: "y" }],
+      rows: [["x"], ["y"]],
       skippedRows: 0,
     });
-    expect(parseCsv('A\n""\n').rows).toEqual([{ A: "" }]);
+    expect(parseCsv('A\n""\n').rows).toEqual([[""]]);
     expect(parseCsv("\n\nA,B\n1,2\n").header).toEqual(["A", "B"]);
+    // A carriage return alone at the very end closes the last line; it is not a row of its own.
+    expect(plain("A\n1\n\r")).toEqual({
+      header: ["A"],
+      rows: [["1"]],
+      skippedRows: 0,
+      truncated: false,
+    });
+    expect(plain("A,B\n1,2\n\r")).toEqual({
+      header: ["A", "B"],
+      rows: [["1", "2"]],
+      skippedRows: 0,
+      truncated: false,
+    });
   });
 
   it("requires a header row", () => {
@@ -142,13 +156,13 @@ describe("parseCsv", () => {
   it("skips and counts rows whose field count differs from the header", () => {
     const table = parseCsv("A,B,C\n1,2,3\n1,2\n1,2,3,4\nx\n4,5,6\n,,,\n");
     expect(table.rows).toEqual([
-      { A: "1", B: "2", C: "3" },
-      { A: "4", B: "5", C: "6" },
+      ["1", "2", "3"],
+      ["4", "5", "6"],
     ]);
     expect(table.skippedRows).toBe(4);
     // A ragged row with a quoted line break is still one row.
     expect(parseCsv('A,B\n"x\ny"\n1,2\n')).toMatchObject({
-      rows: [{ A: "1", B: "2" }],
+      rows: [["1", "2"]],
       skippedRows: 1,
     });
   });
@@ -158,8 +172,8 @@ describe("parseCsv", () => {
       'A,B\nab"c,1\n"ab"c,2\n"ab" ,3\nx\ry,4\n"ok, really",5\n"ab"c"d,e",6\nlast,7\n',
     );
     expect(table.rows).toEqual([
-      { A: "ok, really", B: "5" },
-      { A: "last", B: "7" },
+      ["ok, really", "5"],
+      ["last", "7"],
     ]);
     expect(table.skippedRows).toBe(5);
   });
@@ -173,9 +187,9 @@ describe("parseCsv", () => {
     const table = parseCsv(
       `A,B\n${atLimit},1\n${over},2\n${quotedAtLimit},3\n${quotedOver},4\n"${over}",5\nend,6\n`,
     );
-    expect(table.rows.map((row) => row.B)).toEqual(["1", "3", "6"]);
-    expect(table.rows[0]?.A).toBe(atLimit);
-    expect(table.rows[1]?.A).toBe(`${'"'.repeat(10)}${"c".repeat(CSV_MAX_FIELD_LENGTH - 10)}`);
+    expect(table.rows.map((row) => row[1])).toEqual(["1", "3", "6"]);
+    expect(table.rows[0]?.[0]).toBe(atLimit);
+    expect(table.rows[1]?.[0]).toBe(`${'"'.repeat(10)}${"c".repeat(CSV_MAX_FIELD_LENGTH - 10)}`);
     expect(table.skippedRows).toBe(3);
   });
 
@@ -187,7 +201,7 @@ describe("parseCsv", () => {
     expect(full.truncated).toBe(false);
     const more = parseCsv(rows(CSV_MAX_ROWS + 1));
     expect(more.rows).toHaveLength(CSV_MAX_ROWS);
-    expect(more.rows.at(-1)?.Id).toBe(String(CSV_MAX_ROWS - 1));
+    expect(more.rows.at(-1)?.[0]).toBe(String(CSV_MAX_ROWS - 1));
     expect(more.truncated).toBe(true);
     // Skipped rows do not count toward the limit, and trailing empty lines are not more rows.
     const withSkips = parseCsv(`${rows(CSV_MAX_ROWS).replace("\n", "\nbad\n")}\n\n`);
@@ -212,17 +226,32 @@ describe("parseCsv", () => {
     }
   });
 
-  it("keys records by header name without a prototype", () => {
-    const table = parseCsv("__proto__,constructor,toString\n1,2,3\n");
-    const [row] = table.rows;
-    expect(Object.getPrototypeOf(row)).toBeNull();
-    expect(Object.entries(row ?? {})).toEqual([
-      ["__proto__", "1"],
-      ["constructor", "2"],
-      ["toString", "3"],
+  it("finds columns by header name through the index", () => {
+    const table = parseCsv("__proto__,constructor,User Principal Name\n1,2,ada@lab.example\n");
+    expect([...table.index]).toEqual([
+      ["__proto__", 0],
+      ["constructor", 1],
+      ["User Principal Name", 2],
     ]);
-    expect(row?.constructor).toBe("2");
-    expect(parseCsv("A\n1\n").rows[0]?.toString).toBeUndefined();
+    const principal = table.index.get("User Principal Name");
+    expect(principal).toBe(2);
+    expect(table.rows[0]?.[principal ?? -1]).toBe("ada@lab.example");
+    // A column Microsoft did not send has no index, rather than a position that reads undefined.
+    expect(table.index.get("Report Period")).toBeUndefined();
+    expect(table.index.get("toString")).toBeUndefined();
+  });
+
+  // Measured 2026-10-23 with node --expose-gc, heap kept after parsing with the input still held:
+  // 50,000 rows of 100 six-character fields (33.4 MiB of text) kept 171 MiB, 5.1 times the input,
+  // and 50,000 rows of a 24-column report-like file (7 MiB) kept 40 MiB, 5.7 times. One object per
+  // row, keyed by header name, kept 412 MiB (12.3 times) and 99 MiB (14.1 times). Sharing short
+  // repeated values brought the first to 1.7 times but made it five times slower, so it is not done.
+  it("keeps each row as one array of strings, the length of the header", () => {
+    const table = parseCsv("A,B,C\n1,2,3\n4,5,6\n");
+    for (const row of table.rows) {
+      expect(Array.isArray(row)).toBe(true);
+      expect(row).toHaveLength(table.header.length);
+    }
   });
 
   it("reads a 10 MB report in well under a second", () => {
@@ -238,7 +267,7 @@ describe("parseCsv", () => {
     const table = parseCsv(input);
     const elapsed = performance.now() - started;
     expect(table.rows).toHaveLength(count);
-    expect(table.rows[0]?.["Column 0"]).toBe('Okafor, Ada "0" of the lab');
+    expect(table.rows[0]?.[table.index.get("Column 0") ?? -1]).toBe('Okafor, Ada "0" of the lab');
     expect(elapsed).toBeLessThan(1_000);
   });
 

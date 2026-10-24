@@ -31,14 +31,16 @@ the file's encoding.
 ## Decision
 
 The client gets one narrow exception, `GraphHttpClient.getReport(path, context, options)`, and
-nothing else changes for any other request.
+no other request follows a redirect.
 
 - Only the `reports.usage.read` pack may call it; any other pack is refused (reason `report`).
   The pack's path allowlist is exactly eight reports, each by period only (`D7`, `D30`, `D90`,
-  `D180`), with no `date=` form and no query options: `getM365AppUserDetail`,
-  `getOffice365ActiveUserDetail`, `getEmailActivityUserDetail`, `getTeamsUserActivityUserDetail`,
-  `getOneDriveActivityUserDetail`, `getOneDriveUsageAccountDetail`,
-  `getSharePointActivityUserDetail` and `getMailboxUsageDetail`.
+  `D180`), with no `date=` form: `getM365AppUserDetail`, `getOffice365ActiveUserDetail`,
+  `getEmailActivityUserDetail`, `getTeamsUserActivityUserDetail`, `getOneDriveActivityUserDetail`,
+  `getOneDriveUsageAccountDetail`, `getSharePointActivityUserDetail` and `getMailboxUsageDetail`.
+  `getReport` refuses any query option. That is enforced in `getReport` only: the allowlist checks
+  paths, and `request()` still takes query options on these paths, because the Microsoft 365 app
+  usage audit reads the JSON form of `getM365AppUserDetail` with `$format=application/json`.
 - The Graph request passes every check `request()` applies (pack permission, cloud, GET only,
   host, path allowlist, the `$expand` refusal) and the same retry rules: 429 and 503 wait for
   `Retry-After` within the retry budget, other errors keep only their status and request ID.
@@ -46,24 +48,38 @@ nothing else changes for any other request.
   `Location`, or `200` with a CSV body from Graph itself, in case Microsoft ever answers directly.
 - The `Location` must parse, without a base, as an `https:` URL whose host is exactly
   `reports.office.com`, on the default port, with no user name or password and no fragment, and
-  with a path under `/data/download/`. Anything else is refused before any download (reason
-  `report_host`) with a fixed message that names the host, never the path or query, so an
-  operator can report a host Microsoft has moved to without passing on the link.
+  with a path under `/data/download/`. Anything else is refused before any download with a
+  `GraphReportHostError` (reason `report_host`), which carries the host and a fixed problem, never
+  the path or query. The audit page shows the host ("Microsoft sent the report from a host
+  Prism365 does not recognise: ..."), and the server's run log line carries it with the
+  `report_host` category, so an operator can report a host Microsoft has moved to without passing
+  on the link. A parsed hostname is printable ASCII, cut to 253 characters.
 - The token never goes to the download host. The download is a GET with no `Authorization`
-  header, no cookies (`credentials: "omit"`), no header but `Accept`, and `redirect: "error"`, so
-  the download host cannot send it on anywhere. It runs within the client's request timeout and
-  the caller's signal, and is used once: a non-200 answer is a `GraphRequestError` with no
-  provider text, and nothing is retried. A failure inside fetch becomes a fixed error (reason
-  `download`), because the underlying error could carry the link.
+  header and no cookies (`credentials: "omit"`), and Prism365 sets no header on it but `Accept`.
+  Node's fetch adds its own non-secret headers to every request (on Node 26: `user-agent`,
+  `accept-encoding`, `accept-language` and `sec-fetch-mode`, plus `Host`); none carries a
+  credential. `redirect: "error"` means the download host cannot send the request on anywhere.
+  It runs within the client's request timeout, the same budget as the Graph request, and the
+  caller's signal, and is used once: nothing is retried.
+- Any answer from the download host but 200, a partial (206) or empty (204) one included, is a
+  `GraphReportDownloadError` with only its status, never the link or the host's text. It is not a
+  `GraphRequestError`: a 401 or 403 there means the short-lived link failed, not that the session
+  or a role is missing, so an audit says "Microsoft's report download link failed. Run the audit
+  again." and a collector files it as a provider error. A failure inside fetch becomes a fixed
+  error (reason `download`), shown the same way, because the underlying error could carry the link.
 - The body must be `application/octet-stream` or `text/csv`, and is capped while it streams:
-  16 MiB by default, at most 32 MiB (reason `size`).
+  16 MiB by default, at most 32 MiB (reason `size`). Fetch decompresses what it asked for with
+  `accept-encoding`, and the cap counts the decompressed bytes, so a compressed body cannot slip
+  past it.
 - `packages/graph/src/csv.ts` parses it: a strict RFC 4180 reader that scans one character at a
   time, strips one leading byte-order mark, accepts CRLF or LF, requires a header row with
   unique, non-empty names, and allows at most 100 columns, 50,000 data rows (more sets
   `truncated`) and 8,192 characters a field. A row with a field over the limit, a field count
   other than the header's, or broken quoting is skipped and counted; an unterminated quote fails
-  the report (reason `csv`). Values stay strings exactly as written, and callers map them by
-  header name.
+  the report (reason `csv`). Values stay strings exactly as written. The result is the header,
+  an `index` from header name to position, and each row as an array of strings, so callers find a
+  column by name and a missing one reads as undefined. Arrays rather than one object per row keep
+  a parsed report at about five times its size (measured 2026-10-23); objects took twelve.
 - Modules and audits reach it through `ScopedGraph.getReport`, with the same declared-pack check
   and stop signal as their other reads.
 
@@ -74,9 +90,14 @@ nothing else changes for any other request.
 - No new permission. `Reports.Read.All` already covered these reports, and per-user detail still
   needs Reports Reader or a workload admin role. The `directory.users.read` pack also gains
   `/users/{id}/memberOf` (direct memberships, not transitive) for the audits that follow, since
-  `User.Read.All` is Microsoft's documented least privilege for another user's memberships. Its
-  id takes only the characters an id or an encoded principal name holds, and no encoded slash,
-  backslash or question mark.
+  `User.Read.All` is Microsoft's documented least privilege for another user's memberships
+  ([user-list-memberof](https://learn.microsoft.com/en-us/graph/api/user-list-memberof?view=graph-rest-1.0)).
+  Every key in that pack, for a user, its manager or its memberships, in the `/users/{id}` or the
+  `users('upn')` form, now takes only what the path builders produce from an id or a principal
+  name (what `encodeURIComponent` leaves as it is, including `! ~ * ' ( )`, the `:` and `@` of raw
+  ids, and well-formed percent escapes), and no encoded slash, backslash or question mark. Microsoft
+  allows none of those three in a principal name, so the builders answer such a name as not found
+  without a request.
 - A link is a credential for a few minutes. It is never stored, logged or put in an error, and is
   not cached.
 - If Microsoft moves downloads to another host, reports fail with `report_host` until the list is
@@ -92,8 +113,11 @@ nothing else changes for any other request.
 `packages/graph/test/report.test.ts` uses a fake fetch to check every request's headers (the token
 goes to Graph only), each refused `Location` form before any download, a second redirect, the byte
 cap mid-stream, timeouts and aborts on both requests, throttling, a direct CSV answer, the other
-packs, and `request()` refusing a 302 for every pack. `packages/graph/test/csv.test.ts` covers the
-parser's rules and limits and a 10 MB report in well under a second. The synthetic tenant serves
+packs, and `request()` refusing a 302 for every pack. `packages/graph/test/user-paths.test.ts`
+checks the user pack's keys against the path builders' own output, and
+`apps/api/test/audit-failure.test.ts` what the audit page and the log say about a refused link or
+a failed download. `packages/graph/test/csv.test.ts` covers the parser's rules and limits and a
+10 MB report in well under a second. The synthetic tenant serves
 one report through the same redirect (`scripts/demo/graph/usage-report-download.test.ts`) and
 refuses a download that carries a token.
 

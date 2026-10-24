@@ -1,8 +1,9 @@
 // A strict, bounded RFC 4180 reader for Microsoft's usage report downloads (ADR-0010), which are
 // untrusted provider text. It scans the input one character at a time and no regular expression
 // ever sees it, so the time it takes is linear in the input, and every count is capped: columns,
-// rows and field length. Values come back exactly as written, with no type guessing; callers map
-// them by header name, never by position, because Microsoft adds and reorders report columns.
+// rows and field length. Values come back exactly as written, with no type guessing; callers find
+// a column through `index` by header name, never by a fixed position, because Microsoft adds and
+// reorders report columns.
 
 export const CSV_MAX_COLUMNS = 100;
 export const CSV_MAX_ROWS = 50_000;
@@ -10,9 +11,12 @@ export const CSV_MAX_FIELD_LENGTH = 8_192;
 
 export interface CsvTable {
   header: string[];
-  // One record per kept data row, keyed by header name. Records have no prototype, so a header
-  // named "constructor" or "__proto__" is an ordinary key and a missing one reads as undefined.
-  rows: Record<string, string>[];
+  // Each header name's position in a row. A column the report does not have is not in it, so it
+  // reads as undefined rather than as a position.
+  index: ReadonlyMap<string, number>;
+  // One array of values per kept data row, as long as the header. Rows are arrays, not one object
+  // per row, because objects keyed by 100 names cost many times the report's own size.
+  rows: string[][];
   // Data rows left out: a field count that differs from the header's, a field over the length
   // limit, or broken quoting (a quote inside an unquoted field, text after a closing quote, or a
   // carriage return without a line feed).
@@ -168,7 +172,7 @@ function readHeader(text: string, start: number): { header: string[]; next: numb
 export function parseCsv(input: string): CsvTable {
   const text = input.charCodeAt(0) === BOM ? input.slice(1) : input;
   const { header, next } = readHeader(text, afterEmptyLines(text, 0));
-  const rows: Record<string, string>[] = [];
+  const rows: string[][] = [];
   let skippedRows = 0;
   let truncated = false;
   let at = next;
@@ -185,11 +189,13 @@ export function parseCsv(input: string): CsvTable {
       skippedRows += 1;
       continue;
     }
-    const record: Record<string, string> = Object.create(null);
-    header.forEach((name, index) => {
-      record[name] = scanned.fields[index] ?? "";
-    });
-    rows.push(record);
+    rows.push(scanned.fields);
   }
-  return { header, rows, skippedRows, truncated };
+  return {
+    header,
+    index: new Map(header.map((name, position) => [name, position])),
+    rows,
+    skippedRows,
+    truncated,
+  };
 }

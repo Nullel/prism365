@@ -100,8 +100,10 @@ export interface ScopedGraph {
   ): Promise<{ items: T[]; complete: boolean; stopped?: "deadline" }>;
   // One Microsoft 365 usage report (ADR-0010), reports.usage.read only: the redirect to Microsoft's
   // download is checked and followed without the token, and the CSV is parsed with fixed limits.
-  // Map values by header name, never by position; `skippedRows` and `truncated` say what was left
-  // out. `maxBytes` caps the download (16 MiB unless set, at most 32 MiB).
+  // Rows are arrays: find a column through `index` by header name, never a fixed position, because
+  // Microsoft adds and reorders columns. `skippedRows` and `truncated` say what was left out.
+  // `maxBytes` caps the download (16 MiB unless set, at most 32 MiB). A refused link is a
+  // GraphReportHostError naming its host; a failed download is a GraphReportDownloadError.
   getReport(
     path: string,
     context: GraphRequestContext,

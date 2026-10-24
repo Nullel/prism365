@@ -20,6 +20,8 @@ interface PermissionPackDefinition {
   roleNotes: string;
   licenseNotes: string;
   documentationUrl: `https://${string}`;
+  // Other Microsoft pages for the pack's endpoints, when it reads more than one kind of resource.
+  relatedDocumentationUrls?: readonly `https://${string}`[];
   documentationLastVerified: `${number}-${number}-${number}`;
 }
 
@@ -64,14 +66,20 @@ export const permissionPacks = [
     mode: "either",
     phase: "mvp",
     defaultEnabled: false,
-    purpose: "Read selected directory user fields for account inventory and hygiene.",
+    purpose:
+      "Read selected directory user fields for account inventory and hygiene, a user's manager, and a user's direct memberships (groups, directory roles and administrative units).",
     deniedBehavior: "User inventory is hidden; other reports remain available.",
     clouds: allGraphClouds,
     prerequisites: [],
-    roleNotes: "Delegated access is also limited by the signed-in user's privileges.",
+    roleNotes:
+      "Delegated access is also limited by the signed-in user's privileges. User.Read.All is Microsoft's documented least privilege for reading another user's memberships.",
     licenseNotes: "Endpoint-specific Microsoft Entra licensing rules still apply.",
     documentationUrl: "https://learn.microsoft.com/en-us/graph/api/user-list?view=graph-rest-1.0",
-    documentationLastVerified: "2026-10-13",
+    relatedDocumentationUrls: [
+      "https://learn.microsoft.com/en-us/graph/api/user-list-manager?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/user-list-memberof?view=graph-rest-1.0",
+    ],
+    documentationLastVerified: "2026-10-23",
   },
   {
     id: "user.licenses.read",

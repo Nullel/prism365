@@ -43,20 +43,24 @@ describe("the synthetic usage report downloads", () => {
       (user) => user.userType === "Member" && user.assignedLicenses.length > 0,
     );
     expect(table.rows).toHaveLength(licensed.length);
+    // Read by header name through the index, as the audits do.
+    const cell = (row: string[], name: (typeof ACTIVE_USER_COLUMNS)[number]) =>
+      row[table.index.get(name) ?? -1];
     const byPrincipal = new Map(licensed.map((user) => [user.userPrincipalName, user]));
     for (const row of table.rows) {
-      const user = byPrincipal.get(row["User Principal Name"] ?? "");
-      expect(user, row["User Principal Name"]).toBeDefined();
-      expect(row["Display Name"]).toBe(user?.displayName);
-      expect(row["Is Deleted"]).toBe("False");
-      expect(row["Has Exchange License"]).toMatch(/^(True|False)$/);
+      const principal = cell(row, "User Principal Name") ?? "";
+      const user = byPrincipal.get(principal);
+      expect(user, principal).toBeDefined();
+      expect(cell(row, "Display Name")).toBe(user?.displayName);
+      expect(cell(row, "Is Deleted")).toBe("False");
+      expect(cell(row, "Has Exchange License")).toMatch(/^(True|False)$/);
       // The report is two days behind the tenant's clock.
-      expect(row["Report Refresh Date"]).toBe("2026-10-20");
-      if (row["Exchange Last Activity Date"])
-        expect(row["Exchange Last Activity Date"] <= "2026-10-20").toBe(true);
+      expect(cell(row, "Report Refresh Date")).toBe("2026-10-20");
+      const exchange = cell(row, "Exchange Last Activity Date");
+      if (exchange) expect(exchange <= "2026-10-20").toBe(true);
     }
-    expect(table.rows.some((row) => row["Assigned Products"]?.includes("+"))).toBe(true);
-    expect(table.rows.some((row) => row["Teams Last Activity Date"] === "")).toBe(true);
+    expect(table.rows.some((row) => cell(row, "Assigned Products")?.includes("+"))).toBe(true);
+    expect(table.rows.some((row) => cell(row, "Teams Last Activity Date") === "")).toBe(true);
   });
 
   it("serve every period, each link once, and nothing for an unknown link", async () => {
