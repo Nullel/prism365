@@ -240,6 +240,35 @@ describe("change feed queries", () => {
     expect(await ids('r"d')).toEqual([]);
   });
 
+  it("finds names whatever their case: dotted capitals, final sigma, and the 30th of 50 targets", async () => {
+    const named = (id: string, at: number, name: string) =>
+      change(id, ago(at * DAY), {
+        targets: [{ id: `user-${id}`, name, type: "User", principal: null, properties: [] }],
+      });
+    await store(named("k-dotted", 42, "İlker Örnek"));
+    await store(named("l-greek", 43, "ΟΔΥΣΣΕΥΣ Δοκιμή"));
+    await store(
+      change("m-bulk", ago(44 * DAY), {
+        activity: "Add member to group",
+        targets: Array.from({ length: 50 }, (_value, index) => ({
+          id: `bulk-${index}`,
+          name: `Bulk Member ${String(index).padStart(2, "0")} ${"x".repeat(60)}`,
+          type: "User",
+          principal: `bulk${index}@example.invalid`,
+          properties: [],
+        })),
+      }),
+    );
+    const ids = async (search: string) =>
+      (await feed({ days: 60, search })).items.map((item) => item.id);
+    for (const search of ["ilker", "İlker", "ILKER", "örnek", "ornek"])
+      expect(await ids(search), search).toEqual(["k-dotted"]);
+    for (const search of ["ΟΔΥΣ", "οδυσ", "οδυσσευς", "ΟΔΥΣΣΕΥΣ"])
+      expect(await ids(search), search).toEqual(["l-greek"]);
+    expect(await ids("bulk member 30")).toEqual(["m-bulk"]);
+    expect(await ids("bulk49@example")).toEqual(["m-bulk"]);
+  });
+
   it("cuts lists a row holds beyond today's bounds instead of failing the page", async () => {
     const many = change("j-many", ago(50 * DAY), {
       activity: "Bulk update",

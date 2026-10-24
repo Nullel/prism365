@@ -1,4 +1,4 @@
-import { cleanText } from "@prism365/contracts";
+import { cleanText, searchKey } from "@prism365/contracts";
 import { z } from "zod";
 
 // Microsoft Graph v1.0, verified 2026-10-22:
@@ -27,8 +27,9 @@ export const VALUE_LIMIT = 400;
 export const TARGET_LIMIT = 50;
 export const PROPERTY_LIMIT = 50;
 export const DETAIL_LIMIT = 20;
-// The free-text search reads one lower-case string per event, at most this long.
-export const SEARCH_TEXT_LIMIT = 2_000;
+// The free-text search reads one normalised string per event, at most this long: enough for the
+// names of all 50 targets an event may keep.
+export const SEARCH_TEXT_LIMIT = 8_000;
 
 // Details that describe the client a change was made from (its browser, its address) rather
 // than the change itself. They are left out, as the actor's address is.
@@ -284,8 +285,8 @@ export function normalizeDirectoryAudit(record: GraphDirectoryAudit): DirectoryC
 
 // What the feed's search matches: the activity, who made the change, and the names and sign-in
 // names of what it was made to. Not the changed values, and not the JSON around them, so a
-// search for "name" or a quote finds only what a person would expect. Lower-cased here, and the
-// search text is lower-cased the same way, so both sides agree whatever the database's locale.
+// search for "name" or a quote finds only what a person would expect. Normalised with
+// searchKey here and in the query, so both sides agree whatever the database's locale.
 export function searchText(event: DirectoryChangeEvent): string {
   return [
     event.activity,
@@ -294,8 +295,8 @@ export function searchText(event: DirectoryChangeEvent): string {
     ...event.targets.flatMap((target) => [target.name, target.principal]),
   ]
     .filter((value): value is string => Boolean(value))
+    .map(searchKey)
     .join("\n")
-    .toLowerCase()
     .slice(0, SEARCH_TEXT_LIMIT);
 }
 

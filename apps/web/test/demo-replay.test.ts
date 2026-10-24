@@ -883,7 +883,18 @@ describe("directory changes", () => {
         body: {
           ...base,
           items: [
-            change("c-3", "2026-10-20T09:00:00.000Z"),
+            change("c-3", "2026-10-20T09:00:00.000Z", {
+              targets: [
+                { id: "u-1", name: "Blake Example", type: "User", principal: null, properties: [] },
+                {
+                  id: "u-2",
+                  name: "İlker ΟΔΥΣΣΕΥΣ",
+                  type: "User",
+                  principal: null,
+                  properties: [],
+                },
+              ],
+            }),
             change("c-2", "2026-10-19T09:00:00.000Z", {
               category: "RoleManagement",
               activity: "Add member to role",
@@ -916,6 +927,11 @@ describe("directory changes", () => {
     expect(ids("/api/v1/changes?days=7&limit=100&result=failure")).toEqual(["c-1"]);
     expect(ids("/api/v1/changes?days=7&limit=100&search=BLAKE")).toEqual(["c-3", "c-2", "c-1"]);
     expect(ids("/api/v1/changes?days=7&limit=100&search=role")).toEqual(["c-2"]);
+    // Folded the way the server folds it: dotted capitals and final sigma.
+    expect(ids("/api/v1/changes?days=7&limit=100&search=ilker")).toEqual(["c-3"]);
+    expect(ids(`/api/v1/changes?days=7&limit=100&search=${encodeURIComponent("ΟΔΥΣ")}`)).toEqual([
+      "c-3",
+    ]);
     const first = get("/api/v1/changes?days=7&limit=2").body as { next: string | null };
     expect(first.next).toBe("2026-10-19T09:00:00.000Z|c-2");
     expect(

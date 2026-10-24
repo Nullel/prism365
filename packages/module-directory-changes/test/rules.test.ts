@@ -414,36 +414,93 @@ describe("rule activities the first tests left out", () => {
 });
 
 describe("role activations through Privileged Identity Management", () => {
-  const activation = (at: string, how: "pim" | "directory" = "pim") =>
+  const msPim = { kind: "app" as const, id: "sp-pim", name: "MS-PIM", principal: null };
+  const role = (
+    at: string,
+    activity: string,
+    initiatedBy: DirectoryChangeEvent["initiatedBy"],
+    correlationId: string,
+  ) =>
     change({
-      id: `Directory_${at}_${how}`,
+      id: `Directory_${at}_${correlationId}`,
       activityAt: new Date(at),
-      activity:
-        how === "pim" ? "Add member to role completed (PIM activation)" : "Add member to role",
+      activity,
       category: "RoleManagement",
-      initiatedBy:
-        how === "pim"
-          ? { kind: "user", id: personId, name: "Synthetic Person", principal: null }
-          : { kind: "app", id: "sp-pim", name: "MS-PIM", principal: null },
-      targets: [
-        {
-          ...person,
-          properties: [property("Role.TemplateId", globalAdministrator)],
-        },
-      ],
+      correlationId,
+      initiatedBy,
+      targets: [{ ...person, properties: [property("Role.TemplateId", globalAdministrator)] }],
     });
+  const self = { kind: "user" as const, id: personId, name: "Synthetic Person", principal: null };
+  const activated = (at: string, correlationId: string) =>
+    role(at, "Add member to role completed (PIM activation)", self, correlationId);
+  const related = (...ids: string[]) => ({ activationCorrelations: new Set(ids) });
+  const judgedWith = (event: DirectoryChangeEvent, ids: string[] = []) => {
+    const findings = judgeChange(event, tenantId, related(...ids));
+    for (const finding of findings) expect(() => checkFinding(finding)).not.toThrow();
+    return findings;
+  };
 
   it("counts one person's activations of a role in one finding a day", () => {
-    const [morning] = judged(activation("2026-10-21T08:00:00.000Z"));
-    const [afternoon] = judged(activation("2026-10-21T15:00:00.000Z", "directory"));
-    const [nextDay] = judged(activation("2026-10-22T08:00:00.000Z"));
+    const [morning] = judged(activated("2026-10-21T08:00:00.000Z", "c-1"));
+    const [afternoon] = judged(activated("2026-10-21T15:00:00.000Z", "c-2"));
+    const [nextDay] = judged(activated("2026-10-22T08:00:00.000Z", "c-3"));
     expect(morning).toMatchObject({
       severity: "critical",
       title: "Global Administrator activated",
     });
     expect(morning?.dedupeKey).toBe(afternoon?.dedupeKey);
     expect(nextDay?.dedupeKey).not.toBe(morning?.dedupeKey);
-    // A permanent assignment stays one finding per event.
+    // The directory's own record of the morning activation, written by the PIM service with the
+    // same correlation id, counts in the same finding.
+    const [directory] = judgedWith(
+      role("2026-10-21T08:00:01.000Z", "Add member to role", msPim, "c-1"),
+      ["c-1"],
+    );
+    expect(directory?.dedupeKey).toBe(morning?.dedupeKey);
+  });
+
+  it("keeps a permanent or timebound assignment made in PIM out of the day's activations", () => {
+    const [activation] = judged(activated("2026-10-21T08:00:00.000Z", "c-1"));
+    const other = { kind: "user" as const, id: adminId, name: "Synthetic Admin", principal: null };
+    for (const activity of [
+      "Add member to role in PIM completed (permanent)",
+      "Add member to role in PIM completed (timebound)",
+    ]) {
+      const [finding] = judged(role("2026-10-21T15:00:00.000Z", activity, other, "c-9"));
+      expect(finding).toMatchObject({
+        ruleId: "role.privileged-assigned",
+        severity: "critical",
+        title: "Global Administrator assigned",
+        dedupeKey: "Directory_2026-10-21T15:00:00.000Z_c-9",
+      });
+      expect(finding?.summary).toContain("through Privileged Identity Management");
+      expect(finding?.dedupeKey).not.toBe(activation?.dedupeKey);
+    }
+    // The directory's record PIM writes for that assignment has no activation beside it: it is
+    // an assignment too, one finding per event.
+    const [unpaired] = judgedWith(
+      role("2026-10-21T15:00:01.000Z", "Add member to role", msPim, "c-9"),
+      ["c-1"],
+    );
+    expect(unpaired).toMatchObject({
+      title: "Global Administrator assigned",
+      dedupeKey: "Directory_2026-10-21T15:00:01.000Z_c-9",
+    });
+    // Another app sharing an activation's correlation id is not PIM's record of it.
+    const [otherApp] = judgedWith(
+      role(
+        "2026-10-21T15:00:02.000Z",
+        "Add member to role",
+        { kind: "app", id: "sp-tool", name: "Synthetic Provisioning", principal: null },
+        "c-1",
+      ),
+      ["c-1"],
+    );
+    expect(otherApp).toMatchObject({
+      title: "Global Administrator assigned",
+      dedupeKey: "Directory_2026-10-21T15:00:02.000Z_c-1",
+    });
+    // A permanent assignment outside PIM stays one finding per event.
     expect(judged(roleAdded({ id: globalAdministrator }))[0]?.dedupeKey).toBe("Directory_rule_1");
   });
 });
@@ -471,6 +528,29 @@ describe("an administrator forcing MFA registration again", () => {
       title: "Sign-in methods cleared by an administrator",
       subject: { kind: "person", id: personId },
     });
+  });
+
+  it("flags clearing a list of methods too long to keep whole, but not a new list cut short", () => {
+    const cut = (oldValue: string, newValue: string, which: "oldCut" | "newCut") =>
+      change({
+        activity: "Update user",
+        category: "UserManagement",
+        targets: [
+          {
+            ...person,
+            properties: [
+              { ...property("StrongAuthenticationMethod", newValue, oldValue), [which]: true },
+            ],
+          },
+        ],
+      });
+    // An old list cut for length held many methods; the new one is empty.
+    const [finding] = judged(cut(methods.repeat(40), "[]", "oldCut"));
+    expect(finding).toMatchObject({
+      ruleId: "auth-method.removed-by-admin",
+      title: "Sign-in methods cleared by an administrator",
+    });
+    expect(judged(cut(methods, methods.repeat(40), "newCut"))).toEqual([]);
   });
 
   it("ignores other updates, a list that was already empty, and your own account", () => {

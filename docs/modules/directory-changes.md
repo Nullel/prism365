@@ -1,6 +1,6 @@
 # Module: directory.changes
 
-Status: built (TL-030), first adversarial review fixed, second review pending. Package: `packages/module-directory-changes`.
+Status: built (TL-030), first and second adversarial reviews fixed, third review pending. Package: `packages/module-directory-changes`.
 
 ## 1. What it answers
 
@@ -59,9 +59,12 @@ left out.
 
 Collector `audits`, every 10 minutes, stopped by the scheduler at 120 seconds. Each run reads for
 at most 25 seconds and starts no request after that, so the last request has its 90 seconds to
-finish. Each request starts at least 2.2 seconds after the previous one finished, the Graph
-client's own retries included and across runs, so no 10 seconds hold more than the 5 directory
-audit requests Microsoft allows per app and tenant.
+finish. Each request the module makes starts at least 2.2 seconds after the previous one
+finished, across runs, so the module's requests stay within the 5 per 10 seconds Microsoft allows
+per app and tenant. When Microsoft answers 429, the Graph client retries inside that one request
+after the wait Microsoft gives; those retries are Microsoft's pace, not the
+module's. A wait carried over from an earlier run is never longer than one interval, so a clock
+that stepped back cannot hold collection.
 
 - The first run starts 30 days back (Microsoft's longest retention) and reads forward in windows
   of up to a day, asking the scheduler to run again within seconds while history remains. If
@@ -81,22 +84,42 @@ audit requests Microsoft allows per app and tenant.
   last complete window. Before reading a window the lane records that it is reading it; a run
   stopped mid-window is seen by the next one, which counts that window as failed.
 - A window holding more than 5,000 records is split in half and read again from the same place,
-  down to a single millisecond (Microsoft's filter is millisecond-precise). A window that times
-  out, that Microsoft answers with a server error or with a request to wait longer than the
-  client waits (a deferred 429), or that could not be finished in a run that gave it at least
-  half its time, is halved for the next run the same way. Only a window that cannot be split
-  further is given up: one that still holds too much keeps what it read and is recorded as a
-  gap, one that keeps failing is retried on three runs, then recorded as a gap that says why
-  and passed. A 401 or 403 fails the run and keeps the lane where it is. Windows lie on a grid of
-  their own size, and gap findings are keyed by the minute they start in, so the same span is
-  one finding however often it is read.
-- A gap that a later complete read covers (the settle lane retries every window the main lane
-  gave up) is retitled "A gap in directory changes was read later" and says nothing is missing;
-  a person resolves it.
+  down to a single millisecond (Microsoft's filter is millisecond-precise). A window that fails
+  is halved and read again at once, in the same run while it has time: one that times out, that
+  Microsoft answers with a server error or a request to wait longer than the client waits (a
+  deferred 429), that Microsoft refuses (400) or answers too large at both page sizes, whose
+  answer is malformed or pages in a loop, or that could not be finished in a run that gave it at
+  least half its time. A run still narrowing one down asks to run again within seconds. Only a
+  window that cannot be split further is given up: one that still holds too much keeps what it
+  read and is recorded as a gap; one that keeps failing is tried three times, the last at least
+  10 minutes after the first (on a later scheduled run), then recorded as a gap that says why,
+  and the lane moves past it. The wait keeps a burst of failures that has nothing to do with the
+  window from using up its tries within seconds. The window after it, which starts on its last
+  millisecond (both bounds are inclusive), counts from the same first failure. Windows lie on a grid of their own size, and
+  gap findings are keyed by the minute they start in, so the same span is one finding however
+  often it is read.
+- A failure is blamed on the window only while Microsoft answers other requests: to halve a
+  window, anything answered in the run; to count a try against a millisecond, something
+  answered since the last failure. Otherwise a one-millisecond read of the present tells. When
+  that fails too, Microsoft is failing rather than the window (an outage, or throttling): the run
+  fails with that error and changes nothing, so an outage leaves no gap and the next try waits
+  for the cadence. A 401, a 403 or a missing credential also fails the run and keeps the lane
+  where it is.
+- A gap that the settle lane later reads whole, when that read returns changes inside it, is
+  retitled "A gap in directory changes was read later" and says nothing is missing; a person
+  resolves it. A read that comes back with nothing leaves the gap open, since Microsoft can answer
+  empty under load. The best-effort re-read stores what it finds in a gap but does not retitle
+  it.
 - Events are stored by id; a record read again changes nothing, and neither do its subjects.
 - If the main lane falls behind what Microsoft still keeps after it had read something,
   because collection was stopped or every read failed for that long, the span is recorded as
   one gap finding that widens while the lane stays behind.
+- If the settle lane falls behind what Microsoft still keeps, it moves to what Microsoft keeps.
+  The part of the span it skipped that the main lane read while it was fresh (younger than the
+  margin) is recorded as "Late directory changes may be missing": a change Microsoft published
+  late there may never have been read. What the main lane read when it was already old (the
+  history load, a catch-up) counts as settled. For both kinds, a new span that starts within the
+  margin of the last one's end widens the same finding.
 - A saved position in the future (a clock that ran ahead and came back) brings the main lane
   back to now. When the clock ran ahead by more than the margin, the settle lane reads
   everything Microsoft still keeps again, since changes made meanwhile may lie behind it.
@@ -114,7 +137,7 @@ audit log activity reference"; role template IDs from "Microsoft Entra built-in 
 
 | Rule | Category | Activities | Severity | Subject |
 |---|---|---|---|---|
-| `role.privileged-assigned` | RoleManagement | Add member to role; Add eligible member to role; Add scoped member to role; Add member to role scoped over Restricted Management Administrative Unit; Add member to role completed (PIM activation) | critical for Global Administrator; high for Privileged Role, Privileged Authentication, Security, Conditional Access, Exchange, SharePoint, User, Application, Cloud Application, Authentication and Intune Administrator | the person (or group or app) added |
+| `role.privileged-assigned` | RoleManagement | Add member to role; Add eligible member to role; Add scoped member to role; Add member to role scoped over Restricted Management Administrative Unit; Add member to role in PIM completed (permanent); Add member to role in PIM completed (timebound); Add member to role completed (PIM activation) | critical for Global Administrator; high for Privileged Role, Privileged Authentication, Security, Conditional Access, Exchange, SharePoint, User, Application, Cloud Application, Authentication and Intune Administrator | the person (or group or app) added |
 | `app.credential-added` | ApplicationManagement | Add service principal credentials; Update application - Certificates and secrets management (when a key ID appears that was not there before, or the key list is missing or too long to compare) | high | the application |
 | `app.consent-granted` | ApplicationManagement | Consent to application | high when ConsentContext.OnBehalfOfAll is true (or, without it, IsAdminConsent), medium otherwise | the application |
 | `policy.conditional-access-changed` | Policy | Add, Update, Delete Conditional Access policy | medium; high for a deletion | the policy |
@@ -122,11 +145,17 @@ audit log activity reference"; role template IDs from "Microsoft Entra built-in 
 | `auth-method.removed-by-admin` | UserManagement | Admin deleted security info; Update user that empties StrongAuthenticationMethod (an administrator making the person register MFA again). Not when the actor changed their own account | medium | the person |
 | `collection.gap` | | | medium (operations) | the collector |
 
-Role activations through Privileged Identity Management ("Add member to role completed (PIM
-activation)", or "Add member to role" made by the service principal named MS-PIM, a name seen
-in tenants rather than documented) are one finding per account, role and day, counting each
-activation; a permanent or eligible assignment is one finding per event. Learn's reference has no
-federation-specific "Update domain" activity, so that match depends on the property name.
+Only PIM's own "Add member to role completed (PIM activation)" record makes a role activation.
+The "Add member to role" record the directory writes for it, made by the service principal named
+MS-PIM (a name seen in tenants rather than documented), counts in the same finding when it
+shares that record's correlation id. Activations are one finding per account, role and day,
+counting each one. Everything else is one finding per event, titled as an assignment: permanent
+and timebound assignments made in PIM, eligible assignments, and an MS-PIM record with no
+activation beside it. So an assignment never folds into an activation someone has already
+acknowledged. When the directory's record is judged before PIM's own record is stored (Microsoft
+published it later, or it sits in the next window), it stands as its own assignment finding.
+Learn's reference has no federation-specific "Update domain" activity, so that match depends on
+the property name.
 
 Evidence is the event id, time, activity, category, result, actor and target, plus the role,
 consent scope or domain where a rule uses one. Each finding says what the rule cannot see:
@@ -141,7 +170,9 @@ finding language policy is left out of the finding rather than failing the run.
   3650 (default 7), `result` `success` or `failure` (anything that did not succeed), `search` up
   to 200 characters over the activity, the actor's name and sign-in name, and the targets' names
   and sign-in names (not the changed values), `limit` 1 to 200 (default 100), `before` the
-  previous page's `next`. Returns `items`, `next`, counts by category for the range and coverage
+  previous page's `next`. The search and the stored text are folded the same way (compatibility
+  decomposition, accents and other marks removed, lower case, final sigma as sigma), so "ilker"
+  finds "İlker" and "ΟΔΥΣ" finds "ΟΔΥΣΣΕΥΣ". Returns `items`, `next`, counts by category for the range and coverage
   (`from`, `through`, `lastCollected`, `phase`).
 - `GET /v1/people/:userId/changes?before=&limit=`: the person's changes as actor or target,
   listed once each, with how they were involved. `limit` 1 to 200 (default 20).
@@ -155,7 +186,7 @@ and counts only (the range in days), never a name, a search text or a value.
 ## 7. Storage and retention
 
 `mod_directory_changes_event` (one row per event, targets and details as bounded JSON, a
-lower-case search text, a `processed` flag for the rules) and `mod_directory_changes_subject`
+folded search text of up to 8,000 characters, a `processed` flag for the rules) and `mod_directory_changes_subject`
 (each account or object an event involves, as actor or target, indexed by subject and time, so a
 person's changes are a plain lookup). Both are tenant-scoped. The scheduler's daily retention
 deletes rows older than `DIRECTORY_CHANGES_RETENTION_DAYS` (default 3650, 10 years). What each
@@ -165,8 +196,12 @@ row holds is listed in `docs/PRIVACY.md`.
 
 - Records Microsoft publishes later than the late-arrival margin (240 minutes by default) are
   not picked up.
-- Learn notes that the API can answer with empty results under heavy load. Every window is read
-  at least twice, once by each lane, so a record is lost only if both reads come back empty.
+- Learn notes that the API can answer with empty results under heavy load. Every window the main
+  lane read is read again by the settle lane, so a record is lost only if both reads come back
+  empty. A span the main lane gave up is read only by the settle lane (and, without saving
+  anything, the best-effort re-read); if that read comes back empty, its gap finding stays open.
+- A millisecond Microsoft never answers for is given up and its changes are missing; everything
+  around it is read.
 - A record exactly on a millisecond boundary sits in the windows on both sides of it, so a gap
   around it can span two milliseconds.
 - Directory audit events say what Microsoft recorded about a change. They are not a measure of
@@ -175,16 +210,21 @@ row holds is listed in `docs/PRIVACY.md`.
 ## 9. Tests
 
 `packages/module-directory-changes/test`: history across several runs with `more`; request
-pacing on every lane, the page-size fallback and back-to-back runs; late records on the
-best-effort re-read and on the settle lane with no time to spare; the 240-minute default;
-repeats; a budget running out mid-window; splitting below a minute; a one-millisecond gap found
-once; a window that never answers and one that keeps failing (both given up on the third strike,
-the second healed when read later); gateway errors on wide windows; empty answers in the history
-load and a catch-up; a run stopped mid-request; strikes cleared; refused access raising nothing;
-one widening gap for a span Microsoft dropped; a clock that ran ahead; the settle lane's third of
-the run; unreadable records; garbage cursors; the smaller page size; rules restarting; the
-language-policy fallback; settings and retention. Each rule against its near misses, including
-PIM activations, cleared MFA methods and domain updates; source normalization, client details
-and search text; feed and person queries, search and list bounds.
+pacing on every lane, the page-size fallback and back-to-back runs, and a clock that stepped
+back; late records on the best-effort re-read and on the settle lane with no time to spare; the
+240-minute default; repeats; a budget running out mid-window; splitting below a minute; a
+one-millisecond gap found once; a window that never answers and one that keeps failing, both
+narrowed at once and given up on a scheduled run ten minutes on, the second healed when the
+settle lane reads its change; a burst of failures shorter than ten minutes giving nothing up; gap findings left open on an empty read and not healed by the best-effort re-read;
+answers too large, refused or paging in a loop at both page sizes; gateway errors on wide windows
+caught up in one poll; an outage that changes nothing; throttling that starts mid-run; empty
+answers in the history load and a catch-up; a run stopped mid-request; strikes cleared; refused
+access raising nothing; widening findings for a span Microsoft dropped, for the span the settle
+lane skipped, and at the retention edge; a clock that ran ahead; the settle lane's third of the
+run; an acknowledged PIM activation followed by a permanent assignment; unreadable records;
+garbage cursors; the smaller page size; rules restarting; the language-policy fallback; settings
+and retention. Each rule against its near misses, including PIM activations and assignments,
+cleared MFA methods (with a list cut for length) and domain updates; source normalization,
+client details and search text; feed and person queries, folded search and list bounds.
 `apps/api/test/changes-api.test.ts`, `apps/web/test/changes.test.ts`, and
 `scripts/demo/graph/directory-audits.test.ts` for the synthetic log the demo is recorded from.

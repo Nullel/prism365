@@ -1,9 +1,10 @@
-import type {
-  ChangeCoverage,
-  ChangeEvent,
-  ChangeFeed,
-  PersonChange,
-  PersonChangePage,
+import {
+  type ChangeCoverage,
+  type ChangeEvent,
+  type ChangeFeed,
+  type PersonChange,
+  type PersonChangePage,
+  searchKey,
 } from "@prism365/contracts";
 import { moduleTablePrefix } from "@prism365/modules";
 import type { SqlClient } from "@prism365/storage";
@@ -185,7 +186,7 @@ export async function listChanges(
   const limit = Math.min(Math.max(filter.limit ?? 100, 1), 200);
   const since = new Date(filter.now.getTime() - filter.days * 86_400_000).toISOString();
   const page = filter.before ? parsePosition(filter.before) : null;
-  const search = (filter.search ?? "").trim().toLowerCase().slice(0, 200);
+  const search = searchKey((filter.search ?? "").trim().slice(0, 200));
   const category = (filter.category ?? "").trim().toLowerCase();
   const rows = await sql.query<EventRow>(
     `SELECT ${eventColumns} FROM ${eventTable}

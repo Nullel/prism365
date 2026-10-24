@@ -80,7 +80,8 @@ directory audit event it collects. Each stored event holds:
   characters);
 - Microsoft's additional details (at most 20), without the ones that describe the client the
   change came from: User-Agent, client IP address, browser and device information are left out;
-- a lower-case copy of the activity and the names above, for the search;
+- a folded copy (lower case, accents removed) of the activity and the names above, up to 8,000
+  characters, for the search;
 - which accounts and objects the event involves, as actor or target, for a person's page.
 
 Microsoft keeps these events 7 or 30 days; keeping them longer is the reason the feature exists.

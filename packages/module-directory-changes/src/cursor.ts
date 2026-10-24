@@ -28,11 +28,18 @@ const laneState = {
   // run starts means the run was stopped mid-window (its time limit, or a restart), so that
   // window counts as failed instead of being retried at the same size forever.
   trying: z.string().datetime().optional(),
-  // How many runs in a row a minimum-size window starting at `at` could not be read.
+  // How many times in a row a minimum-size window starting at `at` could not be read, and when
+  // the first of those tries was.
   strikes: z
-    .object({ at: z.string().datetime(), count: z.number().int().min(1).max(100) })
+    .object({
+      at: z.string().datetime(),
+      count: z.number().int().min(0).max(100),
+      since: z.string().datetime().optional(),
+    })
     .optional(),
 };
+
+const span = z.object({ from: z.string().datetime(), to: z.string().datetime() });
 
 export const cursorSchema = z
   .object({
@@ -42,10 +49,17 @@ export const cursorSchema = z
     through: z.string().datetime(),
     ...laneState,
     settle: z.object({ at: z.string().datetime(), ...laneState }),
-    // Where a span that fell out of Microsoft's retention before it was read began. Kept while
-    // the main lane stays behind, so the one finding about that span widens instead of a new one
-    // being raised on every run.
-    missed: z.string().datetime().optional(),
+    // The last span that fell out of Microsoft's retention before the main lane read it, and
+    // the last one the settle lane had to skip before reading it again. A new span that starts
+    // within the margin of the last one's end widens the same finding instead of raising another.
+    missed: span.optional(),
+    unsettled: span.optional(),
+    // Where the changes the main lane read while they were younger than the late-arrival margin
+    // begin. Before it, the main lane read changes that were already old enough to have settled
+    // (the history load, a catch-up after collection was stopped), so the settle lane losing them
+    // to Microsoft's retention loses nothing. Unset while there are none the settle lane could
+    // still read.
+    fresh: z.string().datetime().optional(),
   })
   .refine(
     (value) =>

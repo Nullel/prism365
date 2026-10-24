@@ -151,8 +151,16 @@ export interface ChangeRule {
   // Lower-case category and activity names the rule looks at.
   category: string;
   activities: readonly string[];
-  judge(event: DirectoryChangeEvent, tenantId: string): FindingInput | null;
+  judge(event: DirectoryChangeEvent, tenantId: string, related: Related): FindingInput | null;
 }
+
+// What a rule may know about other stored changes: the correlation ids of the PIM activation
+// records stored so far among those the event could belong to.
+export interface Related {
+  activationCorrelations: ReadonlySet<string>;
+}
+
+const nothingRelated: Related = { activationCorrelations: new Set() };
 
 function matches(rule: ChangeRule, event: DirectoryChangeEvent): boolean {
   return (
@@ -182,19 +190,33 @@ export function privilegedRole(event: DirectoryChangeEvent): string | null {
   return null;
 }
 
-const PIM_ACTIVATION = "add member to role completed (pim activation)";
+export const PIM_ACTIVATION = "add member to role completed (pim activation)";
 
-// An eligible role made active through Privileged Identity Management. The PIM service records
-// "Add member to role completed (PIM activation)"; the directory records the same activation as
-// "Add member to role" made by Microsoft's PIM service principal, which is named "MS-PIM" in
-// observed tenants (not in Learn's reference, so that match is a best guess).
-export function isActivation(event: DirectoryChangeEvent): boolean {
-  const activity = normalName(event.activity);
+// A role addition the directory records on behalf of Privileged Identity Management: "Add member
+// to role" made by Microsoft's PIM service principal, named "MS-PIM" in observed tenants (not in
+// Learn's reference). PIM writes these for activations and for permanent assignments alike.
+export function addedByPim(event: DirectoryChangeEvent): boolean {
   return (
-    activity === PIM_ACTIVATION ||
-    (activity === "add member to role" &&
-      event.initiatedBy.kind === "app" &&
-      /^ms-pim/.test(normalName(event.initiatedBy.name)))
+    normalName(event.activity) === "add member to role" &&
+    event.initiatedBy.kind === "app" &&
+    /^ms-pim/.test(normalName(event.initiatedBy.name))
+  );
+}
+
+// An eligible role made active. Only the PIM service's own "Add member to role completed (PIM
+// activation)" record says so; the directory's record of the same activation counts only when
+// it shares that record's correlation id. Anything else, a permanent assignment made through PIM
+// included, is an assignment: one finding per event, so it can never fold into an activation
+// someone has already acknowledged.
+export function isActivation(
+  event: DirectoryChangeEvent,
+  related: Related = nothingRelated,
+): boolean {
+  if (normalName(event.activity) === PIM_ACTIVATION) return true;
+  return (
+    addedByPim(event) &&
+    event.correlationId !== null &&
+    related.activationCorrelations.has(event.correlationId)
   );
 }
 
@@ -207,9 +229,11 @@ const roleAssigned: ChangeRule = {
     "add eligible member to role",
     "add scoped member to role",
     "add member to role scoped over restricted management administrative unit",
+    "add member to role in pim completed (permanent)",
+    "add member to role in pim completed (timebound)",
     PIM_ACTIVATION,
   ],
-  judge(event, tenantId) {
+  judge(event, tenantId, related) {
     if (!matches(this, event)) return null;
     const role = privilegedRole(event);
     if (!role) return null;
@@ -221,7 +245,7 @@ const roleAssigned: ChangeRule = {
     const severity = role === GLOBAL_ADMINISTRATOR ? "critical" : "high";
     // An eligible administrator may activate several times a day: one finding per person, role
     // and day, rather than one per activation. A permanent assignment stays one per event.
-    if (isActivation(event))
+    if (isActivation(event, related))
       return build(this, event, {
         dedupeKey: `activation:${normalName(role)}:${subject.id}:${iso(event.activityAt).slice(0, 10)}`,
         severity,
@@ -239,7 +263,9 @@ const roleAssigned: ChangeRule = {
       ? " as an eligible assignment"
       : activity.includes("scoped")
         ? ", scoped to an administrative unit"
-        : "";
+        : activity.includes(" in pim ") || addedByPim(event)
+          ? " through Privileged Identity Management"
+          : "";
     return build(this, event, {
       severity,
       subject,
@@ -409,8 +435,8 @@ const federationRule: ChangeRule = {
 export function methodsCleared(event: DirectoryChangeEvent): boolean {
   return properties(event, "StrongAuthenticationMethod").some(
     (property) =>
+      // An old value cut for length held methods too; what counts is an empty new value.
       (property.oldValue ?? "").trim() !== "" &&
-      !property.oldCut &&
       ["", "[]"].includes((property.newValue ?? "").trim()),
   );
 }
@@ -465,8 +491,12 @@ export const changeRules: readonly ChangeRule[] = [
 ];
 
 // Every finding one stored change produces.
-export function judgeChange(event: DirectoryChangeEvent, tenantId: string): FindingInput[] {
+export function judgeChange(
+  event: DirectoryChangeEvent,
+  tenantId: string,
+  related: Related = nothingRelated,
+): FindingInput[] {
   return changeRules
-    .map((rule) => rule.judge(event, tenantId))
+    .map((rule) => rule.judge(event, tenantId, related))
     .filter((finding): finding is FindingInput => finding !== null);
 }

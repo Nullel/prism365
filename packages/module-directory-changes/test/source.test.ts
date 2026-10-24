@@ -236,5 +236,14 @@ describe("directory audit source", () => {
       }),
     );
     expect((long ? searchText(long) : "").length).toBe(SEARCH_TEXT_LIMIT);
+    // Room for every name of a bulk change of 50 people with long names.
+    expect(SEARCH_TEXT_LIMIT).toBe(8_000);
+    // Stored folded the way the feed folds what a person types.
+    const folded = readDirectoryAudit(
+      record({
+        targetResources: [{ id: "t-1", displayName: "İlker ΟΔΥΣΣΕΥΣ Élodie", type: "User" }],
+      }),
+    );
+    expect(folded ? searchText(folded) : "").toContain("ilker οδυσσευσ elodie");
   });
 });

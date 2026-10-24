@@ -17,7 +17,7 @@ import {
   parseCursor,
 } from "./cursor.ts";
 import { DIRECTORY_CHANGES_MODULE, type EventRow, eventColumns, eventFromRow } from "./query.ts";
-import { judgeChange, RULES_VERSION } from "./rules.ts";
+import { addedByPim, judgeChange, PIM_ACTIVATION, RULES_VERSION } from "./rules.ts";
 import {
   changeSubjects,
   type DirectoryChangeEvent,
@@ -35,15 +35,19 @@ export const GAP_RULE = "collection.gap";
 // refuses (HTTP 400) or one larger than the client's size budget is read again with the second
 // size for the rest of the run.
 export const PAGE_SIZES = [999, 100] as const;
-// Microsoft allows 5 directory audit requests per 10 seconds per app and tenant. Each request
-// starts at least this long after the previous one finished, the Graph client's own retries
-// included, so no 10 seconds ever hold more than 5 starts.
+// Microsoft allows 5 directory audit requests per 10 seconds per app and tenant. Each request the
+// module makes starts at least this long after the previous one finished, across runs, so no 10
+// seconds hold more than 5 of them. When Microsoft answers 429, the Graph client retries inside
+// that one request after the Retry-After Microsoft gives; those retries are not paced here.
 export const PAGE_INTERVAL_MS = 2_200;
 // Pages one window may take before it counts as too busy, whatever the record count.
 const MAX_PAGES = 100;
-// A window that cannot be split and still cannot be read is retried on this many runs, then
-// recorded as a gap.
+// A window that cannot be split and still cannot be read is tried this many times, over at least
+// STRIKE_SPREAD_MS, then recorded as a gap. The spread keeps a burst of failures that has nothing
+// to do with the window (Microsoft failing a third of requests for a few minutes, say) from
+// using up all three tries within seconds.
 const STRIKES = 3;
+const STRIKE_SPREAD_MS = 10 * MINUTE;
 const DETECTION_BATCH = 500;
 // Window size of the best-effort re-read of recent records that have not settled yet.
 const FRESH_WINDOW_MS = 30 * MINUTE;
@@ -81,6 +85,8 @@ interface Run {
   pacer: Pacer;
   size: number;
   complete: boolean;
+  // Pages Microsoft has answered in this run.
+  answers: number;
 }
 
 // One lane's reading position and window state (see cursor.ts).
@@ -91,14 +97,23 @@ interface Lane {
   // busy or too slow, so the next window does not grow straight back into it.
   hold: number | null;
   trying: number | null;
-  strikes: { at: string; count: number } | undefined;
+  strikes: { at: string; count: number; since?: string | undefined } | undefined;
 }
 
 type WindowStatus = "complete" | "overflow" | "stopped";
 
-// Why a window could not be read: Microsoft did not answer in time, Microsoft kept answering
-// with an error or asking to wait longer than the client waits, or the run ran out of time.
-type Failure = "slow" | "failing" | "stopped";
+// What one window read: how it ended, how many records came back, and when the readable ones
+// happened.
+interface WindowRead {
+  status: WindowStatus;
+  read: number;
+  times: number[];
+}
+
+// Why a window could not be read: Microsoft did not answer in time; kept answering with a server
+// error or asking to wait longer than the client waits; refused the request; sent an answer that
+// cannot be read (too large, malformed, or paging in a loop); or the run ran out of time.
+type Failure = "slow" | "failing" | "refused" | "unreadable" | "stopped";
 
 // Windows sit on a grid of their own size, so a busy minute is the same window on every run and
 // a gap recorded for it is one finding, not one per run.
@@ -108,7 +123,8 @@ function windowEnd(from: number, span: number, now: number): number {
 
 async function paced<T>(run: Run, request: () => Promise<T>): Promise<T> {
   if (run.pacer.last !== null) {
-    const wait = run.pacer.last + PAGE_INTERVAL_MS - run.clock();
+    // Never longer than one interval: a clock that stepped back must not hold collection.
+    const wait = Math.min(PAGE_INTERVAL_MS, run.pacer.last + PAGE_INTERVAL_MS - run.clock());
     if (wait > 0) await run.sleep(wait);
   }
   try {
@@ -181,11 +197,7 @@ async function insertEvents(
 // Reads one window page by page. Every readable record is stored as it arrives, so what a
 // stopped or too-busy window read is kept; the caller decides whether the window counts as read.
 // No request starts after the run's deadline, and requests are paced.
-async function pageThrough(
-  run: Run,
-  from: number,
-  to: number,
-): Promise<{ status: WindowStatus; read: number }> {
+async function pageThrough(run: Run, from: number, to: number): Promise<WindowRead> {
   const query = new URLSearchParams({
     $filter: `activityDateTime ge ${iso(from)} and activityDateTime le ${iso(to)}`,
     $top: String(run.size),
@@ -193,9 +205,10 @@ async function pageThrough(
   let next: string | undefined = `auditLogs/directoryAudits?${query}`;
   const seen = new Set<string>();
   let read = 0;
+  const times: number[] = [];
   for (let page = 0; next; page += 1) {
-    if (page >= MAX_PAGES) return { status: "overflow", read };
-    if (run.clock() > run.deadline) return { status: "stopped", read };
+    if (page >= MAX_PAGES) return { status: "overflow", read, times };
+    if (run.clock() > run.deadline) return { status: "stopped", read, times };
     if (seen.has(next))
       throw new GraphBoundaryError("Graph pagination repeated a continuation link.", "pagination");
     seen.add(next);
@@ -208,11 +221,15 @@ async function pageThrough(
           ? null
           : run.context.graph.get(link, directoryAuditContext, pageSchema),
     );
-    if (!body) return { status: "stopped", read };
+    if (!body) return { status: "stopped", read, times };
+    run.answers += 1;
     const events: DirectoryChangeEvent[] = [];
     for (const item of body.value) {
       const event = readDirectoryAudit(item);
-      if (event) events.push(event);
+      if (event) {
+        events.push(event);
+        times.push(event.activityAt.getTime());
+      }
     }
     read += body.value.length;
     run.context.count.fetched(body.value.length);
@@ -224,9 +241,9 @@ async function pageThrough(
     }
     run.context.count.inserted(await insertEvents(run.context, events));
     next = body["@odata.nextLink"];
-    if (next && read >= run.config.windowRecordLimit) return { status: "overflow", read };
+    if (next && read >= run.config.windowRecordLimit) return { status: "overflow", read, times };
   }
-  return { status: "complete", read };
+  return { status: "complete", read, times };
 }
 
 const pageRefused = (error: unknown) =>
@@ -247,14 +264,36 @@ async function readWindow(run: Run, from: number, to: number) {
   }
 }
 
-// A failure that belongs to the window or the moment rather than to access: Microsoft did not
-// answer in time, answered with a server error, or kept asking to wait. The window is retried
-// smaller and, if it keeps failing, passed with a gap. Anything else, such as a 401 or 403,
-// fails the run and keeps the lane where it is.
-function transientFailure(error: unknown): Exclude<Failure, "stopped"> | null {
-  if (error instanceof GraphBoundaryError && error.reason === "timeout") return "slow";
+// Answers that cannot be read as a page of records, whatever the window.
+const unreadableAnswers: ReadonlySet<string> = new Set([
+  "size",
+  "shape",
+  "item",
+  "pagination",
+  "continuation",
+  "json",
+  "content_type",
+  "empty",
+  "page_limit",
+  "redirect",
+]);
+
+// A failure that belongs to the window or the moment rather than to access: the window is retried
+// smaller, then given up with a gap. Only what says Prism365 may not read (401, 403), has no
+// credential, or is not Microsoft's answer at all (storage, the module's own boundary) holds the
+// lane where it is and fails the run.
+function windowFailure(error: unknown): Exclude<Failure, "stopped"> | null {
+  if (error instanceof GraphBoundaryError) {
+    if (error.reason === "timeout") return "slow";
+    if (error.reason === "retry_budget") return "failing";
+    return unreadableAnswers.has(error.reason) ? "unreadable" : null;
+  }
   if (error instanceof GraphRetryDeferredError) return "failing";
-  if (error instanceof GraphRequestError && error.status >= 500) return "failing";
+  if (error instanceof GraphRequestError) {
+    if (error.status === 401 || error.status === 403) return null;
+    if (error.status >= 500) return "failing";
+    if (error.status >= 400) return "refused";
+  }
   return null;
 }
 
@@ -300,8 +339,34 @@ async function judgePending(context: CollectorContext): Promise<void> {
       ),
     );
     if (pending.rows.length === 0) return;
-    for (const row of pending.rows)
-      for (const finding of judgeChange(eventFromRow(row), context.tenantId))
+    const events = pending.rows.map(eventFromRow);
+    // A directory record PIM wrote counts as an activation only beside a stored PIM activation
+    // record with the same correlation id. PIM writes both within seconds, so the lookup stays
+    // within a day of them and uses the time index.
+    const byPim = events.filter((event) => addedByPim(event) && event.correlationId !== null);
+    const correlations = [...new Set(byPim.map((event) => event.correlationId as string))];
+    const activationCorrelations = new Set<string>();
+    if (correlations.length > 0) {
+      const times = byPim.map((event) => event.activityAt.getTime());
+      const found = await context.db((sql) =>
+        sql.query<{ correlation_id: string }>(
+          `SELECT DISTINCT correlation_id FROM ${table}
+            WHERE tenant_id = $1 AND activity_at >= $2 AND activity_at <= $3
+              AND lower(activity) = $4
+              AND correlation_id IN (${correlations.map((_id, index) => `$${index + 5}`).join(",")})`,
+          [
+            context.tenantId,
+            iso(Math.min(...times) - DAY),
+            iso(Math.max(...times) + DAY),
+            PIM_ACTIVATION,
+            ...correlations,
+          ],
+        ),
+      );
+      for (const row of found.rows) activationCorrelations.add(row.correlation_id);
+    }
+    for (const event of events)
+      for (const finding of judgeChange(event, context.tenantId, { activationCorrelations }))
         await upsertSafely(context, finding);
     const ids = pending.rows.map((row) => row.id);
     await context.db((sql) =>
@@ -315,7 +380,7 @@ async function judgePending(context: CollectorContext): Promise<void> {
   }
 }
 
-type GapKind = "overflow" | "unanswered" | "missed";
+type GapKind = "overflow" | "unanswered" | "missed" | "unsettled";
 
 const minuteKey = (at: number) => iso(Math.floor(at / MINUTE) * MINUTE);
 
@@ -333,17 +398,21 @@ export function gapFinding(
   const why = {
     slow: "Microsoft did not answer in time",
     failing: "Microsoft kept answering with an error or asking Prism365 to wait",
+    refused: "Microsoft refused the request for them",
+    unreadable:
+      "Microsoft's answer for them could not be read (too large, malformed or paging in a loop)",
     stopped: "the run ran out of time reading them",
   }[detail.failure ?? "slow"];
   const summary = {
     overflow: `Microsoft recorded more directory changes ${span} than Prism365 reads in one window (${detail.limit ?? 0}), and the span cannot be split further. ${detail.read ?? 0} were read and kept; the rest are missing from the feed and from findings. Check the Entra audit log for that span: a burst this dense can be a bulk change or an attack.`,
-    unanswered: `Prism365 could not read the directory changes ${span}: ${why}, on ${STRIKES} runs in a row. Collection moved past that span, so any changes in it are missing from the feed and from findings until a later read covers it. Check the Entra audit log for it.`,
+    unanswered: `Prism365 could not read the directory changes ${span}: ${why}, on ${STRIKES} tries. Collection moved past that span, so any changes in it are missing from the feed and from findings until a later read returns them. Check the Entra audit log for it.`,
     missed: `Prism365 had not read the directory changes ${span} when Microsoft stopped keeping them (30 days at most), because collection was stopped or every read failed. Changes in that span are missing from the feed and from findings.`,
+    unsettled: `Prism365 read the directory changes ${span} once, but Microsoft stopped keeping them before Prism365 could read them again, because collection was stopped or every read failed. A change Microsoft published late in that span may be missing from the feed and from findings.`,
   }[kind];
   return {
     ruleId: GAP_RULE,
     ruleVersion: RULES_VERSION,
-    dedupeKey: `${kind}:${kind === "missed" ? iso(from) : minuteKey(from)}`,
+    dedupeKey: `${kind}:${kind === "missed" || kind === "unsettled" ? iso(from) : minuteKey(from)}`,
     purpose: "operations",
     severity: "medium",
     score: 40,
@@ -351,7 +420,9 @@ export function gapFinding(
     title:
       kind === "missed"
         ? "Directory changes were missed while they could not be read"
-        : "Some directory changes could not be read",
+        : kind === "unsettled"
+          ? "Late directory changes may be missing"
+          : "Some directory changes could not be read",
     summary,
     evidence: [
       {
@@ -362,7 +433,7 @@ export function gapFinding(
       },
     ],
     limitations: [
-      kind === "missed"
+      kind === "missed" || kind === "unsettled"
         ? "Without Entra ID P1 or P2 Microsoft keeps only 7 days, so more may be missing than this span."
         : "The span may hold fewer changes than it seems; Prism365 could not tell, because it could not read all of them.",
     ],
@@ -437,20 +508,32 @@ function shrink(lane: Lane, from: number, end: number): void {
   lane.hold = end;
 }
 
-// A window that failed: one that can still be split is halved for the next try; one that
-// cannot is retried a few runs, then given up, so one stretch cannot stall collection.
-function windowFailed(lane: Lane, from: number, end: number): "retry" | "give_up" {
+// A window that failed: one that can still be split is halved and tried again; one that cannot
+// is tried again until its strikes run out, then given up, so one stretch cannot stall
+// collection.
+function windowFailed(lane: Lane, from: number, end: number, now: number): "retry" | "give_up" {
   if (end - from > MIN_SPAN_MS) {
     shrink(lane, from, end);
     return "retry";
   }
-  const count = lane.strikes?.at === iso(from) ? lane.strikes.count + 1 : 1;
+  const earlier = lane.strikes?.at === iso(from) ? lane.strikes : undefined;
+  const count = (earlier?.count ?? 0) + 1;
+  const since = earlier?.since ?? iso(now);
   if (count < STRIKES) {
-    lane.strikes = { at: iso(from), count };
+    lane.strikes = { at: iso(from), count, since };
     return "retry";
   }
-  lane.strikes = undefined;
+  // Both bounds are inclusive, so the next window starts on this one's last millisecond, which
+  // failed on every try: it has been failing since the same time.
+  lane.strikes = { at: iso(end), count: 0, since };
   return "give_up";
+}
+
+// Whether the last try of a window waits: its first try was less than the spread ago.
+function lastTryWaits(lane: Lane, from: number, now: number): boolean {
+  const strikes = lane.strikes;
+  if (strikes?.at !== iso(from) || strikes.count < STRIKES - 1 || !strikes.since) return false;
+  return now - Date.parse(strikes.since) < STRIKE_SPREAD_MS;
 }
 
 type LaneState = Omit<DirectoryChangesCursor["settle"], "at">;
@@ -474,7 +557,7 @@ function laneState(lane: Lane): LaneState {
   };
 }
 
-const freshLane = (at: number): Lane => ({
+const newLane = (at: number): Lane => ({
   at,
   span: MAX_SPAN_MS,
   hold: null,
@@ -482,11 +565,23 @@ const freshLane = (at: number): Lane => ({
   strikes: undefined,
 });
 
-// How a walk ended: at its end, out of time, or at a window that failed and will be retried.
+// How a walk ended: at its end, or with more to read. `waiting` means it stopped at a window
+// whose last try is for a later scheduled run, so the run does not ask to run again for it.
 interface WalkResult {
   done: boolean;
-  failed?: unknown;
+  waiting?: boolean;
 }
+
+// A span recorded as a gap finding that widens while it grows (see cursor.ts).
+interface SpanMark {
+  from: number;
+  to: number;
+}
+
+const toMark = (value: { from: string; to: string } | undefined): SpanMark | null =>
+  value ? { from: Date.parse(value.from), to: Date.parse(value.to) } : null;
+const fromMark = (mark: SpanMark | null) =>
+  mark ? { from: iso(mark.from), to: iso(mark.to) } : undefined;
 
 // One collector run. The first loads history, oldest first, from 30 days back (Microsoft's
 // longest retention), asking to run again within seconds while history remains. Later runs read
@@ -513,6 +608,7 @@ export async function collectDirectoryChanges(
     pacer: options.pacer ?? { last: null },
     size: PAGE_SIZES[0],
     complete: true,
+    answers: 0,
   };
   const now = context.now.getTime();
   const oldest = now - HISTORY_DAYS * DAY;
@@ -526,9 +622,11 @@ export async function collectDirectoryChanges(
   const saved = parseCursor(await context.cursor.get());
   let phase = saved?.phase ?? "history";
   let start = saved ? Date.parse(saved.start) : oldest;
-  const main = saved ? toLane(saved.through, saved) : freshLane(oldest);
-  const settle = saved ? toLane(saved.settle.at, saved.settle) : freshLane(oldest);
-  let missed = saved?.missed ? Date.parse(saved.missed) : null;
+  const main = saved ? toLane(saved.through, saved) : newLane(oldest);
+  const settle = saved ? toLane(saved.settle.at, saved.settle) : newLane(oldest);
+  let missed = toMark(saved?.missed);
+  let unsettled = toMark(saved?.unsettled);
+  let fresh = saved?.fresh ? Date.parse(saved.fresh) : null;
   const persist = () =>
     context.cursor.set(
       JSON.stringify({
@@ -538,9 +636,17 @@ export async function collectDirectoryChanges(
         through: iso(main.at),
         ...laneState(main),
         settle: { at: iso(settle.at), ...laneState(settle) },
-        ...(missed !== null ? { missed: iso(missed) } : {}),
+        ...(missed ? { missed: fromMark(missed) } : {}),
+        ...(unsettled ? { unsettled: fromMark(unsettled) } : {}),
+        ...(fresh !== null ? { fresh: iso(fresh) } : {}),
       } satisfies DirectoryChangesCursor),
     );
+  // One finding for a span that keeps growing: a new span that starts within the margin of the
+  // last one's end continues it.
+  const widen = (mark: SpanMark | null, from: number, to: number): SpanMark =>
+    mark && from <= mark.to + margin
+      ? { from: Math.min(mark.from, from), to: Math.max(mark.to, to) }
+      : { from, to };
 
   // A position in the future means the clock ran ahead and came back. While it was ahead, the
   // lanes read windows that had not happened yet and passed real time, so changes made since
@@ -554,16 +660,33 @@ export async function collectDirectoryChanges(
     settle.trying = null;
     settle.at =
       ahead > margin ? Math.max(start, oldest) : Math.min(settle.at, Math.max(start, settledBy));
+    fresh = Math.min(fresh ?? settle.at, settle.at);
   }
   settle.at = Math.min(settle.at, main.at);
+
+  // The settle lane is behind what Microsoft still keeps (both lanes were held, or collection
+  // was stopped). What it can no longer read again, the main lane read once; the part it read
+  // while it was fresh could have gained records Microsoft published late, and is recorded
+  // rather than skipped silently. Changes the main lane read when they were already old (the
+  // history load, a catch-up) count as settled.
+  const settleFloor = Math.min(oldest, main.at);
+  if (settle.at < settleFloor) {
+    if (fresh !== null && Math.max(settle.at, fresh) < settleFloor) {
+      unsettled = widen(unsettled, Math.max(settle.at, fresh), settleFloor);
+      await upsertSafely(context, gapFinding("unsettled", unsettled.from, unsettled.to));
+      run.complete = false;
+    }
+    settle.at = settleFloor;
+    fresh = fresh !== null && main.at > settleFloor ? Math.max(fresh, settleFloor) : null;
+  }
 
   // The main lane is behind what Microsoft still keeps. When it had read nothing yet (the first
   // load never got going, say every read was refused), history simply starts later. Otherwise a
   // span went unread: one finding from where it began, widened while the lane stays behind.
   if (main.at < oldest) {
     if (main.at > start) {
-      missed ??= main.at;
-      await upsertSafely(context, gapFinding("missed", missed, oldest));
+      missed = widen(missed, main.at, oldest);
+      await upsertSafely(context, gapFinding("missed", missed.from, missed.to));
       run.complete = false;
     } else start = oldest;
     main.at = oldest;
@@ -573,6 +696,9 @@ export async function collectDirectoryChanges(
   start = Math.min(start, settle.at);
 
   const advance = (lane: Lane, end: number) => {
+    // The main lane passing what is younger than the margin: from here on, the settle lane
+    // reads again what it reads.
+    if (lane === main && end > settledBy) fresh ??= Math.max(lane.at, settledBy);
     lane.at = Math.max(lane.at, end);
     if (lane.strikes && Date.parse(lane.strikes.at) < end) lane.strikes = undefined;
     if (lane.hold !== null && end >= lane.hold) lane.hold = null;
@@ -580,10 +706,13 @@ export async function collectDirectoryChanges(
   };
 
   const gaps = await openGaps(context);
-  // Gap findings whose whole span a complete read has now covered say so.
-  const heal = async (from: number, end: number) => {
+  // A gap the settle lane later read whole, and that read returned records inside it, is
+  // retitled to say nothing is missing. A read that came back with nothing proves nothing: Learn
+  // says this API can answer empty under load, which is when windows fail.
+  const heal = async (from: number, end: number, times: readonly number[]) => {
     for (const gap of [...gaps]) {
       if (gap.start < from || gap.end > end) continue;
+      if (!times.some((at) => at >= gap.start && at <= gap.end)) continue;
       await upsertSafely(context, healedFinding(gap, now));
       gaps.splice(gaps.indexOf(gap), 1);
     }
@@ -601,7 +730,7 @@ export async function collectDirectoryChanges(
     const from = lane.trying;
     const end = windowEnd(from, lane.span, now);
     lane.trying = null;
-    if (from < now && windowFailed(lane, from, end) === "give_up") {
+    if (from < now && windowFailed(lane, from, end, now) === "give_up") {
       await giveUp(from, end, "stopped");
       if (from <= lane.at) advance(lane, end);
     }
@@ -611,41 +740,69 @@ export async function collectDirectoryChanges(
   // Where the main lane stood when this run began: earlier runs read everything before it.
   const savedThrough = main.at;
 
-  // Reads one lane forward to `until`, one window at a time, saving its place after each.
+  // A window that fails is blamed on the window only when Microsoft answers other requests: for
+  // making it smaller, anything answered in this run; for a strike against a window that cannot
+  // be split, something answered since the last failure. Without that, a one-millisecond read of
+  // now tells. If that fails too, Microsoft is failing rather than the window (an outage, or
+  // throttling): the run ends with that failure and changes nothing, so it leaves no gap and
+  // the next try waits for the cadence.
+  let answeredAtFailure = 0;
+  const blameWindow = async (splittable: boolean): Promise<boolean> => {
+    const enough = splittable ? 0 : answeredAtFailure;
+    try {
+      if (run.answers > enough) return true;
+      return (await readWindow(run, now, now)).status !== "stopped";
+    } catch (error) {
+      await persist();
+      throw error;
+    } finally {
+      answeredAtFailure = run.answers;
+    }
+  };
+
+  // Reads one lane forward to `until`, one window at a time, saving its place after each. A
+  // window that failed is tried again at once, smaller, and given up after its strikes, while
+  // the run has time.
   const walk = async (lane: Lane, until: number, deadline: number): Promise<WalkResult> => {
     run.deadline = deadline;
     while (lane.at < until) {
       const from = lane.at;
       const end = windowEnd(from, lane.span, until);
+      if (lastTryWaits(lane, from, now)) return { done: false, waiting: true };
       // A window that had less than half the run's budget and still could not be finished
       // proves nothing about its size; only one that had the time counts as failed.
       const hadTime = deadline - clock() >= budget / 2;
       // Saved before reading, so a run stopped mid-window is visible to the next one.
       lane.trying = from;
       await persist();
-      let outcome: { status: WindowStatus | "given_up"; read: number };
+      let outcome: WindowRead | { status: "given_up"; read: 0; times: [] };
       try {
         outcome = await readWindow(run, from, end);
       } catch (error) {
         lane.trying = null;
-        const failure = transientFailure(error);
+        const failure = windowFailure(error);
         if (!failure) {
           await persist();
           throw error;
         }
-        if (windowFailed(lane, from, end) === "retry") {
+        // Out of time before Microsoft's health was known: nothing is counted.
+        if (!(await blameWindow(end - from > MIN_SPAN_MS))) {
           await persist();
-          return { done: false, failed: error };
+          return { done: false };
+        }
+        if (windowFailed(lane, from, end, now) === "retry") {
+          await persist();
+          continue;
         }
         await giveUp(from, end, failure);
-        outcome = { status: "given_up", read: 0 };
+        outcome = { status: "given_up", read: 0, times: [] };
       }
       lane.trying = null;
 
       if (outcome.status === "stopped") {
         // The time ran out inside this window. When the window had the time to itself, it
         // cannot be read in one run at this size, so the next run tries a smaller one.
-        if (!hadTime || windowFailed(lane, from, end) === "retry") {
+        if (!hadTime || windowFailed(lane, from, end, now) === "retry") {
           await persist();
           return { done: false };
         }
@@ -666,8 +823,7 @@ export async function collectDirectoryChanges(
         );
         run.complete = false;
       } else if (outcome.status === "complete") {
-        await heal(from, end);
-        if (lane === main) missed = null;
+        if (lane === settle) await heal(from, end, outcome.times);
         // Past the busy stretch and quiet again: grow back toward full-size windows.
         if (lane.hold === null && outcome.read * 2 < config.windowRecordLimit)
           lane.span = Math.min(MAX_SPAN_MS, lane.span * 2);
@@ -687,36 +843,28 @@ export async function collectDirectoryChanges(
   const mainWalk = await walk(main, now, mainDeadline);
   await persist();
   // While history loads, the settle lane waits: it reads all of history again afterwards.
-  if (phase === "history") {
-    if (mainWalk.failed) throw mainWalk.failed;
-    return { complete: run.complete, more: !mainWalk.done };
-  }
+  const behind = (walked: WalkResult) => !walked.done && !walked.waiting;
+  if (phase === "history") return { complete: run.complete, more: behind(mainWalk) };
 
   const settleWalk = await walk(settle, Math.min(main.at, settledBy), began + budget);
   await persist();
 
   // Best effort, newest first: what earlier runs read that has not settled yet is read again
   // with the time left, so a record Microsoft published a few minutes late shows up now rather
-  // than when it settles. It saves no position; the settle lane is what guarantees every such
-  // record is read once it is the margin old.
+  // than when it settles. It saves no position and heals nothing; the settle lane is what
+  // guarantees every such record is read once it is the margin old.
   run.deadline = began + budget;
   const floor = Math.max(settle.at, oldest);
   for (let to = savedThrough; to > floor && clock() <= run.deadline; ) {
     const from = Math.max(floor, to - FRESH_WINDOW_MS);
     try {
-      const outcome = await readWindow(run, from, to);
-      if (outcome.status === "stopped") break;
-      if (outcome.status === "complete") await heal(from, to);
+      if ((await readWindow(run, from, to)).status === "stopped") break;
     } catch (error) {
-      if (transientFailure(error)) break;
+      if (windowFailure(error)) break;
       throw error;
     }
     to = from;
   }
   await judgePending(context);
-  // A window that failed is recorded on its lane (smaller, or a strike) and tried again on the
-  // next scheduled run; the run reports the failure after the other lane has had its turn.
-  const failed = mainWalk.failed ?? settleWalk.failed;
-  if (failed) throw failed;
-  return { complete: run.complete, more: !mainWalk.done || !settleWalk.done };
+  return { complete: run.complete, more: behind(mainWalk) || behind(settleWalk) };
 }

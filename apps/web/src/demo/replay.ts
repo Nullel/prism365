@@ -30,6 +30,7 @@ import {
   type PersonRecord,
   type PersonSigninPage,
   queryAuditRows,
+  searchKey,
   type ReceiptSummary,
   receiptProblem,
   receiptSchema,
@@ -438,7 +439,7 @@ function listChanges(state: DemoState, url: URL): DemoResponse | null {
   if (!recorded) return null;
   const category = (url.searchParams.get("category") ?? "").trim().toLowerCase();
   const result = url.searchParams.get("result") ?? "";
-  const search = (url.searchParams.get("search") ?? "").trim().toLowerCase().slice(0, 200);
+  const search = searchKey((url.searchParams.get("search") ?? "").trim().slice(0, 200));
   const requested = Number(url.searchParams.get("limit") ?? "100");
   const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : 100, 1), 200);
   const matching = recorded.items.filter(
@@ -452,7 +453,7 @@ function listChanges(state: DemoState, url: URL): DemoResponse | null {
           item.initiatedBy.principal,
           ...item.targets.flatMap((target) => [target.name, target.principal]),
         ]
-          .map((value) => (value ?? "").toLowerCase())
+          .map((value) => searchKey(value ?? ""))
           .some((value) => value.includes(search))),
   );
   const position = (item: ChangeEvent) => `${item.activityAt}|${item.id}`;

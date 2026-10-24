@@ -10,6 +10,14 @@ const nullableText = text.nullable();
 const time = z.string().datetime({ offset: true });
 const count = z.number().int().nonnegative();
 
+// The form the feed's search compares, applied to the stored text and to what a person types
+// alike: compatibility-decomposed (NFKD) with the combining marks removed, lower-cased, and the
+// Greek final sigma written as an ordinary sigma. "ilker" then finds "İlker", "elodie" finds
+// "Élodie" and "ΟΔΥΣ" finds "ΟΔΥΣΣΕΥΣ", whatever the database's own locale would do.
+export function searchKey(value: string): string {
+  return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replaceAll("ς", "σ");
+}
+
 export const changeResultFilterSchema = z.enum(["success", "failure"]);
 export type ChangeResultFilter = z.infer<typeof changeResultFilterSchema>;
 

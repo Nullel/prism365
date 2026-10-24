@@ -6,6 +6,7 @@ import {
   listFindings,
   ModuleRegistry,
   ModuleScheduler,
+  setFindingState,
 } from "@prism365/modules";
 import { PGliteModuleDatabase } from "@prism365/storage";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ import {
   HEALED_TITLE,
   MAX_SPAN_MS,
   PAGE_INTERVAL_MS,
+  type Pacer,
 } from "../src/index.ts";
 
 // Each scenario opens PGlite inside the test; on a loaded machine that cold start alone can pass
@@ -63,11 +65,16 @@ let serverPageSize: number;
 let requestCost: number;
 // Answers a request with this status instead of the log, when it returns one.
 let failWith: ((request: { from: number; to: number; url: URL }) => number | null) | null;
+// Answers a request with this response before anything else, when it returns one. The window is
+// NaN for a request without a time filter (a continuation link).
+let answerWith: ((request: { from: number; to: number; url: URL }) => Response | null) | null;
 // Answers a request with an empty page instead of the log, when it returns true.
 let emptyWhen: ((request: { from: number; to: number }) => boolean) | null;
 let onRequest: ((url: URL) => void) | null;
 // A moment Microsoft never answers for in time, at any window size.
 let slowAt: number | null;
+// Every wait the collector asked for between requests.
+let slept: number[];
 let database: PGliteModuleDatabase;
 let scheduler: ModuleScheduler;
 let credential: CollectionCredential;
@@ -137,6 +144,15 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
       status,
     });
   onRequest?.(url);
+  const custom = answerWith?.({
+    from: match?.[1] ? Date.parse(match[1]) : Number.NaN,
+    to: match?.[2] ? Date.parse(match[2]) : Number.NaN,
+    url,
+  });
+  if (custom) {
+    log(custom.status);
+    return custom;
+  }
   if (!match?.[1] || !match[2]) {
     log(400);
     return json(400);
@@ -181,6 +197,7 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
 async function setup(
   overrides: Partial<DirectoryChangesConfig> = {},
   graphOptions: { requestTimeoutMilliseconds?: number } = {},
+  pacer?: Pacer,
 ) {
   const config = {
     ...defaultDirectoryChangesConfig,
@@ -191,8 +208,10 @@ async function setup(
     createDirectoryChangesModule(config, {
       clock: () => elapsed,
       sleep: async (milliseconds) => {
+        slept.push(milliseconds);
         elapsed += milliseconds;
       },
+      ...(pacer ? { pacer } : {}),
     }),
   );
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
@@ -243,7 +262,9 @@ interface StoredCursor {
   trying?: string;
   strikes?: { at: string; count: number };
   settle?: { at: string; span?: number; trying?: string };
-  missed?: string;
+  missed?: { from: string; to: string };
+  unsettled?: { from: string; to: string };
+  fresh?: string;
 }
 const cursor = async (): Promise<StoredCursor> =>
   JSON.parse(
@@ -315,6 +336,21 @@ async function settleUp() {
   throw new Error("The settle lane never caught up.");
 }
 
+// Scheduled runs ten minutes apart, each followed by the runs it asks for, five seconds apart,
+// until the main lane is current or a run asks for nothing more. Runs may fail.
+async function scheduled(polls: number, after?: () => Promise<void>) {
+  for (let index = 0; index < polls; index += 1) {
+    wait(10 * MINUTE);
+    await scheduler.tick();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if ((await cursor()).through === clock.toISOString()) break;
+      wait(5_000);
+      await scheduler.tick();
+    }
+    await after?.();
+  }
+}
+
 // Scheduled runs that may fail, ten minutes apart.
 async function runFor(polls: number, after?: () => Promise<void>) {
   for (let index = 0; index < polls; index += 1) {
@@ -332,7 +368,9 @@ beforeEach(() => {
   serverPageSize = 1_000;
   requestCost = 0;
   failWith = null;
+  answerWith = null;
   emptyWhen = null;
+  slept = [];
   onRequest = null;
   slowAt = null;
 });
@@ -649,32 +687,49 @@ describe("directory change collector", () => {
     expect((await cursor()).strikes).toBeUndefined();
   });
 
-  it("makes a window Microsoft never answers smaller, then gives it up on the third strike", async () => {
+  it("narrows a window Microsoft never answers to a millisecond at once and gives it up on the third try, ten minutes on", async () => {
     slowAt = start.getTime() - 3 * DAY + 90 * 1_000;
+    const slow = slowAt;
     records.push(audit(new Date(start.getTime() - 5 * DAY)));
     records.push(audit(new Date(start.getTime() - DAY)));
     await setup({}, { requestTimeoutMilliseconds: 100 });
-    const strikes: number[] = [];
-    await runFor(60, async () => {
-      const now = await cursor();
-      if (now.strikes) strikes.push(now.strikes.count);
+    // The first scheduled run and the runs it asks for narrow the window down and try the
+    // millisecond twice; its last try waits for the next scheduled run.
+    const seen: number[] = [];
+    await scheduled(2, async () => {
+      seen.push((await cursor()).strikes?.count ?? 0);
     });
+    expect(seen[0]).toBe(2);
     expect((await cursor()).phase).toBe("live");
     expect(await count()).toBe(2);
-    // Retried at the smallest size on two runs before it was given up.
-    expect(strikes).toContain(1);
-    expect(strikes).toContain(2);
     const [gap] = await findings();
-    expect(gap?.summary).toContain("did not answer in time");
+    expect(gap?.summary).toContain("did not answer in time, on 3 tries");
     const from = Date.parse(gap?.windowStart ?? "");
     const to = Date.parse(gap?.windowEnd ?? "");
-    expect(from).toBeLessThanOrEqual(slowAt);
-    expect(to).toBeGreaterThanOrEqual(slowAt);
+    expect(from).toBeLessThanOrEqual(slow);
+    expect(to).toBeGreaterThanOrEqual(slow);
     expect(to - from).toBeLessThanOrEqual(2);
-    expect((await allRuns()).map((run) => run.status)).toContain("failed");
+    // Each millisecond window around it was tried three times, then given up.
+    const tries = new Map<string, number>();
+    for (const request of sent)
+      if (request.to - request.from <= 1 && request.from <= slow && request.to >= slow) {
+        const key = `${request.from}/${request.to}`;
+        tries.set(key, (tries.get(key) ?? 0) + 1);
+      }
+    expect(tries.size).toBeGreaterThan(0);
+    for (const count of tries.values()) expect(count).toBe(3);
+    // The last try came at least ten minutes after the first.
+    const times = sent
+      .filter(
+        (request) => request.to - request.from <= 1 && request.from <= slow && request.to >= slow,
+      )
+      .map((request) => request.start);
+    expect(Math.max(...times) - Math.min(...times)).toBeGreaterThanOrEqual(10 * MINUTE);
+    // Microsoft answered everything else, so no run failed.
+    expect((await allRuns()).map((run) => run.status)).not.toContain("failed");
   });
 
-  it("shrinks windows Microsoft answers with a gateway error and moves on", async () => {
+  it("shrinks windows Microsoft answers with a gateway error and catches up in the same poll", async () => {
     for (let days = 25; days >= 1; days -= 3) records.push(audit(ago(days * DAY)));
     await setup();
     await loadHistory();
@@ -685,38 +740,202 @@ describe("directory change collector", () => {
     for (let minutes = 30; minutes < 360; minutes += 30)
       records.push(audit(new Date(off + minutes * MINUTE)));
     failWith = ({ from, to }) => (to - from > HOUR ? 504 : null);
-    await runFor(12);
+    // One scheduled run and the runs it asks for, five seconds apart.
+    await poll();
     expect(await storedIds()).toEqual(new Set(records.map((record) => String(record.id))));
     expect(await findings()).toEqual([]);
-    expect((await allRuns()).map((run) => run.error_category)).toContain("provider_unavailable");
-    expect((await cursor()).through).toBe(clock.toISOString());
+    expect((await allRuns()).map((run) => run.status)).not.toContain("failed");
+    expect(sent.some((request) => request.status === 504)).toBe(true);
   });
 
-  it("gives up a millisecond Microsoft keeps failing for, says why, and says so again when it is read", async () => {
+  it("gives up a millisecond Microsoft keeps failing for, says why, and says so again once its change is read", async () => {
     const failAt = start.getTime() - 3 * DAY + 7_000;
     for (let days = 5; days >= 1; days -= 2) records.push(audit(ago(days * DAY)));
+    // A change in that very millisecond.
+    const inside = audit(new Date(failAt));
+    records.push(inside);
     let failing = true;
     failWith = ({ from, to }) => (failing && from <= failAt && to >= failAt ? 500 : null);
     await setup();
-    // Scheduled runs until the main lane has given that millisecond up and loaded the rest. A
-    // record exactly on it sits in the windows on both sides, so both are given up.
-    for (let index = 0; index < 90 && (await cursor()).phase !== "live"; index += 1)
-      await runFor(1);
+    await scheduled(2);
     expect((await cursor()).phase).toBe("live");
     expect(await count()).toBe(3);
     const [gap] = await findings();
-    expect(gap?.summary).toContain("kept answering with an error");
+    expect(gap?.summary).toContain(
+      "kept answering with an error or asking Prism365 to wait, on 3 tries",
+    );
     expect(
       Date.parse(gap?.windowEnd ?? "") - Date.parse(gap?.windowStart ?? ""),
     ).toBeLessThanOrEqual(2);
-    // Microsoft recovers; the settle lane reads the whole span later and the finding says so.
+    // Microsoft recovers; the settle lane reads the whole span later, with its change, and the
+    // finding says so.
     failing = false;
     await poll();
     await settleUp();
+    expect(await count("event", `id = '${String(inside.id)}'`)).toBe(1);
     const healed = await findings();
     expect(healed).toHaveLength(1);
     expect(healed[0]?.title).toBe(HEALED_TITLE);
     expect(healed[0]?.summary).toContain("nothing is missing");
+  });
+
+  it("leaves a gap open when the later read of it comes back empty", async () => {
+    records.push(audit(ago(DAY)));
+    await setup();
+    await loadHistory();
+    await settleUp();
+    // Two changes in a millisecond Microsoft fails for while the main lane reads it. Once the
+    // main lane has given it up, reads of it come back empty, as Learn says this API can answer
+    // under load.
+    const bad = clock.getTime() + 3 * MINUTE + 456;
+    const lost = [audit(new Date(bad)), audit(new Date(bad))];
+    records.push(...lost);
+    let passed = false;
+    failWith = ({ from, to }) => (!passed && from <= bad && to >= bad ? 500 : null);
+    emptyWhen = ({ from, to }) => passed && from <= bad && to >= bad;
+    await scheduled(2);
+    passed = Date.parse((await cursor()).through ?? "") > bad;
+    expect(passed).toBe(true);
+    for (let index = 0; index < 14; index += 1) await poll();
+    expect(Date.parse((await cursor()).settle?.at ?? "")).toBeGreaterThan(bad);
+    for (const change of lost) expect(await count("event", `id = '${String(change.id)}'`)).toBe(0);
+    const [gap] = await findings();
+    expect(gap?.title).toBe("Some directory changes could not be read");
+    expect(gap?.state).toBe("open");
+  });
+
+  it("heals a gap only when the settle lane reads it, not when the early re-read does", async () => {
+    records.push(audit(ago(DAY)));
+    await setup();
+    await loadHistory();
+    await settleUp();
+    const failAt = clock.getTime() + 3 * MINUTE + 456;
+    const inside = audit(new Date(failAt));
+    records.push(inside);
+    let failing = true;
+    failWith = ({ from, to }) => (failing && from <= failAt && to >= failAt ? 500 : null);
+    await scheduled(2);
+    expect(Date.parse((await cursor()).through ?? "")).toBeGreaterThan(failAt);
+    expect((await findings())[0]?.title).toBe("Some directory changes could not be read");
+    // Microsoft recovers. The best-effort re-read of recent changes reads that span again and
+    // stores the change, but only the settle lane's read says nothing is missing.
+    failing = false;
+    await poll();
+    expect(await count("event", `id = '${String(inside.id)}'`)).toBe(1);
+    expect(Date.parse((await cursor()).settle?.at ?? "")).toBeLessThan(failAt);
+    expect((await findings())[0]?.title).toBe("Some directory changes could not be read");
+    for (let index = 0; index < 14; index += 1) await poll();
+    expect((await findings())[0]?.title).toBe(HEALED_TITLE);
+  });
+
+  it("changes nothing and leaves no gap while Microsoft fails every request, then catches up", async () => {
+    for (let days = 5; days >= 1; days -= 2) records.push(audit(ago(days * DAY)));
+    await setup();
+    await loadHistory();
+    await settleUp();
+    const before = await cursor();
+    const off = clock.getTime();
+    for (let minutes = 20; minutes < 6 * 60; minutes += 40)
+      records.push(audit(new Date(off + minutes * MINUTE)));
+    // An outage: every request fails, whatever its window.
+    failWith = () => 500;
+    const sentBefore = sent.length;
+    await runFor(36);
+    expect(await findings()).toEqual([]);
+    const held = await cursor();
+    expect(held.through).toBe(before.through);
+    expect(held.settle?.at).toBe(before.settle?.at);
+    expect(held.span).toBeUndefined();
+    expect(held.strikes).toBeUndefined();
+    // Each run tried one window and checked whether Microsoft answers anything, then waited.
+    expect(sent.length - sentBefore).toBeLessThanOrEqual(36 * 2);
+    const outage = (await allRuns()).slice(-36);
+    expect(outage.every((run) => run.status === "failed")).toBe(true);
+    expect(outage.map((run) => run.error_category)).toContain("provider_unavailable");
+    failWith = null;
+    await poll();
+    expect(await storedIds()).toEqual(new Set(records.map((record) => String(record.id))));
+    expect(await findings()).toEqual([]);
+  });
+
+  it("counts a strike against a millisecond only while Microsoft still answers other requests", async () => {
+    await setup();
+    await loadHistory();
+    await settleUp();
+    // The main lane is reading millisecond windows again after a failure, and Microsoft stops
+    // answering anything after the first request of the next run (throttling, say).
+    const live = await cursor();
+    const through = Date.parse(live.through ?? "");
+    await setCursor(
+      JSON.stringify({ ...live, span: 1, hold: new Date(through + 2).toISOString() }),
+    );
+    let answered = 0;
+    failWith = () => (answered++ < 1 ? null : 500);
+    await runFor(1);
+    expect(await findings()).toEqual([]);
+    expect((await cursor()).strikes?.count ?? 0).toBeLessThanOrEqual(1);
+    expect((await allRuns()).at(-1)?.status).toBe("failed");
+  });
+
+  it("does not give up a millisecond for a burst of failures shorter than ten minutes", async () => {
+    await setup();
+    await loadHistory();
+    await settleUp();
+    const live = await cursor();
+    const through = Date.parse(live.through ?? "");
+    await setCursor(
+      JSON.stringify({ ...live, span: 1, hold: new Date(through + 2).toISOString() }),
+    );
+    // A change in the next millisecond, which Microsoft fails for during a short burst.
+    const target = through + 1;
+    const change = audit(new Date(target));
+    records.push(change);
+    let burst = true;
+    failWith = ({ from, to }) => (burst && from <= target && to >= target ? 500 : null);
+    await runFor(1);
+    expect((await cursor()).strikes?.count).toBe(2);
+    burst = false;
+    await poll();
+    expect(await findings()).toEqual([]);
+    expect(await count("event", `id = '${String(change.id)}'`)).toBe(1);
+  });
+
+  it.each([
+    ["too large at both page sizes", "could not be read (too large"],
+    ["refused at both page sizes", "refused the request"],
+    ["paging in a loop", "could not be read (too large, malformed or paging in a loop)"],
+  ])("gives up a millisecond whose answer is %s, and moves on", async (kind, why) => {
+    const poison = start.getTime() - 3 * DAY + 90_000 + 456;
+    for (let days = 5; days >= 1; days -= 2) records.push(audit(ago(days * DAY)));
+    const loop = "https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?$skiptoken=loop";
+    const covers = ({ from, to }: { from: number; to: number }) => from <= poison && to >= poison;
+    if (kind === "refused at both page sizes")
+      failWith = (request) => (covers(request) ? 400 : null);
+    else if (kind === "too large at both page sizes")
+      answerWith = (request) =>
+        covers(request)
+          ? new Response("{}", {
+              status: 200,
+              headers: { "Content-Type": "application/json", "Content-Length": "99999999" },
+            })
+          : null;
+    else
+      answerWith = (request) =>
+        covers(request) || request.url.searchParams.get("$skiptoken") === "loop"
+          ? Response.json({ value: [], "@odata.nextLink": loop })
+          : null;
+    await setup();
+    await scheduled(2);
+    expect((await cursor()).phase).toBe("live");
+    expect(await count()).toBe(3);
+    const [gap] = await findings();
+    expect(gap?.summary).toContain(why);
+    expect(Date.parse(gap?.windowStart ?? "")).toBeLessThanOrEqual(poison);
+    expect(Date.parse(gap?.windowEnd ?? "")).toBeGreaterThanOrEqual(poison);
+    expect(
+      Date.parse(gap?.windowEnd ?? "") - Date.parse(gap?.windowStart ?? ""),
+    ).toBeLessThanOrEqual(2);
+    expect((await allRuns()).map((run) => run.status)).not.toContain("failed");
   });
 
   it("loses nothing to empty answers during the history load or a catch-up", async () => {
@@ -763,7 +982,7 @@ describe("directory change collector", () => {
     expect(await count("event", `id = '${String(meanwhile.id)}'`)).toBe(1);
   });
 
-  it("raises one widening gap for a span Microsoft dropped before it was read", async () => {
+  it("raises one widening gap for a span Microsoft dropped before it was read, and one for what was not read again", async () => {
     records.push(audit(ago(DAY)));
     await setup();
     await loadHistory();
@@ -772,18 +991,178 @@ describe("directory change collector", () => {
     // Reads keep being refused for a while, then work.
     failWith = () => 403;
     await runFor(6);
-    const first = await findings();
-    expect(first).toHaveLength(1);
-    expect(first[0]?.title).toBe("Directory changes were missed while they could not be read");
-    const widening = first[0]?.windowEnd;
+    const titles = async () => (await findings()).map((finding) => finding.title).sort();
+    // The main lane never read the span; the settle lane never read again what the main lane
+    // read in the last two hours before collection stopped. Neither moves on silently.
+    expect(await titles()).toEqual([
+      "Directory changes were missed while they could not be read",
+      "Late directory changes may be missing",
+    ]);
+    const missed = (await findings()).find((finding) => finding.title.startsWith("Directory"));
     failWith = null;
     await poll();
     for (let index = 0; index < 5; index += 1) await poll();
-    const after = await findings();
-    expect(after).toHaveLength(1);
-    expect(Date.parse(after[0]?.windowEnd ?? "")).toBeGreaterThan(Date.parse(widening ?? ""));
+    expect(await titles()).toEqual([
+      "Directory changes were missed while they could not be read",
+      "Late directory changes may be missing",
+    ]);
+    const widened = (await findings()).find((finding) => finding.id === missed?.id);
+    expect(Date.parse(widened?.windowEnd ?? "")).toBeGreaterThan(
+      Date.parse(missed?.windowEnd ?? ""),
+    );
     expect(await count()).toBe(2);
-    expect((await cursor()).missed).toBeUndefined();
+  });
+
+  it("keeps one missed-span finding while a lane recovering at the retention edge falls behind it again", async () => {
+    await setup();
+    await loadHistory();
+    const now = clock.getTime();
+    for (let minutes = 0; minutes < 600; minutes += 7)
+      records.push(audit(new Date(now - 30 * DAY + minutes * MINUTE)));
+    // The main lane is five minutes behind what Microsoft keeps, reading millisecond windows
+    // after a long run of failures.
+    const through = now - 30 * DAY - 5 * MINUTE;
+    const iso = (at: number) => new Date(at).toISOString();
+    await setCursor(
+      JSON.stringify({
+        v: 1,
+        phase: "live",
+        start: iso(now - 40 * DAY),
+        through: iso(through),
+        span: 1,
+        hold: iso(through + 2),
+        settle: { at: iso(through - 4 * HOUR), span: 1, hold: iso(through - 4 * HOUR + 2) },
+        fresh: iso(now - 40 * DAY),
+      }),
+    );
+    // Runs six seconds apart: each reads a little, and the edge moves on meanwhile.
+    for (let index = 0; index < 12; index += 1) {
+      wait(6_000);
+      await scheduler.tick();
+    }
+    const missed = (await findings()).filter(
+      (finding) => finding.title === "Directory changes were missed while they could not be read",
+    );
+    expect(missed).toHaveLength(1);
+    expect(missed[0]?.occurrences).toBeGreaterThan(1);
+    expect(
+      (await findings()).filter(
+        (finding) => finding.title === "Late directory changes may be missing",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("waits at most one interval before a request after the clock stepped back", async () => {
+    // The last request finished an hour ahead of the collector's clock: the clock has since
+    // stepped back an hour.
+    await setup({}, {}, { last: elapsed + HOUR });
+    await scheduler.tick();
+    expect(slept.length).toBeGreaterThan(0);
+    expect(Math.max(...slept)).toBeLessThanOrEqual(PAGE_INTERVAL_MS);
+  });
+
+  it("keeps a permanent assignment made through PIM out of an activation someone acknowledged", async () => {
+    await setup();
+    await loadHistory();
+    const target = {
+      id: personId,
+      displayName: "Synthetic Person",
+      type: "User",
+      userPrincipalName: "person@example.invalid",
+      modifiedProperties: [
+        {
+          displayName: "Role.TemplateId",
+          oldValue: null,
+          newValue: '"62e90394-69f5-4237-9190-012177145e10"',
+        },
+      ],
+    };
+    const msPim = {
+      user: null,
+      app: {
+        appId: "0a1b2c3d-0000-4000-8000-0000000000f2",
+        displayName: "MS-PIM",
+        servicePrincipalId: "0a1b2c3d-0000-4000-8000-0000000000f1",
+        servicePrincipalName: "MS-PIM",
+      },
+    };
+    const byPerson = {
+      user: {
+        id: personId,
+        displayName: "Synthetic Person",
+        userPrincipalName: "person@example.invalid",
+        ipAddress: "192.0.2.5",
+      },
+      app: null,
+    };
+    // Morning: the person activates an eligible Global Administrator role. PIM records it, and
+    // the directory records the role addition PIM made, under the same correlation id.
+    const morning = clock.getTime() + 5 * MINUTE;
+    const activationId = randomUUID();
+    records.push(
+      audit(new Date(morning), {
+        activityDisplayName: "Add member to role completed (PIM activation)",
+        category: "RoleManagement",
+        loggedByService: "PIM",
+        correlationId: activationId,
+        initiatedBy: byPerson,
+        targetResources: [target],
+      }),
+      audit(new Date(morning + 800), {
+        activityDisplayName: "Add member to role",
+        category: "RoleManagement",
+        correlationId: activationId,
+        initiatedBy: msPim,
+        targetResources: [target],
+      }),
+    );
+    await poll();
+    const activated = await findings();
+    expect(activated).toHaveLength(1);
+    expect(activated[0]).toMatchObject({
+      title: "Global Administrator activated",
+      severity: "critical",
+      occurrences: 2,
+    });
+    const activationFinding = String(activated[0]?.id);
+    await database.tenant(tenantId, (sql) =>
+      setFindingState(sql, tenantId, activationFinding, "acknowledged", actorId),
+    );
+    // Afternoon: another administrator gives the same person a permanent active assignment in
+    // PIM, which the directory records the same way.
+    const afternoon = clock.getTime() + 2 * HOUR;
+    const assignmentId = randomUUID();
+    records.push(
+      audit(new Date(afternoon), {
+        activityDisplayName: "Add member to role in PIM completed (permanent)",
+        category: "RoleManagement",
+        loggedByService: "PIM",
+        correlationId: assignmentId,
+        targetResources: [target],
+      }),
+      audit(new Date(afternoon + 900), {
+        activityDisplayName: "Add member to role",
+        category: "RoleManagement",
+        correlationId: assignmentId,
+        initiatedBy: msPim,
+        targetResources: [target],
+      }),
+    );
+    for (let index = 0; index < 14; index += 1) await poll();
+    const role = (await findings()).filter(
+      (finding) => finding.ruleId === "role.privileged-assigned",
+    );
+    const raised = role.filter((finding) => finding.state === "open");
+    expect(raised).toHaveLength(2);
+    for (const finding of raised)
+      expect(finding).toMatchObject({
+        severity: "critical",
+        title: "Global Administrator assigned",
+      });
+    expect(role.find((finding) => finding.id === activationFinding)).toMatchObject({
+      state: "acknowledged",
+      occurrences: 2,
+    });
   });
 
   it("gives the settle lane a third of the run while the main lane has a backlog", async () => {
