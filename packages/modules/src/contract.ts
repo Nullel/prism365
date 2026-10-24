@@ -54,6 +54,11 @@ export interface PrismModule {
   migrations: readonly ModuleMigration[];
   collectors: readonly Collector[];
   retention: readonly RetentionRule[];
+  // Saved settings (prism365_preference keys) the module may read, such as a list an administrator
+  // keeps through the API. Declared like packs, so what a module can see is visible in its
+  // definition. Read-only, and limited to the module's own namespace: the part of its id before
+  // the first dot, then a dot ("signins.canaries" for "signins.audit").
+  settings?: readonly string[];
 }
 
 export interface EvidenceItem {
@@ -126,6 +131,12 @@ export interface CollectorContext {
   readonly cursor: {
     get(): Promise<string | null>;
     set(value: string): Promise<void>;
+  };
+  readonly settings: {
+    // The stored JSON of one setting the module declared, or null when none was saved. Anything
+    // else is a ModuleBoundaryError. The value comes from the API's own validated writes, but a
+    // collector still parses it rather than trusting its shape.
+    get(key: string): Promise<unknown>;
   };
   readonly findings: {
     upsert(input: FindingInput): Promise<FindingChange>;

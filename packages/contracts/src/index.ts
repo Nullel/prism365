@@ -3,6 +3,7 @@ import { personHistorySchema } from "./people.ts";
 
 export * from "./attention.ts";
 export * from "./audits.ts";
+export * from "./canaries.ts";
 export * from "./changes.ts";
 export * from "./digest.ts";
 export * from "./handoff.ts";

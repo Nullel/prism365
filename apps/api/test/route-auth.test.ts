@@ -67,6 +67,7 @@ describe("route authorization", () => {
       "/v1/audit-runs/44444444-4444-4444-8444-444444444444/handoff.json",
       "/v1/audits/accounts.inactive/trend",
       "/v1/settings/audit-schedule",
+      "/v1/settings/canaries",
     ])
       for (const url of [path, encode(path), `/api${encode(path)}`]) {
         const response = await app.inject({ method: "GET", url });
@@ -86,6 +87,7 @@ describe("route authorization", () => {
       "/v1/auth/logout",
       "/v1/receipts",
       "/v1/settings/audit-schedule",
+      "/v1/settings/canaries",
     ]) {
       const response = await app.inject({
         method: "POST",

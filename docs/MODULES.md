@@ -69,6 +69,13 @@ Besides findings, a collector can report notification-center items with `context
 and, after a complete read of one kind, `context.attention.retire`. The store decides what is a
 meaningful change and what notifies (ADR-0007), so a connector only describes the provider's facts.
 
+A module can read a setting an administrator saved through the API (a row of
+`prism365_preference`) with `context.settings.get(key)`. It declares the keys it reads in
+`settings`, the way it declares packs, and each key must start with the part of the module id
+before its first dot, so `signins.audit` can declare `signins.canaries` and nothing else. The call
+is read-only and returns the stored JSON, or null when nothing was saved; any other key is a
+`ModuleBoundaryError`. A collector parses the value rather than trusting its shape.
+
 A collector's `run` returns `{ complete, more? }`. `complete: false` means records were left out
 (unreadable, or too many to read). `more: true` means it stopped at its own time budget with
 more to read now, as during history loading; the scheduler then runs it again within seconds

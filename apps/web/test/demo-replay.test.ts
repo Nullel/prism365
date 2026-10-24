@@ -942,3 +942,81 @@ describe("directory changes", () => {
     expect(get("/api/v1/changes?days=30&limit=100").status).toBe(404);
   });
 });
+
+describe("canary accounts in the demo", () => {
+  const person = (id: string, principal: string) => ({
+    [`GET /api/v1/people/${id}/directory`]: {
+      status: 200,
+      body: { state: "available", message: null, profile: { userPrincipalName: principal } },
+    },
+  });
+  const canaries: Fixtures = {
+    recordedAt,
+    responses: {
+      "GET /api/v1/settings/canaries": {
+        status: 200,
+        body: {
+          accounts: [
+            {
+              userId: "u-1",
+              principal: "decoy.one@larkspur.example",
+              addedAt: "2026-10-20T09:00:00.000Z",
+              addedBy: "demo-administrator",
+            },
+          ],
+        },
+      },
+      ...person("u-2", "decoy.two@larkspur.example"),
+      "GET /api/v1/people/u-3": {
+        status: 200,
+        body: {
+          history: { userPrincipalName: "decoy.three@larkspur.example" },
+          findings: [],
+        },
+      },
+    },
+  };
+  const send = (state: DemoState, method: string, body?: unknown) =>
+    handleRequest(state, { method, url: "/api/v1/settings/canaries", body });
+  const ids = (state: DemoState) =>
+    ((send(state, "GET").body as { accounts: { userId: string }[] }).accounts ?? []).map(
+      (account) => account.userId,
+    );
+
+  it("answers the recorded list, moved to today", () => {
+    const state = createDemoState(canaries, now("2026-10-22T10:00:00.000Z"));
+    const body = send(state, "GET").body as { accounts: { addedAt: string }[] };
+    expect(ids(state)).toEqual(["u-1"]);
+    expect(body.accounts[0]?.addedAt).toBe("2026-10-22T09:00:00.000Z");
+  });
+
+  it("marks and unmarks accounts for this page only", () => {
+    const state = createDemoState(canaries, now("2026-10-22T10:00:00.000Z"));
+    // An account the recording opened gets its recorded name; marking it twice changes nothing.
+    expect(send(state, "POST", { add: ["u-2", "u-3", "u-2"] }).status).toBe(200);
+    expect(ids(state)).toEqual(["u-1", "u-2", "u-3"]);
+    const added = (send(state, "GET").body as { accounts: { principal: string }[] }).accounts;
+    expect(added.map((account) => account.principal)).toEqual([
+      "decoy.one@larkspur.example",
+      "decoy.two@larkspur.example",
+      "decoy.three@larkspur.example",
+    ]);
+    expect(send(state, "POST", { remove: ["u-1", "u-9"] }).status).toBe(200);
+    expect(ids(state)).toEqual(["u-2", "u-3"]);
+    // A fresh page starts from the recording again.
+    expect(ids(createDemoState(canaries, now("2026-10-22T10:00:00.000Z")))).toEqual(["u-1"]);
+  });
+
+  it("refuses an account the recording never opened, and a body that names nothing", () => {
+    const state = createDemoState(canaries, now("2026-10-22T10:00:00.000Z"));
+    expect(send(state, "POST", { add: ["u-404"] }).status).toBe(404);
+    expect(send(state, "POST", {}).status).toBe(400);
+    expect(ids(state)).toEqual(["u-1"]);
+  });
+
+  it("is unavailable when the recording has no list", () => {
+    const state = createDemoState({ recordedAt, responses: {} }, now(recordedAt));
+    expect(send(state, "GET").status).toBe(404);
+    expect(send(state, "POST", { add: ["u-2"] }).status).toBe(404);
+  });
+});

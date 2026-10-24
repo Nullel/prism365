@@ -2277,6 +2277,66 @@ a.button {
   margin: 0;
 }
 
+/* Canary accounts */
+.canary-toggle {
+  margin-top: 12px;
+  max-width: 62ch;
+}
+.canary-confirm {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 12px 14px;
+  background: var(--danger-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.canary-confirm p {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.canary-confirm__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.canary-panel {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+}
+.canary-panel h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.canary-panel .empty-data {
+  margin: 0;
+}
+.canary-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.canary-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 0;
+}
+.canary-list > li:where(:not(:first-child)) {
+  border-top: 1px solid var(--border);
+}
+.canary-list__name {
+  flex: 1 1 14rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 /* Findings */
 .finding-list {
   display: grid;

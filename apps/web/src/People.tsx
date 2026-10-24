@@ -14,6 +14,7 @@ import {
   personSigninPageSchema,
 } from "@prism365/contracts";
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
+import { CanaryToggle } from "./Canary.tsx";
 import { AccountName, day, FindingItem, number, place, post, readJson, when } from "./common.tsx";
 import { ShieldIcon } from "./icons.tsx";
 import { PersonChanges } from "./PersonChanges.tsx";
@@ -426,6 +427,7 @@ function PersonProfile({
               <span className="person-tag person-tag--ok">Nothing open</span>
             ) : null}
           </div>
+          <CanaryToggle session={session} userId={userId} name={name} />
           {breachAddress ? (
             <p className="person-actions">
               <a

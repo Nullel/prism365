@@ -1,3 +1,4 @@
+import { principalKey } from "@prism365/contracts";
 import type { SigninsAuditConfig } from "./config.ts";
 import {
   credentialFailureCodes,
@@ -323,3 +324,50 @@ export function sprayingAddresses(
     [...byIp].filter(([, accounts]) => accounts.size >= config.sprayAccounts).map(([ip]) => ip),
   );
 }
+
+// Canary accounts: decoys that nobody should ever sign in to, marked by an administrator. Any
+// sign-in attempt by one is a finding, whether it succeeded or failed, so this rule does not
+// score or add to anything else. Rules version 1 starts with it.
+export const CANARY_RULE = "signin.canary-used";
+
+export interface CanaryEntry {
+  userId: string;
+  principal: string;
+}
+
+// The marked accounts as the rule looks them up: by user id, and by principal name (compatibility
+// normalised and in lower case, so letter case or width never hides an account) for the rare
+// sign-in record that carries no user id.
+export interface CanaryIndex {
+  byId: ReadonlyMap<string, CanaryEntry>;
+  byPrincipal: ReadonlyMap<string, CanaryEntry>;
+}
+
+export function canaryIndex(accounts: readonly CanaryEntry[]): CanaryIndex {
+  return {
+    byId: new Map(accounts.map((account) => [account.userId, account])),
+    byPrincipal: new Map(
+      accounts.map((account) => [principalKey(account.principal.trim()), account]),
+    ),
+  };
+}
+
+// The canary a sign-in belongs to, or null. A sign-in with a user id is matched on that alone:
+// the id is what Microsoft guarantees, a name can be reused. Only a record with no user id falls
+// back to the name.
+export function matchCanary(
+  event: Pick<SigninEvent, "userId" | "upn">,
+  index: CanaryIndex,
+): CanaryEntry | null {
+  if (event.userId) return index.byId.get(event.userId) ?? null;
+  return event.upn ? (index.byPrincipal.get(principalKey(event.upn.trim())) ?? null) : null;
+}
+
+// The UTC day of an attempt, "2026-10-22".
+export const canaryDay = (at: Date): string => at.toISOString().slice(0, 10);
+
+// One finding per account and UTC day: more attempts that day update it, and the next day opens
+// a new one, so a canary that is hit again tomorrow is not hidden behind a finding someone has
+// already resolved.
+export const canaryDedupeKey = (canary: CanaryEntry, at: Date): string =>
+  `canary:${canary.userId}:${canaryDay(at)}`;

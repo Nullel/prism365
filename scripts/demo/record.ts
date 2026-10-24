@@ -223,7 +223,12 @@ async function main() {
     return response.json<T>();
   }
 
-  // 1. Collect. The first tick loads the history; the second reads what arrived since.
+  // 1. Collect. The first tick loads the history; the second reads what arrived since. The
+  // training account is marked as a canary first, so every sign-in it has is read as one.
+  const marked = await call("POST", "/api/v1/settings/canaries", {
+    add: [tenant.stories.canary ?? ""],
+  });
+  if (marked.statusCode !== 200) throw new Error(`The canary was not marked: ${marked.body}`);
   const started1 = await app.inject({
     method: "POST",
     url: "/api/v1/collection/start",
@@ -289,12 +294,15 @@ async function main() {
     burstAddress: findings.find(
       (item) => item.ruleId === "signins.failed_burst_ip" && item.summary.includes(HOME_FAILURE_IP),
     ),
+    canary: find("signin.canary-used", tenant.stories.canary ?? ""),
   };
   for (const [name, finding] of Object.entries(expected))
     if (!finding) throw new Error(`The rules did not flag the planted story "${name}".`);
   if (expected.travel?.severity !== "critical")
     throw new Error(`Impossible travel was rated ${expected.travel?.severity}, not critical.`);
-  log(`Rules flagged ${findings.length} findings, including all six planted stories.`);
+  if (expected.canary?.severity !== "critical")
+    throw new Error(`The canary was rated ${expected.canary?.severity}, not critical.`);
+  log(`Rules flagged ${findings.length} findings, including all seven planted stories.`);
   const changeFindings = (
     await getJson<{ items: Finding[] }>(`/api/v1/findings?module=${CHANGES}&limit=100`)
   ).items;
@@ -397,6 +405,7 @@ async function main() {
   await record("/api/v1/settings/attention");
   await record("/api/v1/settings/audits");
   await record("/api/v1/settings/audit-schedule");
+  await record("/api/v1/settings/canaries");
   await record("/api/v1/modules/service.health/status");
   // The This week page, for each range it offers (the demo has no other).
   for (const days of [1, 7, 14, 30]) await record(`/api/v1/digest?days=${days}`);
