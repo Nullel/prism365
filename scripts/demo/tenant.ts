@@ -176,6 +176,7 @@ const TRAVEL_IP = "198.51.100.231";
 const MFA_ATTACKER_IP = "203.0.113.77";
 const SPRAY_IP = "2001:db8:4f1a::9c";
 const WENDELL_HOME_IP = "203.0.113.18";
+const CANARY_IP = "198.51.100.63";
 // The address of the run of failed sign-ins before a success, for the recorder to look for.
 export const HOME_FAILURE_IP = WENDELL_HOME_IP;
 
@@ -1499,11 +1500,29 @@ function plantStories(members: Map<string, Member>, now: number): Stories {
     );
   }
 
+  // 7. A canary: the training account has never been used, so an administrator marks it as a
+  // decoy. Someone from a foreign address guesses its password the day before. The recorder marks
+  // the account before collecting, as an administrator would.
+  const decoy = member("kiosk");
+  events.push(
+    makeSignIn({
+      member: decoy,
+      at: day(1, 3, 26, 40),
+      ip: CANARY_IP,
+      place: frankfurt,
+      device: { id: "", os: "Linux", browser: "", managed: null, compliant: null, trustType: null },
+      app: "portal",
+      ...typo,
+      label: "canary",
+    }),
+  );
+
   return {
     ids: {
       traveler: traveler.user.id,
       mfaTarget: target.user.id,
       forgetful: forgetful.user.id,
+      canary: decoy.user.id,
     },
     events,
     suppress,

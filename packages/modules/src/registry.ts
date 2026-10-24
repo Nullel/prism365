@@ -20,6 +20,7 @@ const moduleIdPattern = /^[a-z][a-z0-9]{1,30}(?:\.[a-z][a-z0-9-]{1,30}){0,2}$/;
 const collectorIdPattern = /^[a-z][a-z0-9-]{1,40}$/;
 const migrationIdPattern = /^\d{3}-[a-z0-9-]{1,40}$/;
 const identifierPattern = /^[a-z][a-z0-9_]{0,40}$/;
+const settingKeyPattern = /^[a-z][a-z0-9]{1,30}(?:\.[a-z][a-z0-9-]{1,30}){1,2}$/;
 
 export function moduleTablePrefix(moduleId: string): string {
   return `mod_${moduleId.replace(/[.-]/g, "_")}_`;
@@ -180,6 +181,19 @@ export function validateModule(module: PrismModule): string[] {
         id,
         `collector ${collector.id} timeout must be 10s to 15min and shorter than its cadence.`,
       );
+  }
+
+  // The namespace is the module id up to its first dot, so a module can never name another
+  // feature's setting ("attention", "audits.scope") however it is written.
+  const namespace = `${id.split(".")[0]}.`;
+  const settings = new Set<string>();
+  for (const key of module.settings ?? []) {
+    if (!settingKeyPattern.test(key) || !key.startsWith(namespace) || settings.has(key))
+      throw new ModuleDefinitionError(
+        id,
+        `setting ${key} is invalid, repeated, or outside the ${namespace} namespace.`,
+      );
+    settings.add(key);
   }
 
   const migrationIds = new Set<string>();

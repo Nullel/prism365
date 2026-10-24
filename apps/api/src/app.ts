@@ -128,6 +128,7 @@ import {
 } from "./identity.ts";
 import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
 import { registerAuditInsightRoutes } from "./routes/audit-insights.ts";
+import { registerCanaryRoutes } from "./routes/canaries.ts";
 import { registerChangeRoutes } from "./routes/changes.ts";
 import { RouteBoundaryError, type RouteContext } from "./routes/context.ts";
 import { registerDigestRoutes } from "./routes/digest.ts";
@@ -1518,6 +1519,7 @@ export function createApp(options: AppOptions = {}) {
   registerDigestRoutes(app, routes);
   registerSetupRoutes(app, routes);
   registerHandoffRoutes(app, routes);
+  registerCanaryRoutes(app, routes);
 
   app.get("/v1/dashboard/summary", async (_request, reply) => {
     if (config.mode === "demo") return demoDashboard;

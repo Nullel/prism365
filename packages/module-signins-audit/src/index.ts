@@ -1,8 +1,10 @@
 import type { PrismModule } from "@prism365/modules";
+import { CANARY_SETTING } from "./canaries.ts";
 import { collectSignins, MODULE_ID } from "./collector.ts";
 import { defaultSigninsAuditConfig, type SigninsAuditConfig } from "./config.ts";
 import { signinsAuditMigrations } from "./migrations.ts";
 
+export * from "./canaries.ts";
 export * from "./collector.ts";
 export * from "./config.ts";
 export * from "./cursor.ts";
@@ -25,6 +27,8 @@ export function createSigninsAuditModule(
     version: 1,
     packs: ["audit.signins.read"],
     requires: ["entra.p1", "role.reportsReader"],
+    // The canary list an administrator keeps through the API.
+    settings: [CANARY_SETTING],
     migrations: signinsAuditMigrations,
     collectors: [
       {

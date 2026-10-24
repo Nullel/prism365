@@ -551,6 +551,29 @@ export class ModuleScheduler {
             })(),
           ),
       },
+      settings: {
+        get: (key) =>
+          handled(
+            (async () => {
+              if (!module.settings?.includes(key))
+                throw new ModuleBoundaryError("The module did not declare that setting.");
+              const result = await transaction((sql) =>
+                sql.query<{ value: unknown }>(
+                  "SELECT value FROM prism365_preference WHERE tenant_id=$1 AND key=$2",
+                  [tenantId, key],
+                ),
+              );
+              const stored = result.rows[0]?.value;
+              if (stored === undefined) return null;
+              // A text value is JSON that was stored as a string; a damaged one reads as unset.
+              try {
+                return typeof stored === "string" ? (JSON.parse(stored) as unknown) : stored;
+              } catch {
+                return null;
+              }
+            })(),
+          ),
+      },
       findings: {
         upsert: (input: FindingInput) =>
           handled(
