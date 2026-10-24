@@ -48,6 +48,19 @@ case "${1:-help}" in
         exit 1
       fi
     done
+    # Email alerts are optional. When SMTP_URL names a user, its password goes in the secrets
+    # directory as smtp-password, like the certificate, and is mounted read-only.
+    smtp_password_file=""
+    smtp_url="$(value SMTP_URL "$source_env")"
+    case "$smtp_url" in
+      *://*@*)
+        if [ ! -f "$secrets_dir/smtp-password" ]; then
+          echo "SMTP_URL names a user, so $secrets_dir/smtp-password must hold its password." >&2
+          exit 1
+        fi
+        smtp_password_file=/run/secrets/smtp-password
+        ;;
+    esac
     port="${PRISM_HTTPS_PORT:-8443}"
     umask 077
     cat > "$ENV_FILE" <<EOF
@@ -70,6 +83,11 @@ STATE_ENCRYPTION_KEY=$(openssl rand -hex 32)
 SIGNINS_EXPECTED_COUNTRIES=$(value SIGNINS_EXPECTED_COUNTRIES "$source_env")
 SIGNINS_TRUSTED_NETWORKS=$(value SIGNINS_TRUSTED_NETWORKS "$source_env")
 SIGNINS_TIME_ZONE=$(value SIGNINS_TIME_ZONE "$source_env")
+SMTP_URL=$smtp_url
+SMTP_PASSWORD_FILE=$smtp_password_file
+SMTP_FROM=$(value SMTP_FROM "$source_env")
+ALERT_EMAIL_DOMAINS=$(value ALERT_EMAIL_DOMAINS "$source_env")
+WEBHOOK_ALLOWED_PORTS=$(value WEBHOOK_ALLOWED_PORTS "$source_env")
 EOF
     echo "Created $ENV_FILE. Next: scripts/docker-live.sh up"
     ;;

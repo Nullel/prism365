@@ -5,6 +5,7 @@ import {
   directoryChangesConfigFromEnv,
 } from "@prism365/module-directory-changes";
 import { type SigninsAuditConfig, signinsAuditConfigFromEnv } from "@prism365/module-signins-audit";
+import { type DeliveryConfig, deliveryConfigFromEnv } from "./delivery-smtp.ts";
 
 export const supportedReadFeatures = {
   "directory.users.read": "User.Read.All",
@@ -65,6 +66,9 @@ export interface AppConfig {
   certificate?: { thumbprintSha256: string; expiresAt: string };
   // How long handoffs and receipts are kept (HANDOFF_RETENTION_DAYS). Unset means the default.
   handoffRetentionDays?: number;
+  // Alert delivery: the mail relay (SMTP_URL, SMTP_PASSWORD_FILE, SMTP_FROM, ALERT_EMAIL_DOMAINS)
+  // and the extra ports webhooks may use (WEBHOOK_ALLOWED_PORTS). Live mode only.
+  delivery?: DeliveryConfig;
 }
 
 // Handoffs and receipts are kept three years unless the operator chooses otherwise: long enough
@@ -170,6 +174,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
   if (env.AI_LOCAL_MODEL) base.aiModel = env.AI_LOCAL_MODEL;
   base.signinsAudit = signinsAuditConfigFromEnv(env);
   base.directoryChanges = directoryChangesConfigFromEnv(env);
+  base.delivery = await deliveryConfigFromEnv(env);
   if (env.TRUST_PROXY_HOPS) {
     if (!/^[0-3]$/.test(env.TRUST_PROXY_HOPS))
       throw new Error("TRUST_PROXY_HOPS must be a whole number from 0 to 3.");

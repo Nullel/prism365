@@ -136,6 +136,8 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
           "prism365_handoff",
           "prism365_receipt",
           "prism365_receipt_item",
+          "prism365_destination",
+          "prism365_delivery",
         ]) {
           const exists = await postgres.tenant(tenantId, (sql) =>
             sql.query<{ present: boolean }>("SELECT to_regclass($1) IS NOT NULL AS present", [

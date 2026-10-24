@@ -14,6 +14,13 @@ services:
       SIGNINS_TIME_ZONE: ${SIGNINS_TIME_ZONE:-}
       DIRECTORY_CHANGES_LATE_MINUTES: ${DIRECTORY_CHANGES_LATE_MINUTES:-}
       DIRECTORY_CHANGES_RETENTION_DAYS: ${DIRECTORY_CHANGES_RETENTION_DAYS:-}
+      # Alerts (docs/alerts.md). The relay password is a file in the secrets directory, mounted at
+      # /run/secrets, never a variable.
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_PASSWORD_FILE: ${SMTP_PASSWORD_FILE:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      ALERT_EMAIL_DOMAINS: ${ALERT_EMAIL_DOMAINS:-}
+      WEBHOOK_ALLOWED_PORTS: ${WEBHOOK_ALLOWED_PORTS:-}
       # Caddy is the only client and replaces any X-Forwarded-For a browser sends.
       TRUST_PROXY_HOPS: "1"
     depends_on:

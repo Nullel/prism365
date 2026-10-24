@@ -165,6 +165,7 @@ export async function loadCoreMigrations(): Promise<Migration[]> {
     "004-audit-runs.sql",
     "005-audit-trends.sql",
     "006-handoffs.sql",
+    "007-delivery.sql",
   ];
   return Promise.all(
     files.map(async (file) => ({

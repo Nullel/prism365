@@ -91,6 +91,16 @@ before evidence access/disclosure, minimizes fields, preserves structural covera
 invented citations and prohibited workforce claims. Its local transport rejects redirects and caps
 streamed responses. Private package imports are encrypted and unreviewed, with no execution path.
 
+Alert delivery (ADR-0011) is the one path that sends data out on the server's own initiative. It
+never uses Graph. Webhook addresses are HTTPS host names only, resolved at send time with every
+answer checked against loopback, private, link-local, CGNAT, multicast, reserved and metadata
+ranges in IPv4 and IPv6, then connected to by the checked address, so DNS rebinding cannot move
+the request; no redirects, a 10 second deadline and a 64 KB read cap. Addresses and signing
+secrets are encrypted and bound to their row, requests are HMAC-signed, SMTP requires TLS and
+reads its password only from a file, recipients are limited to `ALERT_EMAIL_DOMAINS`, and full IP
+addresses leave only for email with details on. The sink only buffers, so a stuck destination
+cannot stall collection.
+
 PostgreSQL enforces tenant policies and restricts runtime ledger updates/deletes. State encryption
 binds tenant/kind/key; atomic consumption and update-only refresh block OAuth replay and logged-out
 session resurrection. Expired state is pruned; audit retention, key rotation, restore testing,

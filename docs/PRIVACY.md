@@ -131,6 +131,23 @@ a handoff stays while a kept receipt answers it.
 Exporting, importing and reading them each write an access-ledger entry with ids and counts, not
 names or the tool's text.
 
+## Alerts
+
+Alerts (`docs/alerts.md`, ADR-0011) send data out of the server, to the operator's own mail relay
+or to a webhook an administrator names; never through Microsoft. By default an alert holds its
+title, severity, counts, the subject's label (which can be a person's name) and a link back. A
+destination's "include details" switch adds a finding's summary and evidence fields. A full IP
+address leaves only for email, whose recipients must be in `ALERT_EMAIL_DOMAINS`, with details on;
+everywhere else addresses are cut to their network. A scheduled export attaches the audit's CSV,
+every column included, only to email with details on, up to 5 MB. The weekly summary holds
+counts only.
+
+Prism365 keeps no copy of what it sends. The delivery log holds where each delivery went, what
+sent it, how many items it covered and how it went, for 90 days, with short digests of the
+subjects for quiet periods. Webhook addresses and signing secrets are stored encrypted; email
+recipients are stored as typed. Every change and every delivery writes an access-ledger entry
+with ids and counts.
+
 ## Retention defaults
 
 Final durations will be configured during the storage milestone. The design baseline is:
