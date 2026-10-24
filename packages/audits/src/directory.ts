@@ -78,6 +78,11 @@ const userSchema = z.object({
   accountEnabled: flag,
   createdDateTime: rawDate,
   onPremisesSyncEnabled: flag,
+  // Microsoft returns these two only when they are selected (see readUsers). The date is kept as
+  // sent, like the other dates an audit counts from, so a malformed one is not read as "never".
+  lastPasswordChangeDateTime: rawDate,
+  // A comma-separated list: DisablePasswordExpiration, DisableStrongPassword.
+  passwordPolicies: text,
   department: text,
   jobTitle: text,
   externalUserState: text,
@@ -166,11 +171,18 @@ const status = (error: unknown) => (error instanceof GraphRequestError ? error.s
 // refuses it (no Entra ID P1/P2, no reports role); "optional" reads without it instead.
 export async function readUsers(
   context: AuditContext,
-  options: { signInActivity: "required" | "optional"; groupAssignment?: boolean },
+  options: {
+    // "none" never asks for sign-in dates, for an audit that has no use for them.
+    signInActivity: "required" | "optional" | "none";
+    groupAssignment?: boolean;
+    // Adds the password change date and the password policy flags.
+    passwords?: boolean;
+  },
 ): Promise<UserRead> {
-  let signIn: UserRead["signInActivity"] = context.granted.has("AuditLog.Read.All")
-    ? "read"
-    : "not_granted";
+  let signIn: UserRead["signInActivity"] =
+    options.signInActivity !== "none" && context.granted.has("AuditLog.Read.All")
+      ? "read"
+      : "not_granted";
   if (signIn === "not_granted" && options.signInActivity === "required")
     throw new GraphRequestError(403);
   let groups = Boolean(options.groupAssignment);
@@ -179,6 +191,7 @@ export async function readUsers(
       ...baseFields,
       ...(signIn === "read" ? ["signInActivity"] : []),
       ...(groups ? ["licenseAssignmentStates"] : []),
+      ...(options.passwords ? ["lastPasswordChangeDateTime", "passwordPolicies"] : []),
     ];
     try {
       const read = await readUserPages(context, fields, signIn === "read" ? 500 : 999);

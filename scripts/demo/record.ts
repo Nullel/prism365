@@ -62,6 +62,8 @@ const features = [
   "devices.intune.read",
   "directory.applications.read",
   "directory.permission-grants.read",
+  "directory.roles.read",
+  "directory.domains.read",
   "reports.usage.read",
   "reports.settings.read",
 ] as const;
@@ -79,6 +81,8 @@ const scopes = [
   "Directory.Read.All",
   "Reports.Read.All",
   "ReportSettings.Read.All",
+  "RoleManagement.Read.Directory",
+  "Domain.Read.All",
 ];
 const origin = "http://localhost:5173";
 const tenantId = SYNTHETIC_TENANT_ID;

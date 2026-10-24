@@ -10,6 +10,8 @@ import { guestAccountsAudit } from "./guests.ts";
 import { inactiveAccountsAudit } from "./inactive.ts";
 import { m365AppUsageAudit } from "./m365-app-usage.ts";
 import { mfaRegistrationAudit } from "./mfa.ts";
+import { passwordsAudit } from "./passwords.ts";
+import { privilegedRolesAudit } from "./privileged-roles.ts";
 import { licenseReclaimAudit } from "./reclaim.ts";
 import { riskyUsersAudit } from "./risky-users.ts";
 
@@ -70,6 +72,8 @@ export {
   licenseCapacityAudit,
   licenseReclaimAudit,
   mfaRegistrationAudit,
+  passwordsAudit,
+  privilegedRolesAudit,
 };
 
 // Built-in audits, in the order the page lists them. A new audit is a new entry here.
@@ -85,6 +89,8 @@ export const builtInAudits: readonly Audit[] = [
   appConsentsAudit,
   m365AppUsageAudit,
   accountActivityAudit,
+  privilegedRolesAudit,
+  passwordsAudit,
 ];
 
 function permissionsOf(packs: readonly GraphFeatureId[]): string[] {

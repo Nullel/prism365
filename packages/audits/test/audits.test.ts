@@ -298,6 +298,7 @@ const ownTenant = new Set([
   "apps.consents",
   "usage.m365-apps",
   "accounts.activity",
+  "directory.privileged-roles",
 ]);
 
 describe("audit definitions", () => {
