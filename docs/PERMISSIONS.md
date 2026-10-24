@@ -101,7 +101,7 @@ packs are added only when named or with `--features all`, and `directory.permiss
 - Broad Purview `AuditLogsQuery.Read.All` without a reviewed feature case.
 - A permission added only because it makes an implementation simpler.
 
-## Future lifecycle action packs — disabled
+## Future lifecycle action packs (disabled)
 
 The preview contracts name these permissions so an administrator can understand the eventual
 impact. They are not requested by the current app, are not present in the executable read catalog,

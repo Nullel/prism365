@@ -121,7 +121,7 @@ workspace switcher reads "Your organization / Microsoft 365 workspace", the demo
 gone. Open User Intelligence and look up a test user; the licence and sign-in sections each
 report their own state.
 
-### 2.5 Two code fixes before the pilot (GREEN, mech)
+### 2.5 Two code fixes before the pilot (GREEN)
 
 1. **Surface a failed sign-in.** Done 2026-10-22 (`readAuthNotice` in `App.tsx`, category log in `app.ts`). Both failure paths in `/v1/auth/callback` redirect to
    `/?auth=failed`, and nothing in `apps/web` reads that parameter, so a rejected operator
