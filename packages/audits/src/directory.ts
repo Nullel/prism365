@@ -252,6 +252,31 @@ export function licensesOf(user: DirectoryUser, names: Map<string, string> | nul
     .sort((a, b) => a.localeCompare(b));
 }
 
+// How the licenses an account holds reached it: assigned to the account itself, by groups, or
+// both. `known` is false when Microsoft's assignment states were not read.
+export interface LicenseSources {
+  known: boolean;
+  direct: boolean;
+  // The groups that assigned a license the account holds, each once.
+  groupIds: string[];
+}
+
+export function licenseSourcesOf(user: DirectoryUser): LicenseSources {
+  const states = user.licenseAssignmentStates;
+  if (!states) return { known: false, direct: false, groupIds: [] };
+  const held = new Set(user.assignedLicenses);
+  const relevant = states.filter((state) => state.skuId && held.has(state.skuId));
+  return {
+    known: true,
+    direct: relevant.some((state) => !state.assignedByGroup),
+    groupIds: [
+      ...new Set(
+        relevant.flatMap((state) => (state.assignedByGroup ? [state.assignedByGroup] : [])),
+      ),
+    ],
+  };
+}
+
 export const licenseNamesNote =
   "License names could not be read (LicenseAssignment.Read.All), so licenses show Microsoft's product IDs.";
 

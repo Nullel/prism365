@@ -1,5 +1,6 @@
 import { type AuditDefinition, auditDefinitionSchema } from "@prism365/contracts";
 import { type GraphFeatureId, permissionPacks } from "@prism365/graph";
+import { accountActivityAudit } from "./account-activity.ts";
 import { appConsentsAudit } from "./app-consents.ts";
 import { licenseCapacityAudit } from "./capacity.ts";
 import { conditionalAccessAudit } from "./conditional-access.ts";
@@ -13,6 +14,20 @@ import { licenseReclaimAudit } from "./reclaim.ts";
 import { riskyUsersAudit } from "./risky-users.ts";
 
 // The devices, app consents and Microsoft 365 app usage audits, and what they share.
+export {
+  ACTIVE_DAYS,
+  type Availability,
+  accountActivityAudit,
+  availabilityOf,
+  type Evidence,
+  evidenceOf,
+  LARGE_MAILBOX_BYTES,
+  QUIET_DAYS,
+  VERDICTS,
+  type Verdict,
+  verdictOf,
+} from "./account-activity.ts";
+export { MAX_MEMBERSHIP_ACCOUNTS, MEMBERSHIP_CONCURRENCY } from "./activity-groups.ts";
 export {
   appConsentsAudit,
   HIGH_RISK_PERMISSIONS,
@@ -69,6 +84,7 @@ export const builtInAudits: readonly Audit[] = [
   managedDevicesAudit,
   appConsentsAudit,
   m365AppUsageAudit,
+  accountActivityAudit,
 ];
 
 function permissionsOf(packs: readonly GraphFeatureId[]): string[] {

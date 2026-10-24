@@ -70,7 +70,10 @@ the button is pressed. The address also lands in that browser's history.
 
 Each audit run stores the rows it found in `prism365_audit_run`: account names, sign-in names,
 last sign-in dates, account state, license names and, for the MFA audit, registered method types
-(never the phone numbers or keys themselves). The newest 10 successful and 5 failed runs per
+(never the phone numbers or keys themselves). The Account activity audit adds, for each account,
+the dates and counts of its recent use of mail, Teams, OneDrive and SharePoint, its mailbox and
+OneDrive sizes, and the names of its groups and directory roles. It never stores message or file
+content, and the counts are not a measure of anyone's work. The newest 10 successful and 5 failed runs per
 audit are kept and older ones deleted. Starting a run, opening a result and exporting it each write an access-ledger
 entry that names the audit and the run, not an account. A downloaded CSV is outside Prism365's
 retention and should be handled like the directory export it is.

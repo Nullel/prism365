@@ -37,7 +37,7 @@ const forms = [
 ];
 const EARLIEST = Date.parse("2000-01-01T00:00:00Z");
 // Microsoft hides names behind MD5 hashes, which are 32 hexadecimal characters.
-const HASHED = /^[0-9a-f]{32}$/i;
+export const HASHED = /^[0-9a-f]{32}$/i;
 
 const apps = [
   { key: "outlook", label: "Outlook" },
@@ -169,14 +169,14 @@ const settingsSchema = z.object({
     .transform((value) => value ?? null),
 });
 
-interface Setting {
+export interface Setting {
   // true when Microsoft says names are concealed, false when it says they are shown, null when
   // the setting was not read.
   concealed: boolean | null;
   why: "read" | "not_granted" | "refused";
 }
 
-async function readSetting(context: AuditContext): Promise<Setting> {
+export async function readSetting(context: AuditContext): Promise<Setting> {
   if (!context.granted.has("ReportSettings.Read.All"))
     return { concealed: null, why: "not_granted" };
   try {
@@ -239,7 +239,7 @@ export function createM365AppUsageAudit(options: UsageAuditOptions = {}): Audit 
       version: 1,
       title: "Microsoft 365 app usage",
       description:
-        "Which accounts used Outlook, Word, Excel, PowerPoint, OneNote or Teams in the last 90 days, on which platforms, and which used none: reclaim candidates the license audits cannot see.",
+        "Which accounts used Outlook, Word, Excel, PowerPoint, OneNote or Teams in the last 90 days, on which platforms, and which used none: reclaim candidates the license audits cannot see. For mail, Teams, OneDrive and SharePoint activity, see Account activity.",
       category: "Licenses",
       subject: { one: "account", many: "accounts" },
       columns: [

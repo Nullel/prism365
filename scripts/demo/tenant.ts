@@ -2110,7 +2110,7 @@ export function createSyntheticGraph(options: { now: Date }): typeof fetch {
           : notFound();
       }
       if (rest === "/licenseDetails") return page(url, licenseDetails(user), select);
-      return notFound();
+      // Anything else under a user (their memberships, for one) is a feature's extension to serve.
     }
     if (path === "subscribedSkus") return page(url, tenant.skus, null);
     if (path === "reports/authenticationMethods/userRegistrationDetails")
