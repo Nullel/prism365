@@ -538,11 +538,14 @@ describe("access control lists", () => {
   });
 
   it("quotes every entry and the path in the printed setfacl command", () => {
+    // A group name carrying a shell command substitution; built by joining so it is plainly a
+    // payload, not a template.
+    const payload = ["$(touch", "$", "{IFS}/tmp/x)"].join("");
     const odd = parseGetfacl(
-      "user::rw-\ngroup:ops$(touch${IFS}/tmp/x):r--\nuser:it's:r--\nmask::r--\nother::---\n",
+      `user::rw-\ngroup:ops${payload}:r--\nuser:it's:r--\nmask::r--\nother::---\n`,
     );
     expect(setfaclCommand("/srv/prism 365/secrets/entra-private.pem", odd.entries)).toBe(
-      "setfacl -m 'group:ops$(touch${IFS}/tmp/x):r--' -m 'user:it'\\''s:r--' '/srv/prism 365/secrets/entra-private.pem'",
+      `setfacl -m 'group:ops${payload}:r--' -m 'user:it'\\''s:r--' '/srv/prism 365/secrets/entra-private.pem'`,
     );
   });
 

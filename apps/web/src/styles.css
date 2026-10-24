@@ -3678,6 +3678,7 @@ button.audit-tile:hover {
   font-size: var(--text-sm);
   font-weight: 550;
   cursor: pointer;
+}
 
 /* Handoffs -------------------------------------------------------------- */
 
