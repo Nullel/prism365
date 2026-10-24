@@ -4,6 +4,7 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresModuleDatabase, PostgresStateStore, runPostgresMigrations } from "../src/index.ts";
 import { isolationSuite, probeScope } from "./module-isolation-suite.ts";
+import { holdPostgresSuiteLock } from "./postgres-suite-lock.ts";
 
 // This public password belongs only to the disposable CI database; it is not a secret.
 const syntheticPassword = "Prism365_Synthetic_Database_Test_Only_12345";
@@ -14,6 +15,15 @@ const actor = randomUUID();
 const suffix = randomBytes(8).toString("hex");
 const databaseName = `prism365_test_${suffix}`;
 const ownerRole = `prism365_test_owner_${suffix}`;
+
+// Taken before any suite in this file and released after the last: see postgres-suite-lock.ts.
+let releaseSuiteLock: (() => Promise<void>) | undefined;
+beforeAll(async () => {
+  if (adminUrl) releaseSuiteLock = await holdPostgresSuiteLock(adminUrl);
+}, 180_000);
+afterAll(async () => {
+  await releaseSuiteLock?.();
+});
 
 function identifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;

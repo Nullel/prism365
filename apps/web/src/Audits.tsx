@@ -22,7 +22,8 @@ import {
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AccountName, day, number, post, readJson, when } from "./common.tsx";
 import { CopyButton, useCopy } from "./CopyButton.tsx";
-import { CheckIcon, CopyIcon, DownloadIcon } from "./icons.tsx";
+import { downloadHandoff } from "./Handoffs.tsx";
+import { ArrowUpRightIcon, CheckIcon, CopyIcon, DownloadIcon } from "./icons.tsx";
 
 // Audits: checks an administrator runs when they need them. The catalog lists every audit with
 // its last result; an audit's page shows a run as a table the audit describes itself, so a new
@@ -551,21 +552,48 @@ function SummaryTiles({
   );
 }
 
-export function exportHref(
-  run: AuditRun,
-  query: {
-    view: string;
-    search: string;
-    sort: { column: string; direction: "asc" | "desc" };
-    facets: Record<string, string>;
-  },
-): string {
+interface ExportQuery {
+  view: string;
+  search: string;
+  sort: { column: string; direction: "asc" | "desc" };
+  facets: Record<string, string>;
+}
+
+// The page's view, search, sort and filters as export parameters. The CSV and the handoff take
+// the same ones, and the server reads both the same way, so they always hold the same rows.
+function exportParams(query: ExportQuery): URLSearchParams {
   const params = new URLSearchParams({ view: query.view });
   if (query.search.trim()) params.set("search", query.search.trim());
   params.set("sort", query.sort.column);
   params.set("direction", query.sort.direction);
   for (const [key, value] of Object.entries(query.facets)) if (value) params.set(`f.${key}`, value);
-  return `/api/v1/audit-runs/${encodeURIComponent(run.id)}/export.csv?${params.toString()}`;
+  return params;
+}
+
+export function exportHref(run: AuditRun, query: ExportQuery): string {
+  return `/api/v1/audit-runs/${encodeURIComponent(run.id)}/export.csv?${exportParams(query).toString()}`;
+}
+
+// The handoff for the same rows, with the columns the page shows as each account's evidence.
+export function handoffHref(run: AuditRun, query: ExportQuery, columns: readonly string[]): string {
+  const params = exportParams(query);
+  params.set("columns", columns.join(","));
+  return `/api/v1/audit-runs/${encodeURIComponent(run.id)}/handoff.json?${params.toString()}`;
+}
+
+export const handoffNote =
+  "A handoff is a list for the tool that acts on it. Prism365 itself changes nothing.";
+const HANDOFF_NOTED = "prism365.handoff.noted";
+
+// True the first time this browser exports a handoff. Without storage, every time.
+function firstHandoff(): boolean {
+  try {
+    if (localStorage.getItem(HANDOFF_NOTED)) return false;
+    localStorage.setItem(HANDOFF_NOTED, "1");
+  } catch {
+    // Private mode or blocked storage: show the note again rather than never.
+  }
+  return true;
 }
 
 // Copies the address of every row the current view, search and filters leave, not only the rows
@@ -632,6 +660,11 @@ export function ResultTable({
     () => (hasPeople ? rowEmails(definition.columns, rows) : []),
     [definition.columns, hasPeople, rows],
   );
+  const [handoff, setHandoff] = useState({ busy: false, error: "", noted: false });
+  // Only an audit of accounts an action tool works on offers a handoff, and only for a run whose
+  // rows name accounts by their directory id.
+  const handoffable =
+    definition.handoff && hasPeople && run.rows.some((row) => Boolean(row.personId));
   const queryKey = JSON.stringify([view, facets, search, sort]);
   const limit = page.key === queryKey ? page.limit : PAGE_ROWS;
   const columns = definition.columns.filter((column) => shown.has(column.key));
@@ -639,6 +672,26 @@ export function ResultTable({
     (column) => column.facet && (options[column.key]?.length ?? 0) > 1,
   );
   const activeView = definition.views.find((item) => item.id === view);
+  async function exportForAction() {
+    setHandoff((current) => ({ ...current, busy: true, error: "" }));
+    try {
+      await downloadHandoff(
+        handoffHref(
+          run,
+          { view, search, sort, facets },
+          columns.map((column) => column.key),
+        ),
+      );
+      const first = firstHandoff();
+      setHandoff((current) => ({ busy: false, error: "", noted: current.noted || first }));
+    } catch (problem) {
+      setHandoff((current) => ({
+        ...current,
+        busy: false,
+        error: problem instanceof Error ? problem.message : "The handoff could not be exported.",
+      }));
+    }
+  }
   const toggleSort = (column: AuditColumn) =>
     setSort((current) =>
       current.column === column.key
@@ -730,8 +783,24 @@ export function ResultTable({
             >
               <DownloadIcon /> Export CSV
             </a>
+            {handoffable ? (
+              <button
+                className="button button--secondary"
+                type="button"
+                disabled={handoff.busy}
+                onClick={() => void exportForAction()}
+              >
+                <ArrowUpRightIcon /> {handoff.busy ? "Exporting…" : "Export for action"}
+              </button>
+            ) : null}
           </div>
         </div>
+        {handoff.noted ? <p className="audit-note handoff-note">{handoffNote}</p> : null}
+        {handoff.error ? (
+          <p className="form-error" role="alert">
+            {handoff.error}
+          </p>
+        ) : null}
         <p className="audit-count" aria-live="polite">
           {plural(rows.length, definition.subject.one, definition.subject.many)}
           {activeView && activeView.tags.length > 0 ? ` in “${activeView.label}”` : ""}

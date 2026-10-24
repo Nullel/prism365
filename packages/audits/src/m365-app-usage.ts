@@ -233,6 +233,9 @@ export function createM365AppUsageAudit(options: UsageAuditOptions = {}): Audit 
   return {
     definition: {
       id: "usage.m365-apps",
+      // No handoff: the report names accounts only by sign-in name, so no row carries the
+      // directory id an action tool acts on (docs/handoff.md).
+      handoff: false,
       version: 1,
       title: "Microsoft 365 app usage",
       description:

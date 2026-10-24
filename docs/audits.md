@@ -110,6 +110,7 @@ All routes need a signed-in administrator; the POST also needs the CSRF header.
 | `GET /v1/audits/{auditId}/runs` | The last runs, without rows |
 | `GET /v1/audit-runs/{runId}` | One run with its rows (no rows while running) |
 | `GET /v1/audit-runs/{runId}/export.csv` | CSV of the run; `view`, `search`, `sort`, `direction` and `f.<column>` filter it |
+| `GET /v1/audit-runs/{runId}/handoff.json` | The same accounts as a handoff for an action tool, for audits that list accounts ([Handoffs](handoff.md)) |
 | `GET /v1/settings/audits` | The saved scope and the domains to choose from, with how many accounts each holds (section 9) |
 | `POST /v1/settings/audits` | Saves `{ "domains": [...] }` and returns what the GET returns; 400 unless the body is a list of up to 100 domain names |
 
@@ -130,6 +131,9 @@ An audit is one object implementing `Audit` in `packages/audits/src/definition.t
 - `scoped`: true when the audit covers only the account domains the administrator chose (section
   9). A scoped audit keeps only the accounts `inAuditScope` accepts before it computes rows,
   tiles and notes, starts its notes with `scopeNote`, and has the shared `domainColumn`.
+- `handoff` (in the definition): true only when the rows are accounts an action tool could act
+  on, which offers Export for action on the results ([Handoffs](handoff.md)). A person column
+  alone is not enough: a device's owner is a person, the device is not an account.
 - `forbidden`: what to tell the administrator when Microsoft returns 403.
 - `run(context)`: read, then return rows (each with tags), summary tiles, notes, and whether the
   read was complete. Parse provider records leniently and count what could not be read; never

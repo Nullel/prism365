@@ -33,6 +33,8 @@ function invitation(state: string | null): "Accepted" | "Not accepted" | "Unknow
 export const guestAccountsAudit: Audit = {
   definition: {
     id: "guests.review",
+    // Accounts an action tool could act on (docs/handoff.md).
+    handoff: true,
     version: 1,
     title: "Guest accounts",
     description:

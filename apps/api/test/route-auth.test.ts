@@ -58,6 +58,10 @@ describe("route authorization", () => {
       "/v1/automation/packages",
       "/v1/investigations/user?email=alex@example.invalid",
       "/v1/ai/status",
+      "/v1/handoffs",
+      "/v1/receipts/44444444-4444-4444-8444-444444444444",
+      "/v1/people/user-1/receipts",
+      "/v1/audit-runs/44444444-4444-4444-8444-444444444444/handoff.json",
     ])
       for (const url of [path, encode(path), `/api${encode(path)}`]) {
         const response = await app.inject({ method: "GET", url });
@@ -75,6 +79,7 @@ describe("route authorization", () => {
       "/v1/collection/stop",
       "/v1/findings/44444444-4444-4444-8444-444444444444/state",
       "/v1/auth/logout",
+      "/v1/receipts",
     ]) {
       const response = await app.inject({
         method: "POST",
