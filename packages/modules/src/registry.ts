@@ -183,8 +183,9 @@ export function validateModule(module: PrismModule): string[] {
       );
   }
 
-  // The namespace is the module id up to its first dot, so a module can never name another
-  // feature's setting ("attention", "audits.scope") however it is written.
+  // The namespace is the module id up to its first dot, so "signins.audit" can read only
+  // "signins." keys. Module ids are first-party and the registry refuses a repeated id, so no
+  // module is named after a core setting's namespace such as "audits" or "attention".
   const namespace = `${id.split(".")[0]}.`;
   const settings = new Set<string>();
   for (const key of module.settings ?? []) {
