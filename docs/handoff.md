@@ -292,9 +292,11 @@ Handoffs and receipts are kept 3 years by default. `HANDOFF_RETENTION_DAYS` (30 
 that. After a new handoff or receipt is stored and committed, Prism365 cleans up in a short
 transaction of its own: up to 5,000 items of receipts imported before the retention period, the
 old receipts left with no items, and up to 5,000 old handoffs that no kept receipt answers. A
-larger backlog clears over the next few. The clean-up never waits for rows another request
-holds (it skips them for a later one) and never fails or delays the request it follows; a failure
-is logged by its kind only. Age is measured by the database's clock, which also stamps every
+larger backlog clears 5,000 items per store, so after lowering the retention, or when expiring
+receipts are larger than 5,000 items, old data can outlive the retention period for a while. The
+clean-up never waits for rows another request holds (it skips them for a later one) and never
+fails the request it follows, though the request waits for it to finish, usually well under a
+second and at most its 10-second limit; a failure is logged by its kind only. Age is measured by the database's clock, which also stamps every
 `imported_at`; if the database's clock reads earlier than the newest import, it was set back, and
 nothing is deleted until it catches up. Nothing else deletes handoffs or receipts. See also
 `docs/PRIVACY.md`.
