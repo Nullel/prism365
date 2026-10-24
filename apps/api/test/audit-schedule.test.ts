@@ -23,6 +23,8 @@ import {
   scheduleLimits,
 } from "../src/audit-schedule.ts";
 import type { AuditRunner } from "../src/audits.ts";
+import { digest } from "../src/identity.ts";
+import { DelegatedSessionCredential } from "../src/modules.ts";
 import { actorId, auditHarness, manualTimers, otherActorId, tenantId } from "./audit-harness.ts";
 
 // Scheduled audits: the scheduler on a fake clock with a fake runner, then wired into the app with
@@ -954,6 +956,74 @@ describe("scheduled audits in the app", () => {
       expect(
         h.store.audit.filter((entry) => entry.event.type === "collection.started"),
       ).toHaveLength(2);
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("replace a binding Microsoft refused when the same session presses Start again", async () => {
+    const h = await auditHarness();
+    try {
+      await h.post("/v1/settings/audit-schedule", { audits: { "licenses.reclaim": "daily" } });
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      const bound = () => {
+        let credential: unknown = null;
+        h.scheduler.isBound((candidate) => {
+          credential = candidate;
+          return true;
+        });
+        return credential as DelegatedSessionCredential | null;
+      };
+      const first = bound();
+      // A scheduled run's token is refused, which marks the bound credential refused.
+      h.refuseTokens(true);
+      h.timers.fire("after");
+      await vi.waitFor(async () => {
+        expect((await runsOf(h, "licenses.reclaim")).map((run) => run.status)).toEqual(["failed"]);
+      });
+      expect(first?.refused).toBe(true);
+      h.refuseTokens(false);
+      const events: string[] = [];
+      h.scheduler.subscribe((event) => {
+        if (event.type === "collection.unbound") events.push(`unbound ${event.reason}`);
+        if (event.type === "collection.bound") events.push("bound");
+      });
+      await h.post("/v1/collection/start");
+      // Start retries the refused session with a new credential instead of keeping the old one.
+      expect(events).toEqual(["unbound replaced", "bound"]);
+      expect(bound()).not.toBe(first);
+      expect(bound()?.refused).toBe(false);
+      expect(bound()?.sessionKey).toBe(first?.sessionKey);
+    } finally {
+      await h.app.close();
+    }
+  }, 60_000);
+
+  it("pass the binding to another session of the same administrator when it presses Start", async () => {
+    const h = await auditHarness();
+    try {
+      await h.post("/v1/collection/start");
+      await h.scheduler.tick();
+      const handleOf = (session: { cookie: string }) => session.cookie.split("=")[1] ?? "";
+      const boundTo = (session: { cookie: string }) =>
+        h.scheduler.isBound(
+          (candidate) =>
+            candidate instanceof DelegatedSessionCredential &&
+            candidate.sessionKey === digest(handleOf(session)),
+        );
+      expect(boundTo(h.who)).toBe(true);
+      // The same administrator signs in again, in another browser.
+      const second = await h.signIn(actorId);
+      const events: string[] = [];
+      h.scheduler.subscribe((event) => {
+        if (event.type === "collection.unbound") events.push(`unbound ${event.reason}`);
+        if (event.type === "collection.bound") events.push("bound");
+      });
+      expect((await h.post("/v1/collection/start", undefined, second)).statusCode).toBe(200);
+      expect(events).toEqual(["unbound replaced", "bound"]);
+      expect(boundTo(second)).toBe(true);
+      expect(boundTo(h.who)).toBe(false);
     } finally {
       await h.app.close();
     }
