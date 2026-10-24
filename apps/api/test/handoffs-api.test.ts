@@ -17,11 +17,11 @@ import {
   PGliteModuleDatabase,
   type SqlClient,
 } from "@prism365/storage";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.ts";
 import { AuditRunner } from "../src/audits.ts";
 import { type AppConfig, type IdentityConfig, loadConfig } from "../src/config.ts";
-import { insertReceipt } from "../src/handoff-store.ts";
+import { insertReceipt, pruneHandoffs } from "../src/handoff-store.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../src/identity.ts";
 import { createModuleRegistry } from "../src/modules.ts";
 
@@ -93,6 +93,10 @@ const rows: AuditRow[] = [
 ];
 
 let failItemsFrom: number | null = null;
+// Makes every retention clean-up fail, to show it never fails the request it follows.
+let failPrune = false;
+// Makes the next receipt insert fail as a foreign key would, naming this constraint.
+let failReceiptInsertWith: string | null = null;
 // Makes the next look-up of a stored receipt answer "not found", as when another request stores
 // the same id between this request's check and its insert.
 let hideStoredReceiptOnce = false;
@@ -112,6 +116,23 @@ function failingItems(database: ModuleDatabase): ModuleDatabase {
           operation({
             query: <T extends object>(text: string, params?: readonly unknown[]) => {
               if (/^\s*SELECT[\s\S]*FROM prism365_(handoff|receipt)/.test(text)) handoffReads += 1;
+              if (failReceiptInsertWith && text.includes("INSERT INTO prism365_receipt (")) {
+                const constraint = failReceiptInsertWith;
+                failReceiptInsertWith = null;
+                return Promise.reject(
+                  Object.assign(new Error("Synthetic foreign key failure."), {
+                    code: "23503",
+                    constraint,
+                  }),
+                );
+              }
+              if (
+                failPrune &&
+                /^\s*DELETE FROM prism365_(receipt_item|receipt|handoff)\b/.test(text)
+              )
+                return Promise.reject(
+                  Object.assign(new Error("Synthetic lock."), { code: "40P01" }),
+                );
               if (
                 failItemsFrom !== null &&
                 text.includes("INSERT INTO prism365_receipt_item") &&
@@ -720,19 +741,40 @@ describe("receipt import", () => {
     });
   });
 
-  it("answers a receipt kept under another digest version as kept, never as a conflict", async () => {
+  it("calls only a failure of the receipt's own handoff key an unknown handoff", async () => {
+    const exported = handoffSchema.parse(
+      (await get(`/v1/audit-runs/${inactiveRun}/handoff.json?view=d90`)).json(),
+    );
+    // The handoff key, for a receipt that names a handoff: the handoff went for age.
+    failReceiptInsertWith = "prism365_receipt_handoff_fkey";
+    const gone = await importReceipt(receipt(randomUUID(), [item()], { handoffId: exported.id }));
+    expect(gone.statusCode).toBe(400);
+    expect(gone.json().error).toBe("unknown_handoff");
+    // Any other key, or a receipt that names no handoff, is the server's failure.
+    failReceiptInsertWith = "prism365_receipt_item_receipt_fkey";
+    expect(
+      (await importReceipt(receipt(randomUUID(), [item()], { handoffId: exported.id }))).statusCode,
+    ).toBe(500);
+    failReceiptInsertWith = "prism365_receipt_handoff_fkey";
+    expect((await importReceipt(receipt(randomUUID(), [item()]))).statusCode).toBe(500);
+    failReceiptInsertWith = null;
+  });
+
+  it("refuses an id kept under another digest version, which it cannot compare", async () => {
     const id = randomUUID();
     expect((await importReceipt(receipt(id, [item()]))).statusCode).toBe(201);
-    // As a later Prism365 would have stored it, with a digest this one cannot compare.
+    // As another Prism365 would have stored it, with a digest this one cannot compare.
     await database.tenant(tenantId, (sql) =>
-      sql.query("UPDATE prism365_receipt SET digest=$2, digest_version=2 WHERE id=$1", [
-        id,
-        "f".repeat(64),
-      ]),
+      sql.query("UPDATE prism365_receipt SET digest_version=2 WHERE id=$1", [id]),
     );
+    // Even the very same body cannot be shown to be the same.
     const again = await importReceipt(receipt(id, [item()]));
-    expect(again.statusCode).toBe(200);
-    expect(again.json().imported).toBe(false);
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toEqual({
+      error: "receipt_not_comparable",
+      message:
+        "A receipt with this id was stored by another version of Prism365 and cannot be compared; send it with a new id.",
+    });
   });
 
   it("answers an import that lost the race for its id from what the winner kept", async () => {
@@ -977,7 +1019,6 @@ describe("receipt reads", () => {
       insertReceipt(sql, otherTenant, foreign, {
         digest: "0".repeat(64),
         digestVersion: 1,
-        importedAt: new Date(),
         importedBy: actorId,
       }),
     );
@@ -1071,5 +1112,103 @@ describe("retention", () => {
       await expect(loadConfig({ ...live, HANDOFF_RETENTION_DAYS: value }), value).rejects.toThrow(
         "HANDOFF_RETENTION_DAYS",
       );
+  });
+});
+
+describe("retention clean-up", () => {
+  // Each case in a tenant of its own, so the backlogs of other cases never count.
+  const freshTenant = () => randomUUID();
+  const oldReceipt = async (tenant: string, items: number, age = "4 years") => {
+    const id = randomUUID();
+    await database.tenant(tenant, async (sql) => {
+      await insertReceipt(
+        sql,
+        tenant,
+        receiptSchema.parse(
+          receipt(
+            id,
+            Array.from({ length: items }, (_, index) => item({ userId: `user-${index}` })),
+          ),
+        ),
+        { digest: "a".repeat(64), digestVersion: 1, importedBy: actorId },
+      );
+      await sql.query(
+        `UPDATE prism365_receipt SET imported_at = now() - $2::interval WHERE id=$1`,
+        [id, age],
+      );
+    });
+    return id;
+  };
+  const left = async (tenant: string) =>
+    (
+      await database.tenant(tenant, (sql) =>
+        sql.query<{ receipts: number; items: number }>(
+          `SELECT (SELECT count(*)::int FROM prism365_receipt) AS receipts,
+                  (SELECT count(*)::int FROM prism365_receipt_item) AS items`,
+        ),
+      )
+    ).rows[0];
+  const prune = (tenant: string, batch?: number) =>
+    database.tenant(tenant, (sql) =>
+      pruneHandoffs(sql, tenant, { days: 1_095, ...(batch ? { batch } : {}) }),
+    );
+
+  it("clears a backlog in bounded batches over several calls", async () => {
+    const tenant = freshTenant();
+    for (let index = 0; index < 3; index += 1) await oldReceipt(tenant, 2);
+    expect(await left(tenant)).toEqual({ receipts: 3, items: 6 });
+    const first = await prune(tenant, 4);
+    expect(first).toMatchObject({ items: 4, skipped: null });
+    // No call deletes more than its batch; a receipt goes once its items have.
+    expect(await left(tenant)).toEqual({ receipts: 1, items: 2 });
+    expect(await prune(tenant, 4)).toMatchObject({ items: 2, receipts: 1 });
+    expect(await left(tenant)).toEqual({ receipts: 0, items: 0 });
+    expect((await prune(tenant)).items).toBe(0);
+  });
+
+  it("measures age by the database's clock, which also stamps every import", async () => {
+    const tenant = freshTenant();
+    const stamped = await database.tenant(tenant, async (sql) => {
+      const id = randomUUID();
+      await insertReceipt(sql, tenant, receiptSchema.parse(receipt(id, [item()])), {
+        digest: "a".repeat(64),
+        digestVersion: 1,
+        importedBy: actorId,
+      });
+      return (
+        await sql.query<{ same: boolean }>(
+          "SELECT imported_at = now() AS same FROM prism365_receipt WHERE id=$1",
+          [id],
+        )
+      ).rows[0]?.same;
+    });
+    expect(stamped).toBe(true);
+    // PGlite runs in this process, so its clock is the server's; the PostgreSQL suite
+    // (handoffs-postgres.test.ts) shows the server's clock never decides.
+  });
+
+  it("deletes nothing when the database clock reads earlier than the newest import", async () => {
+    const tenant = freshTenant();
+    await oldReceipt(tenant, 1);
+    // A receipt stamped a day ahead of now(): the clock was set back since.
+    await oldReceipt(tenant, 1, "-1 day");
+    expect(await prune(tenant)).toEqual({ items: 0, receipts: 0, handoffs: 0, skipped: "clock" });
+    expect((await left(tenant))?.receipts).toBe(2);
+  });
+
+  it("never fails the import or export it follows", async () => {
+    const id = randomUUID();
+    failPrune = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await importReceipt(receipt(id, [item()]))).statusCode).toBe(201);
+      expect((await get(`/v1/audit-runs/${inactiveRun}/handoff.json`)).statusCode).toBe(200);
+      // Logged by its kind only.
+      expect(warn).toHaveBeenCalledWith("Prism365 handoff retention skipped (deadlock).");
+    } finally {
+      failPrune = false;
+      warn.mockRestore();
+    }
+    expect((await get(`/v1/receipts/${id}`)).statusCode).toBe(200);
   });
 });

@@ -176,19 +176,19 @@ A JSON object, strict at every level like the handoff: an unknown field anywhere
 | `version` | Always `1` |
 | `id` | A UUID the tool chooses for this receipt. Importing it twice keeps it once (section 5). |
 | `handoffId` | The `id` of the handoff this answers, or null for actions taken without one. It must be a handoff exported from the same Prism365 for the same tenant. |
-| `tool.name`, `tool.version` | The tool, 1 to 80 characters, and its version, 1 to 40. The name cannot be Prism365 (in any letter case or width): a receipt reports what another tool did. |
+| `tool.name`, `tool.version` | The tool, 1 to 80 characters, and its version, 1 to 40. The name cannot be or begin with Prism365 or "Prism 365", whatever its letter case, width, spacing or invisible characters: a receipt reports what another tool did. |
 | `performedAt` | When the tool did the work, ISO 8601 with a time zone (`Z` or an offset of at most 15:59), between the years 2000 and 2099 and no more than a day ahead of Prism365's clock. Kept in UTC. |
 | `performedBy` | The operator, as the tool names them, 1 to 200 characters |
 | `items` | What was done, 1 to 20,000 items |
 | `items[].userId` | The account's directory object id, or null |
 | `items[].userPrincipalName` | The account's principal name, at most 500 characters, or null. At least one of the two is required. |
-| `items[].action` | What was done, as a lower-case name of 2 to 80 letters, digits, dots and dashes starting with a letter, such as `account.sign-in-blocked`, `license.removed` or `mailbox.converted-to-shared`. Names starting with `prism365.` are kept for Prism365. Prism365 shows it as words ("Account sign in blocked"). |
+| `items[].action` | What was done, as a lower-case name of 2 to 80 letters, digits, dots and dashes starting with a letter, such as `account.sign-in-blocked`, `license.removed` or `mailbox.converted-to-shared`. Names starting with `prism365` followed by a separator, a letter or nothing are kept for Prism365. Prism365 shows it as words ("Account sign in blocked"). |
 | `items[].status` | `done`, `failed` or `skipped` |
 | `items[].detail` | Anything the operator should know, 0 to 500 characters |
 
 Before text is kept, it is trimmed (except `detail`), NUL characters are removed, broken UTF-16
-is replaced with U+FFFD, and characters that reorder how text is displayed (U+202A to U+202E,
-U+2066 to U+2069, U+200E and U+200F) are removed. Text over its limit is refused, never cut. Ids
+is replaced with U+FFFD, and characters that reorder how text is displayed (U+061C, U+202A to
+U+202E, U+2066 to U+2069, U+200E and U+200F) are removed. Text over its limit is refused, never cut. Ids
 that are GUIDs are kept in lower case.
 
 A complete example, answering the handoff above:
@@ -241,10 +241,12 @@ name ...`).
   Any other difference does, including the same time written another way (`Z` or `+00:00`).
   Sending a receipt whose id is already kept answers 200 with what was kept when the digest is
   the same, and 409 when it is not. Each digest is stored with the version of the method that
-  took it (`digest_version`, now 1); a receipt kept under another version cannot be compared and
-  is answered 200 as kept. A kept receipt never changes: a tool corrects itself with a new
-  receipt under a new id.
-- A `handoffId` that is not a handoff of this tenant is refused with 400.
+  took it (`digest_version`, now 1). A receipt kept under another version cannot be compared,
+  so neither sameness nor difference can be claimed: it is refused with 409 and asked to be sent
+  with a new id. A kept receipt never changes: a tool corrects itself with a new receipt under a
+  new id.
+- A `handoffId` that is not a handoff of this tenant is refused with 400, also when the handoff
+  is deleted for age while the import waits to store its receipt.
 - The receipt and its items are stored in one transaction: if any item fails to store, nothing
   of the receipt is kept, and sending it again imports it.
 - A receipt is at most 4 MB of JSON with at most 20,000 items. A tool with more splits its work
@@ -287,9 +289,15 @@ Core migration `006-handoffs.sql` adds three tenant tables with forced row-level
   principal name key.
 
 Handoffs and receipts are kept 3 years by default. `HANDOFF_RETENTION_DAYS` (30 to 3650) changes
-that. Whenever a new handoff or receipt is stored, in the same transaction, Prism365 deletes the
-receipts imported before the retention period with their items, and the handoffs exported before
-it that no kept receipt answers. Nothing else deletes them. See also `docs/PRIVACY.md`.
+that. After a new handoff or receipt is stored and committed, Prism365 cleans up in a short
+transaction of its own: up to 5,000 items of receipts imported before the retention period, the
+old receipts left with no items, and up to 5,000 old handoffs that no kept receipt answers. A
+larger backlog clears over the next few. The clean-up never waits for rows another request
+holds (it skips them for a later one) and never fails or delays the request it follows; a failure
+is logged by its kind only. Age is measured by the database's clock, which also stamps every
+`imported_at`; if the database's clock reads earlier than the newest import, it was set back, and
+nothing is deleted until it catches up. Nothing else deletes handoffs or receipts. See also
+`docs/PRIVACY.md`.
 
 The access ledger gets one entry for each export, import and read, with ids and counts, never
 names or anything the tool wrote:

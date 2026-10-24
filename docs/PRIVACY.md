@@ -86,8 +86,9 @@ sign-in names, the actions, their outcomes, the operator's name as the tool give
 text. Receipts are shown as the tool's claims, never checked against the tenant.
 
 Handoff records and receipts are kept 3 years by default, configurable with
-`HANDOFF_RETENTION_DAYS` from 30 to 3650 days. Older ones are deleted, receipt items included,
-whenever a new handoff or receipt is stored; a handoff stays while a kept receipt answers it.
+`HANDOFF_RETENTION_DAYS` from 30 to 3650 days, measured by the database's clock. Older ones are
+deleted, receipt items included, a batch at a time after each new handoff or receipt is stored;
+a handoff stays while a kept receipt answers it.
 Exporting, importing and reading them each write an access-ledger entry with ids and counts, not
 names or the tool's text.
 

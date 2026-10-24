@@ -297,9 +297,10 @@ export function handoffFileName(
 // Receipt v1: written by the action tool
 // ---------------------------------------------------------------------------------------------
 
-// Characters that reorder how the text around them is displayed. In a tool's name or a detail
-// they could make one thing read as another, and plain text never needs them.
-const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F]/g;
+// Characters that reorder how the text around them is displayed, the Arabic letter mark among
+// them. In a tool's name or a detail they could make one thing read as another, and plain text
+// never needs them.
+const BIDI_CONTROLS = /[\u061C\u202A-\u202E\u2066-\u2069\u200E\u200F]/g;
 
 // Text from the tool as it is kept: NUL removed and broken UTF-16 replaced (cleanText), and
 // direction controls removed.
@@ -323,7 +324,19 @@ export function principalKey(value: string): string {
   return value.normalize("NFKC").toLowerCase();
 }
 
-const reserved = (value: string) => value.normalize("NFKC").toLowerCase();
+// A name as it reads, for telling whether it claims to be Prism365: invisible code points
+// (Unicode's default-ignorable ones: zero-width spaces, soft hyphens, direction marks, the byte
+// order mark) removed, compatibility forms folded (NFKC), lower case, runs of white space as one.
+function asRead(value: string): string {
+  const visible = (text: string) => text.replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+  return visible(visible(value).normalize("NFKC").toLowerCase()).replace(/\s+/g, " ").trim();
+}
+
+// A tool name that reads as Prism365, or begins as if it were, such as "Prism 365 sync".
+export function claimsPrism365(name: string): boolean {
+  const read = asRead(name);
+  return read.startsWith("prism365") || read.startsWith("prism 365");
+}
 
 // The day a receipt may be ahead of the server's clock: two clocks never agree exactly, but a
 // receipt dated further ahead would sort first on every page for as long as it is kept.
@@ -355,8 +368,9 @@ const performedAt = time
 export const receiptActionSchema = z
   .string()
   .regex(/^[a-z][a-z0-9.-]{1,79}$/)
-  .refine((value) => !value.startsWith("prism365."), {
-    message: "starts with prism365., which is kept for Prism365's own names",
+  // "prism365" followed by a separator, a letter or nothing: kept for Prism365's own names.
+  .refine((value) => !/^prism365(?![0-9])/.test(value), {
+    message: "starts with prism365, which is kept for Prism365's own names",
   });
 export const receiptStatusSchema = z.enum(["done", "failed", "skipped"]);
 export type ReceiptStatus = z.infer<typeof receiptStatusSchema>;
@@ -388,7 +402,7 @@ export const receiptSchema = z.strictObject({
   handoffId: guid.nullable(),
   tool: z.strictObject({
     // Another tool's report can never pass for Prism365's own.
-    name: receiptText(1, 80).refine((value) => reserved(value) !== "prism365", {
+    name: receiptText(1, 80).refine((value) => !claimsPrism365(value), {
       message: "cannot be Prism365: a receipt reports what another tool did",
     }),
     version: receiptText(1, 40),

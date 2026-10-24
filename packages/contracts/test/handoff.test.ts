@@ -369,8 +369,11 @@ describe("receipt v1", () => {
       "account_disabled",
       "account disabled",
       "account/disabled",
-      // Kept for Prism365's own names.
+      // Kept for Prism365's own names: prism365 followed by a separator, a letter or nothing.
       "prism365.account.disabled",
+      "prism365-account.disabled",
+      "prism365account.disabled",
+      "prism365",
     ])
       expect(receiptSchema.safeParse(receipt({}, { action })).success, action).toBe(false);
   });
@@ -382,19 +385,29 @@ describe("receipt v1", () => {
   });
 
   it("never lets a receipt pass for Prism365's own", () => {
+    const named = (name: string) =>
+      receiptSchema.safeParse(receipt({ tool: { name, version: "1" } })).success;
     for (const name of [
       "Prism365",
       "prism365",
       " PRISM365 ",
+      "Prism365 helper",
+      "Prism 365",
+      "Prism  365 sync",
+      // Fullwidth letters and digits, folded by NFKC.
       "\uFF30\uFF52\uFF49\uFF53\uFF4D\uFF13\uFF16\uFF15",
+      // Invisible code points between the letters: zero-width space, soft hyphen, Arabic letter
+      // mark, byte order mark, a direction override.
+      "Pri\u200Bsm365",
+      "Pri\u00ADsm365",
+      "\u061CPrism365",
+      "\uFEFFPrism365",
       "\u202EPrism365",
+      "Prism\u3000365",
     ])
-      expect(receiptSchema.safeParse(receipt({ tool: { name, version: "1" } })).success, name).toBe(
-        false,
-      );
-    expect(
-      receiptSchema.safeParse(receipt({ tool: { name: "Prism365 helper", version: "1" } })).success,
-    ).toBe(true);
+      expect(named(name), JSON.stringify(name)).toBe(false);
+    for (const name of ["Example action tool", "Prisma 365", "Prismatic"])
+      expect(named(name), name).toBe(true);
     const result = receiptSchema.safeParse(receipt({ tool: { name: "Prism365", version: "1" } }));
     if (!result.success)
       expect(receiptProblem(receipt(), result.error)).toBe(
@@ -424,7 +437,7 @@ describe("receipt v1", () => {
         { tool: { name: "Example \u202Eloot\u202C tool", version: "\u2066 1.0\u2069" } },
         {
           userPrincipalName: "\u200Favery@example.invalid",
-          detail: "Blocked \u202Agnp.exe\u202C after \u2067review\u2069\u200E",
+          detail: "Blocked \u202Agnp.exe\u202C after \u2067review\u2069\u200E\u061C",
         },
       ),
     );
@@ -490,7 +503,7 @@ describe("receipt v1", () => {
       "performedAt is more than a day in the future. Check the clock of the computer the tool ran on.",
     );
     expect(problem(receipt({}, { action: "prism365.account.disabled" }))).toBe(
-      "items[0].action starts with prism365., which is kept for Prism365's own names.",
+      "items[0].action starts with prism365, which is kept for Prism365's own names.",
     );
   });
 

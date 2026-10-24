@@ -79,6 +79,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "Tools",
     items: [
       { label: "Live lookup", icon: SearchIcon, view: "users" },
+      { label: "Handoffs", icon: ArrowUpRightIcon, view: "handoffs" },
       { label: "Lifecycle automation", icon: SettingsIcon, view: "lifecycle" },
     ],
   },
@@ -563,6 +564,7 @@ const workspaceViews: readonly WorkspaceView[] = [
   "audits",
   "signins",
   "users",
+  "handoffs",
   "lifecycle",
   "access",
 ];

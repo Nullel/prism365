@@ -216,7 +216,6 @@ export function isolationSuite(name: string, open: () => Promise<Fixture>, enabl
             insertReceipt(sql, tenantA, receipt(index % 2 ? 1 : 2), {
               digest: (index % 2 ? "b" : "c").repeat(64),
               digestVersion: 1,
-              importedAt: new Date(),
               importedBy: tenantA,
             }),
           ),

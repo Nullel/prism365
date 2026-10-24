@@ -17,6 +17,7 @@ import {
   receiptProblem,
   receiptSchema,
 } from "@prism365/contracts";
+import type { ModuleDatabase } from "@prism365/storage";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { auditExportParamsSchema, auditExportQuery } from "../audit-export.ts";
@@ -83,10 +84,16 @@ export function receiptDigest(body: unknown): string {
 
 // A receipt id already stored: the same receipt again is answered as before, a different one is
 // refused. A kept receipt never changes; a tool corrects itself with a new receipt. A digest
-// taken another way cannot be compared, so a receipt kept under another version is answered as
-// kept rather than refused.
+// taken another way cannot be compared, so neither sameness nor difference can be claimed: the
+// receipt is refused and the tool asked for a new id.
 function answerStored(reply: FastifyReply, stored: StoredReceipt, digest: string) {
-  if (stored.digestVersion !== RECEIPT_DIGEST_VERSION || stored.digest === digest)
+  if (stored.digestVersion !== RECEIPT_DIGEST_VERSION)
+    return reply.status(409).send({
+      error: "receipt_not_comparable",
+      message:
+        "A receipt with this id was stored by another version of Prism365 and cannot be compared; send it with a new id.",
+    });
+  if (stored.digest === digest)
     return reply
       .status(200)
       .send(receiptImportSchema.parse({ receipt: stored.summary, imported: false }));
@@ -97,11 +104,38 @@ function answerStored(reply: FastifyReply, stored: StoredReceipt, digest: string
   });
 }
 
+// The kind of failure a retention clean-up met, for the log. Never the driver's message.
+function pruneFailure(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === "40P01") return "deadlock";
+  if (code === "55P03") return "lock";
+  if (code === "23503") return "reference";
+  if (error instanceof Error && error.name === "TransactionAbortedError") return "timeout";
+  return "error";
+}
+
+// The foreign key from a receipt to the handoff it answers (006-handoffs.sql).
+const HANDOFF_KEY = "prism365_receipt_handoff_fkey";
+
 export function registerHandoffRoutes(app: FastifyInstance, context: RouteContext): void {
   const { store } = context;
-  // Handoffs and receipts older than this are deleted when the next one is stored.
-  const retentionStart = () =>
-    new Date(Date.now() - context.settings.handoffRetentionDays * 86_400_000);
+
+  // Deletes a batch of handoffs and receipts past their retention, after a new one is stored and
+  // committed, in a short transaction of its own. It never holds up or fails the request it
+  // follows: what it cannot delete now (rows another request holds), a later one deletes, and a
+  // failure is logged by its kind only.
+  const pruneAfterStoring = async (database: ModuleDatabase, tenantId: string) => {
+    try {
+      const outcome = await database.tenant(
+        tenantId,
+        (sql) => pruneHandoffs(sql, tenantId, { days: context.settings.handoffRetentionDays }),
+        { timeoutMilliseconds: 10_000 },
+      );
+      if (outcome.skipped) console.warn(`Prism365 handoff retention skipped (${outcome.skipped}).`);
+    } catch (error) {
+      console.warn(`Prism365 handoff retention skipped (${pruneFailure(error)}).`);
+    }
+  };
 
   // The accounts in an audit's current view, with reasons and evidence, as a file for the tool
   // that acts on them. It takes the same parameters as the CSV export and parses them the same
@@ -170,8 +204,8 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
       occurredAt: handoff.generatedAt,
     });
     const { source } = handoff;
-    await modules.database.tenant(tenantId, async (sql) => {
-      await insertHandoff(sql, tenantId, {
+    await modules.database.tenant(tenantId, (sql) =>
+      insertHandoff(sql, tenantId, {
         id: handoff.id,
         auditId: source.auditId,
         auditTitle: source.auditTitle,
@@ -183,9 +217,9 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
         items: handoff.items.length,
         generatedAt: handoff.generatedAt,
         generatedBy: { id: session.actorId, name: handoff.generatedBy.name },
-      });
-      await pruneHandoffs(sql, tenantId, retentionStart());
-    });
+      }),
+    );
+    await pruneAfterStoring(modules.database, tenantId);
     return reply
       .header("Content-Type", "application/json; charset=utf-8")
       .header(
@@ -253,7 +287,6 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
       }));
       if (known.stored) return answerStored(reply, known.stored, digest);
       if (!known.handoff) return reply.status(400).send(unknownHandoff);
-      const importedAt = new Date();
       const counts = statusCounts(receipt);
       // The ledger entry comes before anything is stored, so no receipt is ever kept unrecorded.
       // Ids and counts only: nothing the tool wrote in its own words.
@@ -265,30 +298,29 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
         done: counts.done,
         failed: counts.failed,
         skipped: counts.skipped,
-        occurredAt: importedAt.toISOString(),
+        occurredAt: new Date().toISOString(),
       });
-      // The receipt and all its items in one transaction, with the retention clean-up after the
-      // insert: any item that fails keeps nothing.
+      // The receipt and all its items in one transaction: any item that fails keeps nothing.
       let outcome: Awaited<ReturnType<typeof insertReceipt>>;
       try {
-        outcome = await modules.database.tenant(tenantId, async (sql) => {
-          const stored = await insertReceipt(sql, tenantId, receipt, {
+        outcome = await modules.database.tenant(tenantId, (sql) =>
+          insertReceipt(sql, tenantId, receipt, {
             digest,
             digestVersion: RECEIPT_DIGEST_VERSION,
-            importedAt,
             importedBy: session.actorId,
-          });
-          if (stored.inserted) await pruneHandoffs(sql, tenantId, retentionStart());
-          return stored;
-        });
+          }),
+        );
       } catch (error) {
-        // The handoff was deleted for age between the check above and the insert.
-        if ((error as { code?: unknown } | null)?.code === "23503")
+        // The handoff was deleted for age between the check above and the insert. Only that key
+        // means so, and only for a receipt that names a handoff.
+        const failure = error as { code?: unknown; constraint?: unknown } | null;
+        if (receipt.handoffId && failure?.code === "23503" && failure.constraint === HANDOFF_KEY)
           return reply.status(400).send(unknownHandoff);
         throw error;
       }
       // Another request kept the same id a moment earlier.
       if (!outcome.inserted) return answerStored(reply, outcome, digest);
+      await pruneAfterStoring(modules.database, tenantId);
       return reply
         .status(201)
         .send(receiptImportSchema.parse({ receipt: outcome.summary, imported: true }));

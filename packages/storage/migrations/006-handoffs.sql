@@ -3,8 +3,8 @@
 -- Prism365 never acts on a tenant. A handoff is a list it exported from an audit for a separate
 -- tool to act on; a receipt is that tool's report of what it did. Receipts are kept as reported,
 -- as claims of the tool, never as state Prism365 checked. Nothing here is ever updated. Rows
--- older than the retention period (HANDOFF_RETENTION_DAYS, 3 years by default) are deleted
--- whenever a new handoff or receipt is stored.
+-- older than the retention period (HANDOFF_RETENTION_DAYS, 3 years by default) are deleted in
+-- small batches after a new handoff or receipt is stored, by the database's clock.
 
 -- One row per export: what was exported, by whom and when, and whether the run behind it was
 -- limited to some account domains or partial. The items themselves live only in the file the
@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS prism365_receipt (
   digest_version integer NOT NULL CHECK (digest_version > 0),
   CHECK (done_count + failed_count + skipped_count = items),
   PRIMARY KEY (tenant_id, id),
-  FOREIGN KEY (tenant_id, handoff_id) REFERENCES prism365_handoff (tenant_id, id)
+  -- Named, so the API can tell a receipt whose handoff is gone from any other failure.
+  CONSTRAINT prism365_receipt_handoff_fkey
+    FOREIGN KEY (tenant_id, handoff_id) REFERENCES prism365_handoff (tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS prism365_receipt_recent
   ON prism365_receipt (tenant_id, imported_at DESC);
@@ -76,7 +78,8 @@ CREATE TABLE IF NOT EXISTS prism365_receipt_item (
   CHECK (user_id IS NOT NULL OR user_principal_name IS NOT NULL),
   CHECK ((user_principal_name IS NULL) = (user_principal_key IS NULL)),
   PRIMARY KEY (tenant_id, receipt_id, position),
-  FOREIGN KEY (tenant_id, receipt_id) REFERENCES prism365_receipt (tenant_id, id)
+  CONSTRAINT prism365_receipt_item_receipt_fkey
+    FOREIGN KEY (tenant_id, receipt_id) REFERENCES prism365_receipt (tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS prism365_receipt_item_user
   ON prism365_receipt_item (tenant_id, user_id);

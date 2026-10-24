@@ -12,7 +12,7 @@ import type { SqlClient } from "@prism365/storage";
 // Handoffs and receipts in prism365_handoff, prism365_receipt and prism365_receipt_item
 // (migration 006-handoffs.sql). Every query is tenant-scoped twice: by the transaction's
 // row-security setting and by the tenant_id predicate. Nothing here updates a row: a receipt
-// stays as the tool reported it until its retention period ends.
+// stays as the tool reported it until its retention period ends (pruneHandoffs).
 
 export const LIST_LIMIT = 100;
 // Items per INSERT. Seven values a row keeps each statement well under the SQL guard's size
@@ -30,34 +30,80 @@ function scopeOf(value: unknown): string[] | null {
   return domains.length > 0 ? domains.slice(0, 100) : null;
 }
 
-// Deletes what is older than `before`: the items of old receipts, the receipts, then the old
-// handoffs no kept receipt answers (a receipt arrives after its handoff, so a handoff stays as
-// long as any receipt that answers it). It runs in the transaction that stores a new handoff or
-// receipt, after the insert, as pruneRuns does for audit runs, so retention needs no schedule.
+// Rows a single clean-up deletes at most from each table: a backlog clears over several calls,
+// and no one call comes near the transaction's time limit.
+export const PRUNE_BATCH = 5_000;
+
+export interface PruneOutcome {
+  items: number;
+  receipts: number;
+  handoffs: number;
+  // Why nothing was deleted, when the clean-up chose not to run.
+  skipped: "clock" | null;
+}
+
+// Deletes, in one short transaction of its own, a batch of what is older than the retention
+// period: items of old receipts, the old receipts with no items left, then the old handoffs no
+// kept receipt answers (a receipt arrives after its handoff, so a handoff stays as long as any
+// receipt that answers it). Age is measured by the database's clock, which also stamped every
+// imported_at; if that clock reads earlier than the newest receipt, it was set back, and nothing
+// is deleted. Rows another transaction holds (an import answering an old handoff holds it for its
+// foreign key) are skipped rather than waited for, so a clean-up never blocks, deadlocks with or
+// fails a request; whatever it skips, a later one deletes.
 export async function pruneHandoffs(
   sql: SqlClient,
   tenantId: string,
-  before: Date,
-): Promise<{ handoffs: number; receipts: number }> {
-  const at = before.toISOString();
-  await sql.query(
+  options: { days: number; batch?: number },
+): Promise<PruneOutcome> {
+  const batch = options.batch ?? PRUNE_BATCH;
+  const clock = await sql.query<{ behind: boolean | null }>(
+    "SELECT now() < max(imported_at) AS behind FROM prism365_receipt WHERE tenant_id=$1",
+    [tenantId],
+  );
+  if (clock.rows[0]?.behind) return { items: 0, receipts: 0, handoffs: 0, skipped: "clock" };
+  const cutoff = "now() - make_interval(days => $2)";
+  const items = await sql.query(
     `DELETE FROM prism365_receipt_item
-      WHERE tenant_id=$1
-        AND receipt_id IN (SELECT id FROM prism365_receipt WHERE tenant_id=$1 AND imported_at < $2)`,
-    [tenantId, at],
+      WHERE tenant_id=$1 AND (receipt_id, position) IN (
+        SELECT receipt_id, position FROM prism365_receipt_item
+         WHERE tenant_id=$1
+           AND receipt_id IN (SELECT id FROM prism365_receipt
+                               WHERE tenant_id=$1 AND imported_at < ${cutoff})
+         ORDER BY receipt_id, position
+         LIMIT $3
+           FOR UPDATE SKIP LOCKED)`,
+    [tenantId, options.days, batch],
   );
   const receipts = await sql.query(
-    "DELETE FROM prism365_receipt WHERE tenant_id=$1 AND imported_at < $2",
-    [tenantId, at],
+    `DELETE FROM prism365_receipt
+      WHERE tenant_id=$1 AND id IN (
+        SELECT r.id FROM prism365_receipt r
+         WHERE r.tenant_id=$1 AND r.imported_at < ${cutoff}
+           AND NOT EXISTS (SELECT 1 FROM prism365_receipt_item i
+                            WHERE i.tenant_id = r.tenant_id AND i.receipt_id = r.id)
+         ORDER BY r.imported_at
+         LIMIT $3
+           FOR UPDATE SKIP LOCKED)`,
+    [tenantId, options.days, batch],
   );
   const handoffs = await sql.query(
-    `DELETE FROM prism365_handoff h
-      WHERE h.tenant_id=$1 AND h.generated_at < $2
-        AND NOT EXISTS (SELECT 1 FROM prism365_receipt r
-                         WHERE r.tenant_id = h.tenant_id AND r.handoff_id = h.id)`,
-    [tenantId, at],
+    `DELETE FROM prism365_handoff
+      WHERE tenant_id=$1 AND id IN (
+        SELECT h.id FROM prism365_handoff h
+         WHERE h.tenant_id=$1 AND h.generated_at < ${cutoff}
+           AND NOT EXISTS (SELECT 1 FROM prism365_receipt r
+                            WHERE r.tenant_id = h.tenant_id AND r.handoff_id = h.id)
+         ORDER BY h.generated_at
+         LIMIT $3
+           FOR UPDATE SKIP LOCKED)`,
+    [tenantId, options.days, batch],
   );
-  return { handoffs: handoffs.rowCount, receipts: receipts.rowCount };
+  return {
+    items: items.rowCount,
+    receipts: receipts.rowCount,
+    handoffs: handoffs.rowCount,
+    skipped: null,
+  };
 }
 
 interface HandoffRow {
@@ -237,20 +283,21 @@ export function statusCounts(receipt: Receipt): Record<ReceiptStatus, number> {
 
 // Stores a validated receipt and every item. Call it inside one database.tenant() transaction:
 // an item that fails to store throws, and the transaction then keeps nothing of the receipt.
+// imported_at is the database's now(), the clock retention measures by.
 // A receipt whose id is already stored (imported by another request a moment earlier) is left
 // alone and returned as stored, with its digest, for the caller to compare.
 export async function insertReceipt(
   sql: SqlClient,
   tenantId: string,
   receipt: Receipt,
-  meta: { digest: string; digestVersion: number; importedAt: Date; importedBy: string },
+  meta: { digest: string; digestVersion: number; importedBy: string },
 ): Promise<({ inserted: true } | { inserted: false }) & StoredReceipt> {
   const counts = statusCounts(receipt);
   const inserted = await sql.query(
     `INSERT INTO prism365_receipt (tenant_id, id, handoff_id, tool_name, tool_version,
        performed_at, performed_by, items, done_count, failed_count, skipped_count, imported_at,
        imported_by, digest, digest_version)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12,$13,$14)
      ON CONFLICT (tenant_id, id) DO NOTHING
      RETURNING id`,
     [
@@ -265,7 +312,6 @@ export async function insertReceipt(
       counts.done,
       counts.failed,
       counts.skipped,
-      meta.importedAt.toISOString(),
       meta.importedBy,
       meta.digest,
       meta.digestVersion,
