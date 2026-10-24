@@ -17,8 +17,8 @@ import {
   type Severity,
 } from "@prism365/contracts";
 import { type FormEvent, useCallback, useEffect, useId, useState } from "react";
-import { number, post, readJson, when } from "./common.tsx";
 import { CopyButton } from "./CopyButton.tsx";
+import { number, post, readJson, when } from "./common.tsx";
 
 // Settings, Alerts: where Prism365 sends word of something that needs attention, and when. A
 // destination is an email list on the operator's own relay or a webhook (Teams, Slack, or any
@@ -904,6 +904,9 @@ function request(session: PrismSession, method: "POST" | "DELETE", body?: unknow
 }
 
 export function Alerts({ session }: { session: PrismSession }) {
+  // The public demo replays a live-mode server, so its session says "live"; the build flag is
+  // what marks it.
+  const demo = session.mode === "demo" || import.meta.env.VITE_DEMO === "true";
   const [overview, setOverview] = useState<AlertOverview | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [busy, setBusy] = useState(false);
@@ -924,11 +927,11 @@ export function Alerts({ session }: { session: PrismSession }) {
   }, []);
 
   useEffect(() => {
-    if (session.mode === "demo") return;
+    if (demo) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load, session.mode]);
+  }, [load, demo]);
 
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -944,11 +947,12 @@ export function Alerts({ session }: { session: PrismSession }) {
     }
   };
 
-  if (session.mode === "demo")
+  if (demo)
     return (
       <p className="empty-data">
-        The demo sends no alerts. On a live installation this page sets up email and webhook
-        destinations and the rules that use them.
+        The demo sends no alerts. Alerts go out through your own mail relay or an HTTPS webhook, and
+        the demo has neither. On a live installation this page sets up those destinations, the rules
+        that use them and scheduled exports, and lists recent deliveries.
       </p>
     );
   if (state === "loading") return <p className="empty-data">Loading alert settings.</p>;

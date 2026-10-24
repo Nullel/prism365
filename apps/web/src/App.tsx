@@ -115,7 +115,7 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
   audits: {
     title: "Audits",
     description:
-      "Checks you run against the tenant when you need them: inactive accounts, unused licenses, MFA gaps, guests and license capacity.",
+      "Checks you run against the tenant when you need them, or on a schedule: accounts, licenses, sign-in security, roles, devices, apps, groups and mailboxes.",
   },
   signins: {
     title: "Sign-in audit",

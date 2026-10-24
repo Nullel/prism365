@@ -6,7 +6,7 @@ import {
 } from "@prism365/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   Alerts,
   AlertsView,
@@ -336,6 +336,29 @@ describe("alerts page", () => {
       missingConfiguration: [],
     });
     expect(text(renderToStaticMarkup(createElement(Alerts, { session })))).toContain(
+      "The demo sends no alerts.",
+    );
+  });
+
+  it("tells the public demo build too, whose replayed session says live", () => {
+    const session: PrismSession = sessionSchema.parse({
+      mode: "live",
+      configured: true,
+      authenticated: true,
+      displayName: "Demo administrator",
+      csrfToken: "synthetic-csrf",
+      enabledFeatures: [],
+      missingConfiguration: [],
+    });
+    vi.stubEnv("VITE_DEMO", "true");
+    try {
+      expect(text(renderToStaticMarkup(createElement(Alerts, { session })))).toContain(
+        "The demo sends no alerts.",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(text(renderToStaticMarkup(createElement(Alerts, { session })))).not.toContain(
       "The demo sends no alerts.",
     );
   });

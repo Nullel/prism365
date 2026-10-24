@@ -19,8 +19,9 @@ not affiliated with Microsoft.
 
 Collects every interactive sign-in from Microsoft Graph, learns where
 and on which devices each account normally signs in, and flags what breaks that: impossible
-travel, password sprays, repeated MFA prompts, a success right after a run of failures. Each
-finding carries its evidence and its limitations.
+travel, password sprays, repeated MFA prompts, a success right after a run of failures. Mark
+decoy accounts as canaries and any sign-in attempt on one, successful or not, is a critical
+finding. Each finding carries its evidence and its limitations.
 
 ### People
 
@@ -34,9 +35,12 @@ Checks you run when you need them: inactive accounts by days since the last
 successful sign-in (7, 30, 60, 90, 120, 180 and 365 days, or never), licenses on disabled or
 inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts,
 license capacity, Conditional Access policies (legacy authentication, MFA for administrators,
-exclusions), risky users, managed devices, app consents (high-risk and unverified apps),
-Microsoft 365 app usage and account activity (is an account really unused, and does anyone still
-open its files). Results are kept, filterable, sortable and exportable as CSV, each audit's
+exclusions), risky users, privileged roles (permanent, time-bound, activated and eligible, with
+the disabled accounts, guests and apps among the holders), passwords (age, expiry and the
+accounts set never to expire), managed devices, app consents (high-risk and unverified apps),
+groups and Teams (no owners, only disabled owners, inactive teams), mailbox storage (mailboxes
+close to their quotas), Microsoft 365 app usage and account activity (is an account really
+unused, and does anyone still open its files). Results are kept, filterable, sortable and exportable as CSV, each audit's
 numbers are kept as a trend, and any audit can run daily or weekly on its own. Each audit runs
 only when its own read pack is enabled, and says what it needs when it is not.
 
@@ -58,6 +62,14 @@ moved, directory changes, Microsoft deadlines and the health of collection, buil
 Prism365 already stored.
 
 ![This week: sign-in findings opened in the last seven days and the directory changes flagged by the rules](docs/images/this-week.jpg)
+
+### Alerts
+
+Rules for what you want to hear about without opening Prism365: new findings at a severity, an
+audit number crossing a threshold or moving, a directory change, collection stopping. They go to
+your own mail relay or an HTTPS webhook (Teams, Slack or your own endpoint), never through
+Microsoft, with addresses masked unless you choose otherwise. Audit results can go out as CSV on
+a schedule, and This week every Monday ([how it works](docs/alerts.md)).
 
 ### Service health and notifications
 
@@ -101,7 +113,7 @@ Some of the parts I care most about:
 - Modules (sign-in audit, service health, Message center) declare their permissions, tables,
   retention and collectors, and run in a scheduler that owns credentials and storage.
 - Every RED-class change (storage, auth, collection) went through adversarial review passes
-  whose findings were reproduced with scripts before they were fixed. More than 1,300 automated
+  whose findings were reproduced with scripts before they were fixed. More than 1,700 automated
   tests, including PostgreSQL 17 suites.
 
 ## Run it
@@ -128,7 +140,7 @@ each step, the manual path, and what each feature needs.
 
 ## Documentation
 
-[Setup](docs/SETUP.md), [Audits](docs/audits.md), [This week](docs/this-week.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
+[Setup](docs/SETUP.md), [Audits](docs/audits.md), [This week](docs/this-week.md), [Alerts](docs/alerts.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
 [Service health](docs/modules/service-health.md), [Module runtime](docs/MODULES.md),
 [Permissions](docs/PERMISSIONS.md), [Privacy](docs/PRIVACY.md), [Architecture](docs/ARCHITECTURE.md),
 [Roadmap](docs/ROADMAP.md), and the decision records in [docs/decisions](docs/decisions).
