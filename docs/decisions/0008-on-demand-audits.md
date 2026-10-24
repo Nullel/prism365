@@ -2,7 +2,7 @@
 
 - Status: accepted; implemented as TL-025. Amended by TL-031: an audit can also run daily or
   weekly on the collecting administrator's sign-in while collection is on, and every successful
-  run leaves a trend point that outlives the run (`docs/audits.md`, sections 11 and 12).
+  run leaves a trend point that outlives the run (`docs/audits.md`, sections 14 and 15).
 - Date: 2026-10-22
 - Related: ADR-0006 (module runtime), ADR-0007 (notification center), `docs/audits.md`
 

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { auditIdSchema, auditRunTriggerSchema, auditSummaryItemSchema } from "./audits.ts";
 
-// Audit trends and audit schedules (docs/audits.md, sections 11 and 12). A trend is each
+// Audit trends and audit schedules (docs/audits.md, sections 14 and 15). A trend is each
 // audit's summary tiles over time, one point per successful run, kept after the runs themselves
 // are pruned. A schedule lets an audit run daily or weekly on the collecting administrator's
 // sign-in.

@@ -25,7 +25,7 @@ import { scheduleLimits } from "../audit-schedule.ts";
 import { auditUnavailableMessage } from "../audits.ts";
 import type { RouteContext } from "./context.ts";
 
-// Audit trends and schedules (docs/audits.md, sections 11 and 12). Trends are read from stored
+// Audit trends and schedules (docs/audits.md, sections 14 and 15). Trends are read from stored
 // points, never from Microsoft. Schedules are saved here and run by the audit scheduler
 // (audit-schedule.ts) while collection is on.
 

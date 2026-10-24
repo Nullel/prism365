@@ -855,7 +855,7 @@ export function runLabel(run: AuditRun): string {
   return `${when(run.startedAt)}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`;
 }
 
-// Schedules (docs/audits.md, section 12): an audit can run on its own, daily or weekly, while
+// Schedules (docs/audits.md, section 15): an audit can run on its own, daily or weekly, while
 // collection is on, with the collecting administrator's sign-in.
 
 const frequencies = ["off", "daily", "weekly"] as const;
@@ -976,7 +976,7 @@ export function AuditScheduleControl({
   );
 }
 
-// Trends (docs/audits.md, section 11): each tile's value over the audit's successful runs. A
+// Trends (docs/audits.md, section 14): each tile's value over the audit's successful runs. A
 // point that does not compare with the newest run is drawn hollow and says why.
 
 const differenceText: Record<AuditTrendDifference, string> = {
