@@ -85,13 +85,18 @@ async function openApp(registry: ModuleRegistry, sessionStore: MemoryStateStore)
 }
 
 async function insert(id: string, at: string, values: Record<string, unknown>) {
-  const targets = values.targets ?? [];
+  const targets = (values.targets ?? []) as { name: string | null }[];
+  // What the collector stores for search: the activity, the actor and the targets' names.
+  const search = [values.activity, "Synthetic Admin", ...targets.map((target) => target.name)]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
   await database.tenant(tenantId, async (sql) => {
     await sql.query(
       `INSERT INTO mod_directory_changes_event (tenant_id, id, activity_at, category, activity,
          result, initiated_by_kind, initiated_by_id, initiated_by_name, targets, details,
-         processed, collected_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'user',$7,'Synthetic Admin',$8::jsonb,'[]'::jsonb,true,$3)`,
+         search_text, processed, collected_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'user',$7,'Synthetic Admin',$8::jsonb,'[]'::jsonb,$9,true,$3)`,
       [
         tenantId,
         id,
@@ -101,6 +106,7 @@ async function insert(id: string, at: string, values: Record<string, unknown>) {
         values.result ?? "success",
         adminId,
         JSON.stringify(targets),
+        search,
       ],
     );
     await sql.query(
@@ -108,7 +114,7 @@ async function insert(id: string, at: string, values: Record<string, unknown>) {
        VALUES ($1,$2,$3,'actor','user',$4)`,
       [tenantId, id, adminId, at],
     );
-    for (const target of targets as { id: string; type: string }[])
+    for (const target of targets as unknown as { id: string; type: string }[])
       await sql.query(
         `INSERT INTO mod_directory_changes_subject (tenant_id, event_id, subject_id, subject_kind, subject_type, activity_at)
          VALUES ($1,$2,$3,'target',$4,$5)`,

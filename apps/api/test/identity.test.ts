@@ -238,4 +238,27 @@ describe("tenant identity", () => {
       "UUID",
     );
   });
+
+  it("reads the directory change margin and retention, and refuses values out of range", async () => {
+    const live = { DATA_MODE: "live", PUBLIC_ORIGIN: "http://localhost:5173" };
+    expect((await loadConfig(live)).directoryChanges).toMatchObject({
+      lateArrivalMinutes: 240,
+      retentionDays: 3_650,
+    });
+    expect(
+      (
+        await loadConfig({
+          ...live,
+          DIRECTORY_CHANGES_LATE_MINUTES: "90",
+          DIRECTORY_CHANGES_RETENTION_DAYS: "730",
+        })
+      ).directoryChanges,
+    ).toMatchObject({ lateArrivalMinutes: 90, retentionDays: 730 });
+    await expect(loadConfig({ ...live, DIRECTORY_CHANGES_RETENTION_DAYS: "30" })).rejects.toThrow(
+      "DIRECTORY_CHANGES_RETENTION_DAYS",
+    );
+    await expect(loadConfig({ ...live, DIRECTORY_CHANGES_LATE_MINUTES: "5" })).rejects.toThrow(
+      "DIRECTORY_CHANGES_LATE_MINUTES",
+    );
+  });
 });

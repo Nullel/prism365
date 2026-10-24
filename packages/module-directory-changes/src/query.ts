@@ -9,11 +9,18 @@ import { moduleTablePrefix } from "@prism365/modules";
 import type { SqlClient } from "@prism365/storage";
 import { z } from "zod";
 import { parseCursor } from "./cursor.ts";
-import type { ChangeTarget, DirectoryChangeEvent } from "./source.ts";
+import {
+  type ChangeTarget,
+  DETAIL_LIMIT,
+  type DirectoryChangeEvent,
+  PROPERTY_LIMIT,
+  TARGET_LIMIT,
+} from "./source.ts";
 
 // Reads over stored directory changes: the feed with its filters and the changes involving one
-// person. Values were bounded and cleaned when they were collected; nothing here looks inside the
-// targets JSON except the free-text search, which reads it as text.
+// person. Values were bounded and cleaned when they were collected, and no query looks inside
+// the targets JSON: the search reads the stored search text, a person's changes the subject
+// table. Both feed queries start from the time index and stop at the page size.
 
 export const DIRECTORY_CHANGES_MODULE = "directory.changes";
 const prefix = moduleTablePrefix(DIRECTORY_CHANGES_MODULE);
@@ -95,15 +102,17 @@ export function eventFromRow(row: EventRow): DirectoryChangeEvent {
   };
 }
 
-// A stored row as the feed shows it.
+// A stored row as the feed shows it. Lists are cut to today's bounds here rather than refused by
+// the contract, so a row stored by a build with larger bounds can never make a page fail.
 export function changeFromRow(row: EventRow): ChangeEvent {
   const event = eventFromRow(row);
   return {
     ...event,
     activityAt: iso(event.activityAt),
-    targets: event.targets.map((target) => ({
+    details: event.details.slice(0, DETAIL_LIMIT),
+    targets: event.targets.slice(0, TARGET_LIMIT).map((target) => ({
       ...target,
-      properties: target.properties.map((property) => ({
+      properties: target.properties.slice(0, PROPERTY_LIMIT).map((property) => ({
         name: property.name,
         oldValue: property.oldValue,
         newValue: property.newValue,
@@ -134,7 +143,7 @@ export interface ChangeFilter {
   category?: string | null;
   // "failure" is every result that is not success: failure, timeout and values Microsoft adds.
   result?: "success" | "failure" | null;
-  // Activity, actor or target text, compared without case.
+  // Activity, actor, or target name and sign-in name, compared without case (see searchText).
   search?: string | null;
   before?: string | null;
   limit?: number;
@@ -184,10 +193,7 @@ export async function listChanges(
         AND ($3 = '' OR lower(COALESCE(category, '')) = $3)
         AND ($4 = '' OR ($4 = 'success' AND result = 'success')
              OR ($4 = 'failure' AND COALESCE(result, '') <> 'success'))
-        AND ($5 = '' OR strpos(lower(COALESCE(activity, '')), $5) > 0
-             OR strpos(lower(COALESCE(initiated_by_name, '')), $5) > 0
-             OR strpos(lower(COALESCE(initiated_by_principal, '')), $5) > 0
-             OR strpos(lower(targets::text), $5) > 0)
+        AND ($5 = '' OR strpos(search_text, $5) > 0)
         AND ($6::timestamptz IS NULL OR (activity_at, id) < ($6::timestamptz, $7))
       ORDER BY activity_at DESC, id DESC
       LIMIT $8`,

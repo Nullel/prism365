@@ -38,7 +38,7 @@ export function createModuleRegistry(config?: AppConfig): ModuleRegistry {
     .register(createSigninsAuditModule(config?.signinsAudit))
     .register(createServiceHealthModule())
     .register(createMessageCenterModule())
-    .register(createDirectoryChangesModule());
+    .register(createDirectoryChangesModule(config?.directoryChanges));
 }
 
 // Collects with the signed-in operator's delegated session. The session handle stays in process

@@ -23,6 +23,8 @@ export function createDirectoryChangesModule(
   config: DirectoryChangesConfig = defaultDirectoryChangesConfig,
   options: CollectorOptions = {},
 ): PrismModule {
+  // One pacer for every run of this module, so a run started again at once still waits its turn.
+  const shared: CollectorOptions = { ...options, pacer: options.pacer ?? { last: null } };
   return {
     id: MODULE_ID,
     title: "Directory changes",
@@ -38,11 +40,15 @@ export function createDirectoryChangesModule(
         title: "Directory audit log",
         cadenceSeconds: 600,
         timeoutSeconds: 120,
-        run: (context) => collectDirectoryChanges(context, config, options),
+        run: (context) => collectDirectoryChanges(context, config, shared),
       },
     ],
-    // No retention rule: Microsoft keeps these records 7 or 30 days, and keeping the history
-    // after that is what the module is for. The operator deletes it (docs/PRIVACY.md).
-    retention: [],
+    // Microsoft keeps these records 7 or 30 days; keeping the history after that is what the
+    // module is for. It is deleted after config.retentionDays, 10 years by default
+    // (DIRECTORY_CHANGES_RETENTION_DAYS, docs/PRIVACY.md).
+    retention: [
+      { table: "event", timeColumn: "activity_at", days: config.retentionDays },
+      { table: "subject", timeColumn: "activity_at", days: config.retentionDays },
+    ],
   };
 }

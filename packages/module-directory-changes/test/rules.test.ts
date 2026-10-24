@@ -356,3 +356,150 @@ describe("every rule", () => {
     expect(finding?.subject).toEqual({ kind: "tenant", id: tenantId, label: "This tenant" });
   });
 });
+
+describe("rule activities the first tests left out", () => {
+  it("flags scoped and restricted administrative unit role additions", () => {
+    const scoped = judged(roleAdded({ name: "User Administrator" }, "Add scoped member to role"));
+    expect(scoped[0]?.summary).toContain("scoped to an administrative unit");
+    expect(
+      judged(
+        roleAdded(
+          { name: "User Administrator" },
+          "Add member to role scoped over Restricted Management Administrative Unit",
+        ),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("takes an admin consent that did not cover everyone as one user's consent", () => {
+    const [finding] = judged(
+      change({
+        activity: "Consent to application",
+        category: "ApplicationManagement",
+        targets: [
+          {
+            id: "sp-1",
+            name: "Synthetic Survey App",
+            type: "ServicePrincipal",
+            principal: null,
+            properties: [
+              property("ConsentContext.IsAdminConsent", "True"),
+              property("ConsentContext.OnBehalfOfAll", "False"),
+            ],
+          },
+        ],
+      }),
+    );
+    expect(finding?.severity).toBe("medium");
+  });
+
+  it("flags a credentials record with no key list, as unclear", () => {
+    const [finding] = judged(
+      change({
+        activity: "Update application - Certificates and secrets management",
+        category: "ApplicationManagement",
+        targets: [
+          {
+            id: "app-1",
+            name: "Synthetic App",
+            type: "Application",
+            principal: null,
+            properties: [],
+          },
+        ],
+      }),
+    );
+    expect(finding?.evidence[0]?.fields.credentialChange).toBe("unclear");
+  });
+});
+
+describe("role activations through Privileged Identity Management", () => {
+  const activation = (at: string, how: "pim" | "directory" = "pim") =>
+    change({
+      id: `Directory_${at}_${how}`,
+      activityAt: new Date(at),
+      activity:
+        how === "pim" ? "Add member to role completed (PIM activation)" : "Add member to role",
+      category: "RoleManagement",
+      initiatedBy:
+        how === "pim"
+          ? { kind: "user", id: personId, name: "Synthetic Person", principal: null }
+          : { kind: "app", id: "sp-pim", name: "MS-PIM", principal: null },
+      targets: [
+        {
+          ...person,
+          properties: [property("Role.TemplateId", globalAdministrator)],
+        },
+      ],
+    });
+
+  it("counts one person's activations of a role in one finding a day", () => {
+    const [morning] = judged(activation("2026-10-21T08:00:00.000Z"));
+    const [afternoon] = judged(activation("2026-10-21T15:00:00.000Z", "directory"));
+    const [nextDay] = judged(activation("2026-10-22T08:00:00.000Z"));
+    expect(morning).toMatchObject({
+      severity: "critical",
+      title: "Global Administrator activated",
+    });
+    expect(morning?.dedupeKey).toBe(afternoon?.dedupeKey);
+    expect(nextDay?.dedupeKey).not.toBe(morning?.dedupeKey);
+    // A permanent assignment stays one finding per event.
+    expect(judged(roleAdded({ id: globalAdministrator }))[0]?.dedupeKey).toBe("Directory_rule_1");
+  });
+});
+
+describe("an administrator forcing MFA registration again", () => {
+  const cleared = (oldValue: string, newValue: string, initiator = adminId) =>
+    change({
+      activity: "Update user",
+      category: "UserManagement",
+      initiatedBy: { kind: "user", id: initiator, name: "Synthetic Admin", principal: null },
+      targets: [
+        {
+          ...person,
+          properties: [property("StrongAuthenticationMethod", newValue, oldValue)],
+        },
+      ],
+    });
+  const methods = '[{"MethodType":6,"Default":true}]';
+
+  it("flags clearing someone else's sign-in methods", () => {
+    const [finding] = judged(cleared(methods, ""));
+    expect(finding).toMatchObject({
+      ruleId: "auth-method.removed-by-admin",
+      severity: "medium",
+      title: "Sign-in methods cleared by an administrator",
+      subject: { kind: "person", id: personId },
+    });
+  });
+
+  it("ignores other updates, a list that was already empty, and your own account", () => {
+    expect(judged(cleared(methods, '[{"MethodType":7,"Default":true}]'))).toEqual([]);
+    expect(judged(cleared("", ""))).toEqual([]);
+    expect(judged(cleared(methods, "", personId))).toEqual([]);
+    expect(judged(change())).toEqual([]);
+  });
+});
+
+describe("a domain update that changes how it signs people in", () => {
+  const update = (name: string) =>
+    change({
+      activity: "Update domain",
+      category: "DirectoryManagement",
+      targets: [
+        {
+          id: "domain-1",
+          name: "larkspur.example",
+          type: "Domain",
+          principal: null,
+          properties: [property(name, "Federated", "Managed")],
+        },
+      ],
+    });
+
+  it("flags an authentication or federation setting, and nothing else", () => {
+    expect(judged(update("AuthenticationType"))[0]?.severity).toBe("critical");
+    expect(judged(update("FederationBrandName"))).toHaveLength(1);
+    expect(judged(update("IsDefault"))).toEqual([]);
+  });
+});

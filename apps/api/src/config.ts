@@ -1,5 +1,9 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import {
+  type DirectoryChangesConfig,
+  directoryChangesConfigFromEnv,
+} from "@prism365/module-directory-changes";
 import { type SigninsAuditConfig, signinsAuditConfigFromEnv } from "@prism365/module-signins-audit";
 
 export const supportedReadFeatures = {
@@ -48,6 +52,8 @@ export interface AppConfig {
   moduleDataDir?: string;
   // Sign-in audit settings (SIGNINS_EXPECTED_COUNTRIES, SIGNINS_TRUSTED_NETWORKS, SIGNINS_TIME_ZONE).
   signinsAudit?: SigninsAuditConfig;
+  // Directory change feed settings (DIRECTORY_CHANGES_LATE_MINUTES, DIRECTORY_CHANGES_RETENTION_DAYS).
+  directoryChanges?: DirectoryChangesConfig;
   // Reverse proxies in front of the API whose X-Forwarded-For entry is trusted for the client
   // address (TRUST_PROXY_HOPS). 0 trusts none. The Docker install runs behind one proxy.
   trustProxyHops?: number;
@@ -154,6 +160,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
   }
   if (env.AI_LOCAL_MODEL) base.aiModel = env.AI_LOCAL_MODEL;
   base.signinsAudit = signinsAuditConfigFromEnv(env);
+  base.directoryChanges = directoryChangesConfigFromEnv(env);
   if (env.TRUST_PROXY_HOPS) {
     if (!/^[0-3]$/.test(env.TRUST_PROXY_HOPS))
       throw new Error("TRUST_PROXY_HOPS must be a whole number from 0 to 3.");

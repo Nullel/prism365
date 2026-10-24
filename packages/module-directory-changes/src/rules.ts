@@ -96,6 +96,8 @@ function subjectFor(target: ChangeTarget | undefined, tenantId: string): Subject
 }
 
 interface Draft {
+  // One finding per event unless the rule says what counts as the same thing.
+  dedupeKey?: string;
   severity: keyof typeof scores;
   subject: Subject;
   title: string;
@@ -111,7 +113,7 @@ function build(rule: ChangeRule, event: DirectoryChangeEvent, draft: Draft): Fin
   return {
     ruleId: rule.id,
     ruleVersion: rule.version,
-    dedupeKey: event.id,
+    dedupeKey: (draft.dedupeKey ?? event.id).slice(0, 200),
     purpose: "security",
     severity: draft.severity,
     score: scores[draft.severity],
@@ -180,6 +182,22 @@ export function privilegedRole(event: DirectoryChangeEvent): string | null {
   return null;
 }
 
+const PIM_ACTIVATION = "add member to role completed (pim activation)";
+
+// An eligible role made active through Privileged Identity Management. The PIM service records
+// "Add member to role completed (PIM activation)"; the directory records the same activation as
+// "Add member to role" made by Microsoft's PIM service principal, which is named "MS-PIM" in
+// observed tenants (not in Learn's reference, so that match is a best guess).
+export function isActivation(event: DirectoryChangeEvent): boolean {
+  const activity = normalName(event.activity);
+  return (
+    activity === PIM_ACTIVATION ||
+    (activity === "add member to role" &&
+      event.initiatedBy.kind === "app" &&
+      /^ms-pim/.test(normalName(event.initiatedBy.name)))
+  );
+}
+
 const roleAssigned: ChangeRule = {
   id: "role.privileged-assigned",
   version: RULES_VERSION,
@@ -189,6 +207,7 @@ const roleAssigned: ChangeRule = {
     "add eligible member to role",
     "add scoped member to role",
     "add member to role scoped over restricted management administrative unit",
+    PIM_ACTIVATION,
   ],
   judge(event, tenantId) {
     if (!matches(this, event)) return null;
@@ -198,6 +217,23 @@ const roleAssigned: ChangeRule = {
       typed(event, "user") ??
       typed(event, "serviceprincipal", "group") ??
       event.targets.find((target) => normalName(target.type) !== "role");
+    const subject = subjectFor(member, tenantId);
+    const severity = role === GLOBAL_ADMINISTRATOR ? "critical" : "high";
+    // An eligible administrator may activate several times a day: one finding per person, role
+    // and day, rather than one per activation. A permanent assignment stays one per event.
+    if (isActivation(event))
+      return build(this, event, {
+        dedupeKey: `activation:${normalName(role)}:${subject.id}:${iso(event.activityAt).slice(0, 10)}`,
+        severity,
+        subject,
+        target: member,
+        title: `${role} activated`,
+        summary: `${targetName(member, "An account")} activated ${role} through Privileged Identity Management on ${iso(event.activityAt).slice(0, 10)}. Activations of the same role by the same account that day are counted in this one finding.`,
+        fields: { role, activation: true },
+        limitations: [
+          "Each activation is counted in the finding's occurrences; the evidence shows the latest.",
+        ],
+      });
     const activity = normalName(event.activity);
     const how = activity.includes("eligible")
       ? " as an eligible assignment"
@@ -205,14 +241,13 @@ const roleAssigned: ChangeRule = {
         ? ", scoped to an administrative unit"
         : "";
     return build(this, event, {
-      severity: role === GLOBAL_ADMINISTRATOR ? "critical" : "high",
-      subject: subjectFor(member, tenantId),
+      severity,
+      subject,
       target: member,
       title: `${role} assigned`,
       summary: `${actorName(event)} added ${targetName(member, "an account")} to ${role}${how}. Check that the assignment was requested and is still needed.`,
       fields: { role },
       limitations: [
-        "Activating an eligible role through Privileged Identity Management is recorded as a role addition too.",
         "Roles granted through membership of a role-assignable group show up as a group change, not here.",
       ],
     });
@@ -336,13 +371,24 @@ const conditionalAccessRule: ChangeRule = {
   },
 };
 
+// Learn's reference has no federation-specific "Update domain" activity, only the general one.
+// It counts here when what it changed is named as an authentication or federation setting.
+const signInSetting = /authentication|federat/;
+
 const federationRule: ChangeRule = {
   id: "domain.federation-changed",
   version: RULES_VERSION,
   category: "directorymanagement",
-  activities: ["set domain authentication", "set federation settings on domain"],
+  activities: ["set domain authentication", "set federation settings on domain", "update domain"],
   judge(event, tenantId) {
     if (!matches(this, event)) return null;
+    if (
+      normalName(event.activity) === "update domain" &&
+      !event.targets.some((target) =>
+        target.properties.some((property) => signInSetting.test(normalName(property.name))),
+      )
+    )
+      return null;
     const domain = typed(event, "domain") ?? event.targets[0];
     return build(this, event, {
       severity: "critical",
@@ -358,13 +404,26 @@ const federationRule: ChangeRule = {
   },
 };
 
+// An "Update user" that leaves StrongAuthenticationMethod empty after it held methods: an
+// administrator made the person register MFA again, which also drops every method they had.
+export function methodsCleared(event: DirectoryChangeEvent): boolean {
+  return properties(event, "StrongAuthenticationMethod").some(
+    (property) =>
+      (property.oldValue ?? "").trim() !== "" &&
+      !property.oldCut &&
+      ["", "[]"].includes((property.newValue ?? "").trim()),
+  );
+}
+
 const securityInfoRule: ChangeRule = {
   id: "auth-method.removed-by-admin",
   version: RULES_VERSION,
   category: "usermanagement",
-  activities: ["admin deleted security info"],
+  activities: ["admin deleted security info", "update user"],
   judge(event, tenantId) {
     if (!matches(this, event)) return null;
+    const cleared = normalName(event.activity) === "update user";
+    if (cleared && !methodsCleared(event)) return null;
     const person = typed(event, "user") ?? event.targets[0];
     // Removing your own security info is not removing someone else's.
     if (
@@ -374,6 +433,17 @@ const securityInfoRule: ChangeRule = {
       event.initiatedBy.id.toLowerCase() === person.id.toLowerCase()
     )
       return null;
+    if (cleared)
+      return build(this, event, {
+        severity: "medium",
+        subject: subjectFor(person, tenantId),
+        target: person,
+        title: "Sign-in methods cleared by an administrator",
+        summary: `${actorName(event)} cleared the registered sign-in methods of ${targetName(person, "an account")}, so they must register MFA again. If the person did not ask for it, check who registers methods on the account next.`,
+        limitations: [
+          "Read from the StrongAuthenticationMethod value in an Update user record; methods registered as security info may be listed elsewhere.",
+        ],
+      });
     return build(this, event, {
       severity: "medium",
       subject: subjectFor(person, tenantId),

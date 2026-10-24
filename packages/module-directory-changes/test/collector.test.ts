@@ -13,13 +13,14 @@ import {
   createDirectoryChangesModule,
   type DirectoryChangesConfig,
   defaultDirectoryChangesConfig,
+  HEALED_TITLE,
   MAX_SPAN_MS,
   PAGE_INTERVAL_MS,
 } from "../src/index.ts";
 
 // Each scenario opens PGlite inside the test; on a loaded machine that cold start alone can pass
 // the default 5 s budget.
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 // Synthetic tenant and accounts only.
 const tenantId = randomUUID();
@@ -30,6 +31,8 @@ const start = new Date("2026-10-22T12:00:00Z");
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+// The margin most scenarios use; one test checks the deployed default.
+const MARGIN_MINUTES = 120;
 
 interface FakeAudit {
   id?: unknown;
@@ -39,22 +42,35 @@ interface FakeAudit {
   [key: string]: unknown;
 }
 
+interface Sent {
+  url: URL;
+  from: number;
+  to: number;
+  // On the collector's clock: when the request started and when its answer was back.
+  start: number;
+  end: number;
+  status: number;
+}
+
 let records: FakeAudit[];
 let clock: Date;
 // The collector's own clock for its time budget and pacing, in milliseconds. Sleeping moves it,
 // so a run's budget is spent by pacing and by the request costs a test sets.
 let elapsed: number;
-let sleeps: number[];
-let requestTimes: number[];
-let requests: URL[];
-let graphStatus: number | null;
+let sent: Sent[];
 let serverPageSize: number;
-let maxTop: number | null;
+// Collector-clock time each request takes.
+let requestCost: number;
+// Answers a request with this status instead of the log, when it returns one.
+let failWith: ((request: { from: number; to: number; url: URL }) => number | null) | null;
+// Answers a request with an empty page instead of the log, when it returns true.
+let emptyWhen: ((request: { from: number; to: number }) => boolean) | null;
 let onRequest: ((url: URL) => void) | null;
 // A moment Microsoft never answers for in time, at any window size.
 let slowAt: number | null;
 let database: PGliteModuleDatabase;
 let scheduler: ModuleScheduler;
+let credential: CollectionCredential;
 
 function audit(at: Date, overrides: Record<string, unknown> = {}): FakeAudit {
   return {
@@ -93,6 +109,8 @@ function audit(at: Date, overrides: Record<string, unknown> = {}): FakeAudit {
 }
 
 const ago = (milliseconds: number) => new Date(clock.getTime() - milliseconds);
+const json = (status: number) =>
+  new Response("{}", { status, headers: { "Content-Type": "application/json" } });
 
 // 100-nanosecond ticks since the epoch for an ISO timestamp with up to seven fraction digits.
 function ticks(value: string): bigint {
@@ -104,25 +122,38 @@ function ticks(value: string): bigint {
 
 async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
   const url = new URL(String(input));
-  requests.push(url);
-  requestTimes.push(elapsed);
-  onRequest?.(url);
-  if (graphStatus)
-    return new Response("{}", {
-      status: graphStatus,
-      headers: { "Content-Type": "application/json" },
-    });
-  const top = Number(url.searchParams.get("$top") ?? "100");
-  if (maxTop !== null && top > maxTop)
-    return new Response("{}", { status: 400, headers: { "Content-Type": "application/json" } });
   const match = /^activityDateTime ge (\S+) and activityDateTime le (\S+)$/.exec(
     url.searchParams.get("$filter") ?? "",
   );
-  if (!match?.[1] || !match[2]) return new Response("{}", { status: 400 });
+  const begun = elapsed;
+  elapsed += requestCost;
+  const log = (status: number) =>
+    sent.push({
+      url,
+      from: match?.[1] ? Date.parse(match[1]) : Number.NaN,
+      to: match?.[2] ? Date.parse(match[2]) : Number.NaN,
+      start: begun,
+      end: elapsed,
+      status,
+    });
+  onRequest?.(url);
+  if (!match?.[1] || !match[2]) {
+    log(400);
+    return json(400);
+  }
   const from = ticks(match[1]);
   const to = ticks(match[2]);
-  if (slowAt !== null && Number(from / 10_000n) <= slowAt && Number(to / 10_000n) >= slowAt)
+  const fromMs = Number(from / 10_000n);
+  const toMs = Number(to / 10_000n);
+  const status = failWith?.({ from: fromMs, to: toMs, url }) ?? null;
+  if (status) {
+    log(status);
+    return json(status);
+  }
+  log(200);
+  if (slowAt !== null && fromMs <= slowAt && toMs >= slowAt)
     await new Promise((resolve) => setTimeout(resolve, 300));
+  if (emptyWhen?.({ from: fromMs, to: toMs })) return Response.json({ value: [] });
   const value = records
     .filter((record) => {
       // A record with no readable time matches every window, as nothing can place it.
@@ -136,6 +167,7 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
     // Newest first, as Graph usually answers; the collector must not depend on it.
     .sort((a, b) => String(b.activityDateTime).localeCompare(String(a.activityDateTime)))
     .map(({ publishDelay: _delay, ...record }) => record);
+  const top = Number(url.searchParams.get("$top") ?? "100");
   const size = Math.min(top, serverPageSize);
   const skip = Number(url.searchParams.get("$skiptoken") ?? "0");
   const next = new URL(url);
@@ -150,12 +182,15 @@ async function setup(
   overrides: Partial<DirectoryChangesConfig> = {},
   graphOptions: { requestTimeoutMilliseconds?: number } = {},
 ) {
-  const config = { ...defaultDirectoryChangesConfig, ...overrides };
+  const config = {
+    ...defaultDirectoryChangesConfig,
+    lateArrivalMinutes: MARGIN_MINUTES,
+    ...overrides,
+  };
   const registry = new ModuleRegistry().register(
     createDirectoryChangesModule(config, {
       clock: () => elapsed,
       sleep: async (milliseconds) => {
-        sleeps.push(milliseconds);
         elapsed += milliseconds;
       },
     }),
@@ -174,7 +209,7 @@ async function setup(
         ...graphOptions,
       }),
   });
-  const credential: CollectionCredential = {
+  credential = {
     kind: "delegated",
     tenantId,
     actorId,
@@ -185,25 +220,30 @@ async function setup(
 }
 
 const runs = () => database.tenant(tenantId, (sql) => latestRuns(sql, tenantId));
-// Every run's status, oldest first.
-const statuses = async () =>
+// Every run, oldest first.
+const allRuns = async () =>
   (
     await database.tenant(tenantId, (sql) =>
-      sql.query<{ status: string }>(
-        "SELECT status FROM prism365_module_run WHERE tenant_id = $1 ORDER BY started_at, id",
+      sql.query<{ status: string; error_category: string | null }>(
+        "SELECT status, error_category FROM prism365_module_run WHERE tenant_id = $1 ORDER BY started_at, id",
         [tenantId],
       ),
     )
-  ).rows.map((row) => row.status);
+  ).rows;
 const findings = () =>
-  database.tenant(tenantId, (sql) => listFindings(sql, tenantId, { module: "directory.changes" }));
+  database.tenant(tenantId, (sql) =>
+    listFindings(sql, tenantId, { module: "directory.changes", limit: 200 }),
+  );
 interface StoredCursor {
   phase?: string;
   start?: string;
   through?: string;
   span?: number;
+  hold?: string;
   trying?: string;
   strikes?: { at: string; count: number };
+  settle?: { at: string; span?: number; trying?: string };
+  missed?: string;
 }
 const cursor = async (): Promise<StoredCursor> =>
   JSON.parse(
@@ -227,37 +267,72 @@ const count = async (table = "event", where = "true") =>
       ),
     )
   ).rows[0]?.n;
+const storedIds = async () =>
+  new Set(
+    (
+      await database.tenant(tenantId, (sql) =>
+        sql.query<{ id: string }>("SELECT id FROM mod_directory_changes_event"),
+      )
+    ).rows.map((row) => row.id),
+  );
 
 // Runs until history is loaded. The scheduler runs a collector again at once when it asks for
 // more, so this needs no clock movement.
 async function loadHistory() {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     await scheduler.tick();
     if ((await cursor()).phase === "live") return;
   }
   throw new Error("History never finished loading.");
 }
 
-// The scheduled run ten minutes after the last, and any runs it asks for to catch up.
-async function poll() {
-  clock = new Date(clock.getTime() + 10 * MINUTE);
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+// Time passes for the scheduler and the collector alike.
+function wait(milliseconds: number) {
+  clock = new Date(clock.getTime() + milliseconds);
+  elapsed += milliseconds;
+}
+
+// The scheduled run ten minutes after the last, and the runs it asks for to catch up, five
+// seconds apart as the scheduler starts them.
+async function poll(minutes = 10) {
+  wait(minutes * MINUTE);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     await scheduler.tick();
     if ((await cursor()).through === clock.toISOString()) return;
+    wait(5_000);
   }
   throw new Error("Collection never caught up.");
+}
+
+// Runs, five seconds apart, until the settle lane has read everything old enough.
+async function settleUp() {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const at = Date.parse((await cursor()).settle?.at ?? "");
+    if (at >= clock.getTime() - MARGIN_MINUTES * MINUTE) return;
+    wait(5_000);
+    await scheduler.tick();
+  }
+  throw new Error("The settle lane never caught up.");
+}
+
+// Scheduled runs that may fail, ten minutes apart.
+async function runFor(polls: number, after?: () => Promise<void>) {
+  for (let index = 0; index < polls; index += 1) {
+    wait(10 * MINUTE);
+    await scheduler.tick();
+    await after?.();
+  }
 }
 
 beforeEach(() => {
   clock = start;
   elapsed = 1_000_000;
-  sleeps = [];
-  requestTimes = [];
-  requests = [];
+  sent = [];
   records = [];
-  graphStatus = null;
   serverPageSize = 1_000;
-  maxTop = null;
+  requestCost = 0;
+  failWith = null;
+  emptyWhen = null;
   onRequest = null;
   slowAt = null;
 });
@@ -288,24 +363,47 @@ describe("directory change collector", () => {
     await loadHistory();
     expect(await count()).toBe(records.length);
     expect(await cursor()).toMatchObject({ phase: "live", through: start.toISOString() });
-    // Every request of the history window asked for the documented filter and a page size.
-    for (const url of requests) {
-      expect(url.pathname).toBe("/v1.0/auditLogs/directoryAudits");
-      expect(url.searchParams.get("$top")).toBe("999");
+    for (const request of sent) {
+      expect(request.url.pathname).toBe("/v1.0/auditLogs/directoryAudits");
+      expect(request.url.searchParams.get("$top")).toBe("999");
     }
     expect((await runs())[0]?.status).toBe("succeeded");
   });
 
-  it("starts requests at least two seconds apart", async () => {
-    // A budget long enough to load the whole history in one run.
-    await setup({ runBudgetSeconds: 100 });
+  it("keeps requests 2.2 s apart after each answer, on every lane and across runs", async () => {
+    // Pages, late records for the settle lane and the re-read, a refused page size on every run,
+    // and runs the scheduler starts again at once.
+    serverPageSize = 2;
+    requestCost = 300;
+    for (let hours = 70; hours >= 1; hours -= 3) records.push(audit(ago(hours * HOUR)));
+    failWith = ({ url }) => (Number(url.searchParams.get("$top")) > 100 ? 400 : null);
+    await setup({ runBudgetSeconds: 10 });
     await loadHistory();
-    expect(requests.length).toBeGreaterThan(5);
-    for (let index = 1; index < requestTimes.length; index += 1)
-      expect((requestTimes[index] ?? 0) - (requestTimes[index - 1] ?? 0)).toBeGreaterThanOrEqual(
-        PAGE_INTERVAL_MS,
+    for (let index = 0; index < 6; index += 1) {
+      for (let k = 0; k < 6; k += 1)
+        records.push(
+          audit(new Date(clock.getTime() + k * MINUTE), { publishDelay: k * 30 * MINUTE }),
+        );
+      await poll();
+    }
+    const ordered = [...sent].sort((a, b) => a.start - b.start);
+    expect(ordered.length).toBeGreaterThan(40);
+    for (let index = 1; index < ordered.length; index += 1)
+      expect((ordered[index]?.start ?? 0) - (ordered[index - 1]?.end ?? 0)).toBeGreaterThanOrEqual(
+        2_200,
       );
-    expect(sleeps.length).toBeGreaterThanOrEqual(requests.length - 1);
+    expect(PAGE_INTERVAL_MS).toBe(2_200);
+    // Never more than five starts in any closed ten seconds.
+    for (const request of ordered)
+      expect(
+        ordered.filter(
+          (other) => other.start >= request.start && other.start <= request.start + 10_000,
+        ).length,
+      ).toBeLessThanOrEqual(5);
+    // The settle lane and the re-read both made requests, older than the main lane's.
+    expect(sent.some((request) => request.to <= clock.getTime() - MARGIN_MINUTES * MINUTE)).toBe(
+      true,
+    );
   });
 
   it("picks up records Microsoft publishes late, and stores repeats once", async () => {
@@ -322,7 +420,7 @@ describe("directory change collector", () => {
     await poll();
     expect(await count("event", `id = '${String(late.id)}'`)).toBe(1);
 
-    // Every later run re-reads the margin: the same records come back and change nothing.
+    // Later runs read the same records again: they change nothing.
     await poll();
     await poll();
     expect(await count()).toBe(2);
@@ -331,6 +429,37 @@ describe("directory change collector", () => {
     expect(run?.status).toBe("succeeded");
     expect(run?.fetched).toBeGreaterThan(0);
     expect(run?.inserted).toBe(0);
+  });
+
+  it("collects a late record on the settle lane even with no time to re-read", async () => {
+    records.push(audit(ago(5 * HOUR)));
+    // Three seconds: the main and settle lanes get one request each, the best-effort re-read none.
+    await setup({ runBudgetSeconds: 3 });
+    for (let attempt = 0; attempt < 40 && (await cursor()).phase !== "live"; attempt += 1)
+      await scheduler.tick();
+    expect((await cursor()).phase).toBe("live");
+    // After the history load the settle lane reads all of it again.
+    await settleUp();
+    // Happened 40 minutes ago, published 45 minutes after it happened.
+    const late = audit(ago(40 * MINUTE), { publishDelay: 45 * MINUTE });
+    records.push(late);
+    await poll();
+    // Visible now, but not yet two hours old: no lane has read it again yet.
+    expect(await count()).toBe(1);
+    for (let index = 0; index < 9; index += 1) await poll();
+    expect(await count("event", `id = '${String(late.id)}'`)).toBe(1);
+    expect(Date.parse((await cursor()).settle?.at ?? "")).toBe(
+      clock.getTime() - MARGIN_MINUTES * MINUTE,
+    );
+  });
+
+  it("re-reads by default four hours behind, not two", async () => {
+    await setup({ lateArrivalMinutes: defaultDirectoryChangesConfig.lateArrivalMinutes });
+    await loadHistory();
+    for (let index = 0; index < 4; index += 1) await poll();
+    expect(defaultDirectoryChangesConfig.lateArrivalMinutes).toBe(240);
+    const settled = Date.parse((await cursor()).settle?.at ?? "");
+    expect(settled).toBeLessThanOrEqual(clock.getTime() - 240 * MINUTE);
   });
 
   it("does not move past unread time when the budget runs out mid-window", async () => {
@@ -348,7 +477,7 @@ describe("directory change collector", () => {
       if (!(url.searchParams.get("$filter") ?? "").startsWith(`activityDateTime ge ${midnight}`))
         return;
       pages += 1;
-      if (pages === 2) elapsed += 60_000;
+      if (pages === 2) elapsed += 200_000;
     };
     for (let attempt = 0; attempt < 10 && pages < 2; attempt += 1) await scheduler.tick();
     expect(pages).toBe(2);
@@ -372,24 +501,31 @@ describe("directory change collector", () => {
     expect(await count()).toBe(9);
     expect(await findings()).toEqual([]);
     expect((await runs())[0]?.status).toBe("succeeded");
-    // The busy day was read in smaller windows than a day.
-    const filters = requests.map((url) => url.searchParams.get("$filter") ?? "");
-    const spans = filters.map((filter) => {
-      const [, from = "", to = ""] = /ge (\S+) and activityDateTime le (\S+)/.exec(filter) ?? [];
-      return Date.parse(to) - Date.parse(from);
-    });
+    const spans = sent.map((request) => request.to - request.from);
     expect(Math.min(...spans)).toBeLessThan(MAX_SPAN_MS / 4);
   });
 
-  it("records a gap when a minute holds more records than one window may read", async () => {
-    // Seven changes within one second, 30 minutes ago: inside the late-arrival margin, so later
-    // runs read that minute again.
-    const minute = Math.floor((start.getTime() - 30 * MINUTE) / MINUTE) * MINUTE;
-    for (let index = 0; index < 7; index += 1)
-      records.push(audit(new Date(minute + 20_000 + index * 100)));
+  it("reads every record of a burst inside one minute by splitting below a minute", async () => {
+    // Twelve changes in half a second, four allowed per window.
+    const minute = Math.floor((start.getTime() - DAY) / MINUTE) * MINUTE;
+    for (let index = 0; index < 12; index += 1)
+      records.push(audit(new Date(minute + 20_000 + index * 40)));
+    serverPageSize = 2;
+    await setup({ windowRecordLimit: 4, runBudgetSeconds: 100 });
+    await loadHistory();
+    expect(await count()).toBe(12);
+    expect(await findings()).toEqual([]);
+    expect(Math.min(...sent.map((request) => request.to - request.from))).toBeLessThan(1_000);
+  });
+
+  it("records a gap only for a millisecond that holds more than one window may read", async () => {
+    // Seven changes in the same millisecond, 30 minutes ago: inside the margin, so later runs
+    // read that millisecond again.
+    const at = new Date(Math.floor((start.getTime() - 30 * MINUTE) / MINUTE) * MINUTE + 20_000);
+    for (let index = 0; index < 7; index += 1) records.push(audit(at));
     records.push(audit(new Date(start.getTime() - DAY)));
     serverPageSize = 2;
-    await setup({ windowRecordLimit: 4 });
+    await setup({ windowRecordLimit: 4, runBudgetSeconds: 100 });
     await loadHistory();
     const [gap] = await findings();
     expect(gap).toMatchObject({
@@ -399,14 +535,19 @@ describe("directory change collector", () => {
       subject: { kind: "service", id: "directory.changes" },
       title: "Some directory changes could not be read",
     });
+    expect(gap?.summary).toContain("cannot be split further");
     expect(gap?.summary).toContain("4 were read and kept");
-    // What was read is kept, and collection carried on past the gap.
+    // Both bounds are inclusive, so a record exactly on a millisecond is in the windows on
+    // either side of it: at most two milliseconds.
+    expect(
+      Date.parse(gap?.windowEnd ?? "") - Date.parse(gap?.windowStart ?? ""),
+    ).toBeLessThanOrEqual(2);
     expect(await count()).toBe(5);
     expect(await cursor()).toMatchObject({ phase: "live" });
-    expect(await statuses()).toContain("partial");
+    expect((await allRuns()).map((run) => run.status)).toContain("partial");
 
-    // The settle lane reads that minute again once it is two hours old: still one gap finding.
-    for (let index = 0; index < 10; index += 1) await poll();
+    // The settle lane reads that millisecond again once it is two hours old: still one finding.
+    for (let index = 0; index < 12; index += 1) await poll();
     const again = await findings();
     expect(again).toHaveLength(1);
     expect(again[0]?.occurrences).toBeGreaterThan(1);
@@ -422,8 +563,6 @@ describe("directory change collector", () => {
     expect(await count()).toBe(2);
     const [run] = await runs();
     expect(run).toMatchObject({ status: "partial" });
-    // The record with no readable date matches every window's fake filter, so it is counted on
-    // each read; the one with no id is read once.
     expect(run?.skipped).toBeGreaterThanOrEqual(2);
     expect(await cursor()).toMatchObject({ phase: "live" });
   });
@@ -442,62 +581,231 @@ describe("directory change collector", () => {
     expect((await runs())[0]?.status).toBe("succeeded");
   });
 
-  it("records an access failure without moving its place", async () => {
+  it("raises no gap while access is refused before anything was read, then loads history", async () => {
+    records.push(audit(ago(2 * DAY)));
     await setup();
-    graphStatus = 403;
-    await scheduler.tick();
+    failWith = () => 403;
+    // Six hours of refused reads at the normal cadence.
+    await runFor(36);
     expect((await runs())[0]).toMatchObject({ status: "failed", errorCategory: "access_denied" });
-    const kept = await cursor();
-    expect(kept.phase).toBe("history");
-    expect(kept.through).toBe(kept.start);
-    expect(kept.trying).toBeUndefined();
-    graphStatus = null;
-    records.push(audit(ago(DAY)));
-    clock = new Date(clock.getTime() + 10 * MINUTE);
+    expect(await findings()).toEqual([]);
+    const refused = await cursor();
+    expect(refused.phase).toBe("history");
+    expect(refused.through).toBe(refused.start);
+    expect(refused.trying).toBeUndefined();
+    failWith = null;
+    await poll();
     await loadHistory();
     expect(await count()).toBe(1);
+    expect(await findings()).toEqual([]);
+    // History starts from what Microsoft kept when reading first worked, not six hours earlier.
+    const begun = Date.parse((await cursor()).start ?? "");
+    expect(begun).toBeLessThanOrEqual(clock.getTime() - 30 * DAY);
+    expect(begun).toBeGreaterThan(clock.getTime() - 30 * DAY - 2 * MINUTE);
   });
 
   it("asks for smaller pages when Microsoft refuses the larger size", async () => {
     records.push(audit(ago(DAY)));
-    maxTop = 100;
+    failWith = ({ url }) => (Number(url.searchParams.get("$top")) > 100 ? 400 : null);
     await setup();
     await loadHistory();
     expect(await count()).toBe(1);
-    expect(requests.some((url) => url.searchParams.get("$top") === "100")).toBe(true);
+    expect(sent.some((request) => request.url.searchParams.get("$top") === "100")).toBe(true);
     expect((await runs())[0]?.status).toBe("succeeded");
   });
 
-  it("treats a window a stopped run was reading as failed: smaller, then a gap", async () => {
+  it("treats a window a run was stopped in as failed and tries it smaller", async () => {
+    records.push(audit(ago(DAY)));
+    await setup();
+    await loadHistory();
+    // Collection stops while a request is in flight (a sign-out or a restart): nothing the run
+    // does afterwards reaches storage.
+    let stopping = true;
+    onRequest = () => {
+      if (!stopping) return;
+      stopping = false;
+      scheduler.unbind("shutdown");
+    };
+    clock = new Date(clock.getTime() + 10 * MINUTE);
+    await scheduler.tick();
+    expect((await cursor()).trying).toBeTruthy();
+    onRequest = null;
+    scheduler.bind(credential);
+    await poll();
+    const after = await cursor();
+    expect(after.trying).toBeUndefined();
+    expect(after.span).toBeLessThan(MAX_SPAN_MS);
+    expect(await findings()).toEqual([]);
+  });
+
+  it("clears a window's strikes once it is read", async () => {
     records.push(audit(ago(DAY)));
     await setup();
     await loadHistory();
     const live = await cursor();
-    // A run stopped while reading a window: the next one tries a smaller one, without a gap.
-    await setCursor(JSON.stringify({ ...live, trying: live.through }));
+    const at = new Date(clock.getTime() + 5 * MINUTE).toISOString();
+    await setCursor(JSON.stringify({ ...live, strikes: { at, count: 2 } }));
     await poll();
-    expect((await cursor()).span).toBeLessThan(MAX_SPAN_MS);
-    expect(await findings()).toEqual([]);
-
-    // A minimum-size window that has failed twice before is given up and recorded.
-    const at = new Date(Math.floor(clock.getTime() / MINUTE) * MINUTE - 10 * MINUTE);
-    await setCursor(
-      JSON.stringify({
-        ...(await cursor()),
-        span: MINUTE,
-        trying: at.toISOString(),
-        strikes: { at: at.toISOString(), count: 2 },
-      }),
-    );
-    await poll();
-    const gaps = await findings();
-    expect(gaps).toHaveLength(1);
-    expect(gaps[0]?.summary).toContain("did not answer in time");
     expect((await cursor()).strikes).toBeUndefined();
   });
 
+  it("makes a window Microsoft never answers smaller, then gives it up on the third strike", async () => {
+    slowAt = start.getTime() - 3 * DAY + 90 * 1_000;
+    records.push(audit(new Date(start.getTime() - 5 * DAY)));
+    records.push(audit(new Date(start.getTime() - DAY)));
+    await setup({}, { requestTimeoutMilliseconds: 100 });
+    const strikes: number[] = [];
+    await runFor(60, async () => {
+      const now = await cursor();
+      if (now.strikes) strikes.push(now.strikes.count);
+    });
+    expect((await cursor()).phase).toBe("live");
+    expect(await count()).toBe(2);
+    // Retried at the smallest size on two runs before it was given up.
+    expect(strikes).toContain(1);
+    expect(strikes).toContain(2);
+    const [gap] = await findings();
+    expect(gap?.summary).toContain("did not answer in time");
+    const from = Date.parse(gap?.windowStart ?? "");
+    const to = Date.parse(gap?.windowEnd ?? "");
+    expect(from).toBeLessThanOrEqual(slowAt);
+    expect(to).toBeGreaterThanOrEqual(slowAt);
+    expect(to - from).toBeLessThanOrEqual(2);
+    expect((await allRuns()).map((run) => run.status)).toContain("failed");
+  });
+
+  it("shrinks windows Microsoft answers with a gateway error and moves on", async () => {
+    for (let days = 25; days >= 1; days -= 3) records.push(audit(ago(days * DAY)));
+    await setup();
+    await loadHistory();
+    // Collection is off for six hours; Microsoft then answers 504 for any window longer than an
+    // hour, as Learn advises shrinking the range.
+    const off = clock.getTime();
+    clock = new Date(off + 6 * HOUR);
+    for (let minutes = 30; minutes < 360; minutes += 30)
+      records.push(audit(new Date(off + minutes * MINUTE)));
+    failWith = ({ from, to }) => (to - from > HOUR ? 504 : null);
+    await runFor(12);
+    expect(await storedIds()).toEqual(new Set(records.map((record) => String(record.id))));
+    expect(await findings()).toEqual([]);
+    expect((await allRuns()).map((run) => run.error_category)).toContain("provider_unavailable");
+    expect((await cursor()).through).toBe(clock.toISOString());
+  });
+
+  it("gives up a millisecond Microsoft keeps failing for, says why, and says so again when it is read", async () => {
+    const failAt = start.getTime() - 3 * DAY + 7_000;
+    for (let days = 5; days >= 1; days -= 2) records.push(audit(ago(days * DAY)));
+    let failing = true;
+    failWith = ({ from, to }) => (failing && from <= failAt && to >= failAt ? 500 : null);
+    await setup();
+    // Scheduled runs until the main lane has given that millisecond up and loaded the rest. A
+    // record exactly on it sits in the windows on both sides, so both are given up.
+    for (let index = 0; index < 90 && (await cursor()).phase !== "live"; index += 1)
+      await runFor(1);
+    expect((await cursor()).phase).toBe("live");
+    expect(await count()).toBe(3);
+    const [gap] = await findings();
+    expect(gap?.summary).toContain("kept answering with an error");
+    expect(
+      Date.parse(gap?.windowEnd ?? "") - Date.parse(gap?.windowStart ?? ""),
+    ).toBeLessThanOrEqual(2);
+    // Microsoft recovers; the settle lane reads the whole span later and the finding says so.
+    failing = false;
+    await poll();
+    await settleUp();
+    const healed = await findings();
+    expect(healed).toHaveLength(1);
+    expect(healed[0]?.title).toBe(HEALED_TITLE);
+    expect(healed[0]?.summary).toContain("nothing is missing");
+  });
+
+  it("loses nothing to empty answers during the history load or a catch-up", async () => {
+    for (let hours = 29 * 24; hours >= 1; hours -= 7) records.push(audit(ago(hours * HOUR)));
+    // Under load Microsoft answers empty: the first request that would return a record comes
+    // back with nothing, later ones with the record.
+    const hidden = new Set<unknown>();
+    emptyWhen = ({ from, to }) => {
+      const fresh = records.filter((record) => {
+        const at = Date.parse(String(record.activityDateTime));
+        return at >= from && at <= to && !hidden.has(record.id);
+      });
+      for (const record of fresh) hidden.add(record.id);
+      return fresh.length > 0;
+    };
+    await setup({ runBudgetSeconds: 100 });
+    await loadHistory();
+    // Off for eight hours, with changes meanwhile.
+    const off = clock.getTime();
+    for (let minutes = 15; minutes < 8 * 60; minutes += 15)
+      records.push(audit(new Date(off + minutes * MINUTE)));
+    clock = new Date(off + 8 * HOUR);
+    for (let index = 0; index < 30; index += 1) await poll();
+    expect(await storedIds()).toEqual(new Set(records.map((record) => String(record.id))));
+  });
+
+  it("re-reads what it may have skipped after the clock ran ahead and came back", async () => {
+    await setup();
+    await loadHistory();
+    const live = await cursor();
+    // The lanes ran two days ahead while the clock was wrong.
+    const ahead = clock.getTime() + 2 * DAY;
+    await setCursor(
+      JSON.stringify({
+        ...live,
+        through: new Date(ahead).toISOString(),
+        settle: { at: new Date(ahead - MARGIN_MINUTES * MINUTE).toISOString() },
+      }),
+    );
+    const meanwhile = audit(new Date(clock.getTime() + 5 * MINUTE));
+    records.push(meanwhile);
+    await poll();
+    for (let index = 0; index < 3; index += 1) await poll();
+    expect(await count("event", `id = '${String(meanwhile.id)}'`)).toBe(1);
+  });
+
+  it("raises one widening gap for a span Microsoft dropped before it was read", async () => {
+    records.push(audit(ago(DAY)));
+    await setup();
+    await loadHistory();
+    clock = new Date(clock.getTime() + 45 * DAY);
+    records.push(audit(ago(DAY)));
+    // Reads keep being refused for a while, then work.
+    failWith = () => 403;
+    await runFor(6);
+    const first = await findings();
+    expect(first).toHaveLength(1);
+    expect(first[0]?.title).toBe("Directory changes were missed while they could not be read");
+    const widening = first[0]?.windowEnd;
+    failWith = null;
+    await poll();
+    for (let index = 0; index < 5; index += 1) await poll();
+    const after = await findings();
+    expect(after).toHaveLength(1);
+    expect(Date.parse(after[0]?.windowEnd ?? "")).toBeGreaterThan(Date.parse(widening ?? ""));
+    expect(await count()).toBe(2);
+    expect((await cursor()).missed).toBeUndefined();
+  });
+
+  it("gives the settle lane a third of the run while the main lane has a backlog", async () => {
+    serverPageSize = 2;
+    await setup();
+    await loadHistory();
+    for (let index = 0; index < 3; index += 1) await poll();
+    // Off for twelve hours with a dense stretch: the main lane needs many pages.
+    const off = clock.getTime();
+    for (let index = 0; index < 120; index += 1)
+      records.push(audit(new Date(off + 10 * MINUTE + index * 5 * MINUTE)));
+    clock = new Date(off + 12 * HOUR);
+    const before = sent.length;
+    await scheduler.tick();
+    const thisRun = sent.slice(before);
+    // Some requests of the run were the settle lane's, behind where the main lane started.
+    expect(thisRun.some((request) => request.to <= off)).toBe(true);
+    expect((await cursor()).through).not.toBe(clock.toISOString());
+  });
+
   it("judges each stored change once, including ones a stopped run never judged", async () => {
-    const assignment = audit(ago(3 * HOUR), {
+    const assignment = audit(ago(50 * MINUTE), {
       activityDisplayName: "Add member to role",
       category: "RoleManagement",
       operationType: "Assign",
@@ -519,8 +827,6 @@ describe("directory change collector", () => {
       ],
     });
     records.push(assignment);
-    // Inside the late-arrival margin, so every poll reads it again.
-    assignment.activityDateTime = ago(50 * MINUTE).toISOString();
     await setup();
     await loadHistory();
     await poll();
@@ -537,9 +843,9 @@ describe("directory change collector", () => {
     await database.tenant(tenantId, (sql) =>
       sql.query(
         `INSERT INTO mod_directory_changes_event (tenant_id, id, activity_at, category, activity,
-           result, initiated_by_kind, targets, details, processed, collected_at)
+           result, initiated_by_kind, targets, details, search_text, processed, collected_at)
          VALUES ($1, 'Directory_pending', $2, 'Policy', 'Delete Conditional Access policy',
-           'success', 'unknown', $3::jsonb, '[]'::jsonb, false, $2)`,
+           'success', 'unknown', $3::jsonb, '[]'::jsonb, '', false, $2)`,
         [
           tenantId,
           ago(HOUR).toISOString(),
@@ -559,64 +865,6 @@ describe("directory change collector", () => {
     const rules = (await findings()).map((item) => item.ruleId).sort();
     expect(rules).toEqual(["policy.conditional-access-changed", "role.privileged-assigned"]);
     expect(await count("event", "processed = false")).toBe(0);
-  });
-
-  it("records changes Microsoft no longer keeps after collection was off too long", async () => {
-    await setup();
-    await loadHistory();
-    clock = new Date(clock.getTime() + 45 * DAY);
-    records.push(audit(ago(DAY)));
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await scheduler.tick();
-      if ((await cursor()).through === clock.toISOString()) break;
-    }
-    expect((await cursor()).through).toBe(clock.toISOString());
-    const [missed] = await findings();
-    expect(missed?.title).toBe("Directory changes were missed while collection was off");
-    expect(await count()).toBe(1);
-  });
-
-  it("collects a late record on the settle lane even with no time to re-read", async () => {
-    records.push(audit(ago(5 * HOUR)));
-    // Three seconds: the main and settle lanes get one request each, the best-effort re-read none.
-    await setup({ runBudgetSeconds: 3 });
-    for (let attempt = 0; attempt < 40 && (await cursor()).phase !== "live"; attempt += 1)
-      await scheduler.tick();
-    expect((await cursor()).phase).toBe("live");
-    // Happened 40 minutes ago, published 45 minutes after it happened.
-    const late = audit(ago(40 * MINUTE), { publishDelay: 45 * MINUTE });
-    records.push(late);
-    await poll();
-    // Visible now, but not yet two hours old: no lane has read it again yet.
-    expect(await count()).toBe(1);
-    for (let index = 0; index < 9; index += 1) await poll();
-    expect(await count("event", `id = '${String(late.id)}'`)).toBe(1);
-    const settled = await cursor();
-    expect(Date.parse((settled as { settle?: { at: string } }).settle?.at ?? "")).toBe(
-      clock.getTime() - 120 * MINUTE,
-    );
-  });
-
-  it("makes a window Microsoft never answers smaller, then records it as a gap and moves on", async () => {
-    slowAt = start.getTime() - 3 * DAY + 90 * 1_000;
-    records.push(audit(new Date(start.getTime() - 5 * DAY)));
-    records.push(audit(new Date(start.getTime() - DAY)));
-    await setup({}, { requestTimeoutMilliseconds: 100 });
-    for (let attempt = 0; attempt < 40 && (await cursor()).phase !== "live"; attempt += 1) {
-      await scheduler.tick();
-      clock = new Date(clock.getTime() + 10 * MINUTE);
-    }
-    expect((await cursor()).phase).toBe("live");
-    expect(await count()).toBe(2);
-    const [gap] = await findings();
-    expect(gap?.summary).toContain("did not answer in time");
-    // The window given up is at most a minute long and holds the moment that never answers.
-    const from = Date.parse(gap?.windowStart ?? "");
-    const to = Date.parse(gap?.windowEnd ?? "");
-    expect(from).toBeLessThanOrEqual(slowAt);
-    expect(to).toBeGreaterThanOrEqual(slowAt);
-    expect(to - from).toBeLessThanOrEqual(MINUTE);
-    expect(await statuses()).toContain("failed");
   });
 
   it("records a finding without names when a directory name trips the language policy", async () => {

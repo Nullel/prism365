@@ -396,7 +396,8 @@ function recordedChanges(
 
 // The feed's filters and pages are worked out from the recording of each range, the way the
 // server works them out: category without case, "failure" for anything that did not succeed,
-// and the search over the activity, who made the change and its targets.
+// and the search over the activity, who made the change, and its targets' names and sign-in
+// names.
 function listChanges(state: DemoState, url: URL): DemoResponse | null {
   const recorded = recordedChanges(state, url.searchParams.get("days") ?? "7");
   if (!recorded) return null;
@@ -414,7 +415,7 @@ function listChanges(state: DemoState, url: URL): DemoResponse | null {
           item.activity,
           item.initiatedBy.name,
           item.initiatedBy.principal,
-          JSON.stringify(item.targets),
+          ...item.targets.flatMap((target) => [target.name, target.principal]),
         ]
           .map((value) => (value ?? "").toLowerCase())
           .some((value) => value.includes(search))),

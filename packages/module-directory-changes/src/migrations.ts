@@ -1,13 +1,15 @@
 import type { ModuleMigration } from "@prism365/modules";
 
 // Normalized directory audit events and the accounts and objects each one involves. Raw Graph
-// payloads are never stored. There is no retention rule: Microsoft keeps these records 7 or 30
-// days, and keeping them longer is the point of the module (see docs/PRIVACY.md).
+// payloads are never stored. Microsoft keeps these records 7 or 30 days; keeping them longer is
+// the point of the module, and its retention rule deletes them after 10 years unless the
+// operator chooses less (see docs/PRIVACY.md).
 //
 // `processed` makes the rules restartable: an event inserted by a run that stopped before its
 // rules ran is judged by the next run instead of being skipped as already stored.
 // The subject table answers "changes involving this person" with a plain indexed lookup, so no
-// query has to look inside the targets JSON.
+// query has to look inside the targets JSON. `search_text` is the lower-case text the feed's
+// search matches (see searchText in source.ts).
 
 export const directoryChangesMigrations: readonly ModuleMigration[] = [
   {
@@ -29,6 +31,7 @@ export const directoryChangesMigrations: readonly ModuleMigration[] = [
   initiated_by_principal text,
   targets jsonb NOT NULL,
   details jsonb NOT NULL,
+  search_text text NOT NULL,
   processed boolean NOT NULL,
   collected_at timestamptz NOT NULL,
   PRIMARY KEY (tenant_id, id)

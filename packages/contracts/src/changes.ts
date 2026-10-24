@@ -2,7 +2,8 @@ import { z } from "zod";
 
 // The directory change feed: stored directory audit events and the feed page. Values were cut
 // and cleaned when Prism365 collected them; they are cut again here so one long value can never
-// turn a page into an error.
+// turn a page into an error. List lengths are bounded where rows are read (changeFromRow), not
+// here, so a row from a build with other bounds cannot either.
 
 const text = z.string().transform((value) => value.slice(0, 500));
 const nullableText = text.nullable();
@@ -27,7 +28,7 @@ export const changeTargetSchema = z.object({
   name: nullableText,
   type: nullableText,
   principal: nullableText,
-  properties: z.array(changePropertySchema).max(50),
+  properties: z.array(changePropertySchema),
 });
 export type ChangeTarget = z.infer<typeof changeTargetSchema>;
 
@@ -48,8 +49,8 @@ export const changeEventSchema = z.object({
     // A user's sign-in name, or an application's app ID.
     principal: nullableText,
   }),
-  targets: z.array(changeTargetSchema).max(50),
-  details: z.array(z.object({ key: nullableText, value: nullableText })).max(20),
+  targets: z.array(changeTargetSchema),
+  details: z.array(z.object({ key: nullableText, value: nullableText })),
 });
 export type ChangeEvent = z.infer<typeof changeEventSchema>;
 

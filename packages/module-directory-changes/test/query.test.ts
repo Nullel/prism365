@@ -9,6 +9,7 @@ import {
   type DirectoryChangeEvent,
   listChanges,
   personChanges,
+  searchText,
 } from "../src/index.ts";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -64,8 +65,8 @@ async function store(event: DirectoryChangeEvent) {
     await sql.query(
       `INSERT INTO mod_directory_changes_event (tenant_id, id, activity_at, category, activity,
          operation_type, result, initiated_by_kind, initiated_by_id, initiated_by_name,
-         initiated_by_principal, targets, details, processed, collected_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,'[]'::jsonb,true,$13)`,
+         initiated_by_principal, targets, details, search_text, processed, collected_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14,true,$15)`,
       [
         tenantId,
         event.id,
@@ -79,6 +80,8 @@ async function store(event: DirectoryChangeEvent) {
         event.initiatedBy.name,
         event.initiatedBy.principal,
         JSON.stringify(event.targets),
+        JSON.stringify(event.details),
+        searchText(event),
         now.toISOString(),
       ],
     );
@@ -189,16 +192,76 @@ describe("change feed queries", () => {
     expect((await feed({ search: "ADD GROUP" })).items.map((item) => item.id)).toEqual([
       "c-failed",
     ]);
-    // A target's name, and a value in what changed.
+    // A target's sign-in name. Changed values are not searched.
     expect((await feed({ search: "person@example" })).items.map((item) => item.id)).toEqual([
       "b-role",
     ]);
-    expect((await feed({ search: "global administrator" })).items.map((item) => item.id)).toEqual([
-      "b-role",
-    ]);
+    expect((await feed({ search: "global administrator" })).items).toEqual([]);
     expect((await feed({ search: "synthetic admin" })).items).toHaveLength(5);
     // Counts stay those of the whole window.
     expect((await feed({ search: "add group" })).categories).toHaveLength(3);
+  });
+
+  it("searches names as a person reads them: no JSON keys, quotes and accents found", async () => {
+    await store(
+      change("h-quote", ago(40 * DAY), {
+        targets: [
+          {
+            id: "group-1",
+            name: 'Field "Ops" O\'Brien',
+            type: "Group",
+            principal: null,
+            properties: [{ name: "Description", oldValue: 'R"D', newValue: "Sales" }],
+          },
+        ],
+      }),
+    );
+    await store(
+      change("i-accent", ago(41 * DAY), {
+        targets: [
+          {
+            id: "user-9",
+            name: "Élodie Synthétique",
+            type: "User",
+            principal: null,
+            properties: [],
+          },
+        ],
+      }),
+    );
+    const ids = async (search: string) =>
+      (await feed({ days: 60, search })).items.map((item) => item.id);
+    for (const key of ["properties", "oldvalue", "principal", "name", "null"])
+      expect(await ids(key), key).toEqual([]);
+    expect(await ids('"ops"')).toEqual(["h-quote"]);
+    expect(await ids("o'brien")).toEqual(["h-quote"]);
+    expect(await ids("élodie")).toEqual(["i-accent"]);
+    expect(await ids("ÉLODIE".toLowerCase())).toEqual(["i-accent"]);
+    expect(await ids('r"d')).toEqual([]);
+  });
+
+  it("cuts lists a row holds beyond today's bounds instead of failing the page", async () => {
+    const many = change("j-many", ago(50 * DAY), {
+      activity: "Bulk update",
+      targets: Array.from({ length: 60 }, (_value, index) => ({
+        id: `t-${index}`,
+        name: `Target ${index}`,
+        type: "User",
+        principal: null,
+        properties: Array.from({ length: 60 }, () => ({
+          name: "Note",
+          oldValue: null,
+          newValue: "x",
+        })),
+      })),
+      details: Array.from({ length: 25 }, (_value, index) => ({ key: `k${index}`, value: "v" })),
+    });
+    await store(many);
+    const page = await feed({ days: 60, search: "bulk update" });
+    const [item] = page.items;
+    expect(item?.targets).toHaveLength(50);
+    expect(item?.targets[0]?.properties).toHaveLength(50);
+    expect(item?.details).toHaveLength(20);
   });
 
   it("pages with `before` without skipping or repeating changes in the same millisecond", async () => {
@@ -237,7 +300,8 @@ describe("change feed queries", () => {
 
   it("reports no coverage before collection, and the cursor's after", async () => {
     expect(await database.tenant(tenantId, (sql) => changeCoverage(sql, tenantId))).toEqual({
-      from: ago(20 * DAY).toISOString(),
+      // The oldest change stored, before any cursor exists.
+      from: ago(50 * DAY).toISOString(),
       through: null,
       lastCollected: now.toISOString(),
       phase: "none",
@@ -259,8 +323,9 @@ describe("change feed queries", () => {
         ],
       ),
     );
+    // From the older of where reading started and the oldest change kept.
     expect(await database.tenant(tenantId, (sql) => changeCoverage(sql, tenantId))).toEqual({
-      from: ago(30 * DAY).toISOString(),
+      from: ago(50 * DAY).toISOString(),
       through: ago(10 * DAY).toISOString(),
       lastCollected: now.toISOString(),
       phase: "history",

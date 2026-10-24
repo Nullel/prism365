@@ -8,13 +8,16 @@ import { z } from "zod";
 // been read completely at least once. The settle lane is at `settle.at`, never past `through`:
 // everything before it has also been read at least the late-arrival margin after it happened,
 // so records Microsoft publishes late are in. Each lane saves its own position, so neither has
-// to start over when a run ends early.
+// to start over when a run ends early. The settle lane reads every window again, including the
+// ones the main lane read when they were already old: one empty answer from Microsoft, which
+// Learn says can happen under load, is then not the only read of that window.
 
 export const MINUTE = 60_000;
 export const DAY = 24 * 60 * MINUTE;
 export const HISTORY_DAYS = 30;
 export const MAX_SPAN_MS = DAY;
-export const MIN_SPAN_MS = MINUTE;
+// Microsoft's filter compares times to the millisecond, so a window can be split down to one.
+export const MIN_SPAN_MS = 1;
 
 const laneState = {
   // The window size in use: halved when a window holds too many records or Microsoft does not
@@ -39,6 +42,10 @@ export const cursorSchema = z
     through: z.string().datetime(),
     ...laneState,
     settle: z.object({ at: z.string().datetime(), ...laneState }),
+    // Where a span that fell out of Microsoft's retention before it was read began. Kept while
+    // the main lane stays behind, so the one finding about that span widens instead of a new one
+    // being raised on every run.
+    missed: z.string().datetime().optional(),
   })
   .refine(
     (value) =>

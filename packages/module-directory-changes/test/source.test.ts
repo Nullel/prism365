@@ -3,6 +3,8 @@ import {
   changeSubjects,
   NAME_LIMIT,
   readDirectoryAudit,
+  SEARCH_TEXT_LIMIT,
+  searchText,
   TARGET_LIMIT,
   unquote,
   VALUE_LIMIT,
@@ -190,5 +192,49 @@ describe("directory audit source", () => {
       { id: adminId, kind: "actor", type: "user" },
       { id: personId.toLowerCase(), kind: "target", type: "user" },
     ]);
+  });
+
+  it("leaves out details about the client a change came from, and keeps the rest", () => {
+    const event = readDirectoryAudit(
+      record({
+        additionalDetails: [
+          { key: "User-Agent", value: "Synthetic browser 1.0" },
+          { key: "UserAgent", value: "Synthetic browser 1.0" },
+          { key: "ClientIpAddress", value: "192.0.2.44" },
+          { key: "ipaddr", value: "keep: not a known client key" },
+          { key: "UserType", value: "Member" },
+          { key: "AppId", value: "app-1" },
+        ],
+      }),
+    );
+    expect(event?.details).toEqual([
+      { key: "ipaddr", value: "keep: not a known client key" },
+      { key: "UserType", value: "Member" },
+      { key: "AppId", value: "app-1" },
+    ]);
+    expect(JSON.stringify(event)).not.toContain("Synthetic browser");
+  });
+
+  it("builds the search text from the activity, the actor and the targets' names only", () => {
+    const event = readDirectoryAudit(record());
+    expect(event ? searchText(event) : "").toBe(
+      [
+        "update user",
+        "synthetic admin",
+        "admin@example.invalid",
+        "synthetic person",
+        "person@example.invalid",
+      ].join("\n"),
+    );
+    const long = readDirectoryAudit(
+      record({
+        targetResources: Array.from({ length: 50 }, (_value, index) => ({
+          id: `t-${index}`,
+          displayName: "n".repeat(200),
+          type: "User",
+        })),
+      }),
+    );
+    expect((long ? searchText(long) : "").length).toBe(SEARCH_TEXT_LIMIT);
   });
 });

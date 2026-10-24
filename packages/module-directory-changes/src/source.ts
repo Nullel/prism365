@@ -27,6 +27,13 @@ export const VALUE_LIMIT = 400;
 export const TARGET_LIMIT = 50;
 export const PROPERTY_LIMIT = 50;
 export const DETAIL_LIMIT = 20;
+// The free-text search reads one lower-case string per event, at most this long.
+export const SEARCH_TEXT_LIMIT = 2_000;
+
+// Details that describe the client a change was made from (its browser, its address) rather
+// than the change itself. They are left out, as the actor's address is.
+const clientDetail =
+  /^(?:user[\s_-]*agent|(?:client[\s_-]*)?ip(?:[\s_-]*address)?|client[\s_-]*address|browser(?:[\s_-]*info)?|device[\s_-]*info)$/i;
 
 // A directory id that names nobody. Microsoft fills it in for system actions.
 const EMPTY_ID = "00000000-0000-0000-0000-000000000000";
@@ -270,8 +277,26 @@ export function normalizeDirectoryAudit(record: GraphDirectoryAudit): DirectoryC
       .map((parsed) => ({
         key: blank(parsed.data.key),
         value: boundedValue(parsed.data.value).value,
-      })),
+      }))
+      .filter((detail) => !clientDetail.test(detail.key ?? "")),
   };
+}
+
+// What the feed's search matches: the activity, who made the change, and the names and sign-in
+// names of what it was made to. Not the changed values, and not the JSON around them, so a
+// search for "name" or a quote finds only what a person would expect. Lower-cased here, and the
+// search text is lower-cased the same way, so both sides agree whatever the database's locale.
+export function searchText(event: DirectoryChangeEvent): string {
+  return [
+    event.activity,
+    event.initiatedBy.name,
+    event.initiatedBy.principal,
+    ...event.targets.flatMap((target) => [target.name, target.principal]),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n")
+    .toLowerCase()
+    .slice(0, SEARCH_TEXT_LIMIT);
 }
 
 // Reads one record. null when it cannot be stored: no id, no readable time.
