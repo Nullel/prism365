@@ -11,12 +11,15 @@ import {
 import { PGliteModuleDatabase } from "@prism365/storage";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CURSOR_BUDGET,
   createDirectoryChangesModule,
   type DirectoryChangesConfig,
   defaultDirectoryChangesConfig,
+  fitCursor,
   MAX_SPAN_MS,
   PAGE_INTERVAL_MS,
   type Pacer,
+  parseCursor,
   READ_AGAIN_TITLE,
 } from "../src/index.ts";
 
@@ -423,6 +426,79 @@ beforeEach(() => {
 afterEach(async () => {
   await scheduler?.stop();
   await database?.close();
+});
+
+// The largest cursor the collector can be left with: every failure field on both lanes, both
+// widening spans and as many fresh spans as it reads, with the longest values each can hold.
+function worstCursor(now: number) {
+  const iso = (at: number) => new Date(at + 123).toISOString();
+  const lane = (at: number) => ({
+    span: MAX_SPAN_MS - 1,
+    hold: iso(at + HOUR),
+    trying: iso(at),
+    grown: true as const,
+    backoff: 10,
+    ceiling: { span: MAX_SPAN_MS - 1, until: iso(at + DAY) },
+    strikes: { at: iso(at + 1), count: 99, since: iso(at - HOUR) },
+    uncounted: { at: iso(at + 2), failure: "unreadable" as const },
+  });
+  const settleAt = now - 300 * MINUTE;
+  return {
+    v: 1 as const,
+    phase: "live" as const,
+    start: iso(now - 30 * DAY),
+    through: iso(now - 2 * MINUTE),
+    ...lane(now - 2 * MINUTE),
+    settle: { at: iso(settleAt), ...lane(settleAt) },
+    missed: { from: iso(now - 45 * DAY), to: iso(now - 31 * DAY) },
+    unsettled: { from: iso(now - 31 * DAY), to: iso(now - 30 * DAY) },
+    fresh: Array.from({ length: 16 }, (_value, index) => ({
+      from: iso(settleAt + (10 + index * 17) * MINUTE),
+      to: iso(settleAt + (15 + index * 17) * MINUTE),
+    })),
+  };
+}
+
+describe("fitting the cursor", () => {
+  it("fits the largest cursor under the budget, merging fresh spans first and keeping their reach", () => {
+    const worst = worstCursor(start.getTime());
+    expect(parseCursor(JSON.stringify(worst))).not.toBeNull();
+    // More than the scheduler keeps: saved as it is, every save would fail.
+    expect(JSON.stringify(worst).length).toBeGreaterThan(2_048);
+    const fitted = fitCursor(worst);
+    expect(fitted.length).toBeLessThanOrEqual(CURSOR_BUDGET);
+    expect(CURSOR_BUDGET).toBeLessThanOrEqual(1_900);
+    const back = parseCursor(fitted);
+    expect(back).not.toBeNull();
+    // Merged spans cover everything the originals did.
+    const spans = back?.fresh ?? [];
+    expect(spans.length).toBeLessThan(16);
+    expect(spans[0]?.from).toBe(worst.fresh[0]?.from);
+    expect(spans.at(-1)?.to).toBe(worst.fresh.at(-1)?.to);
+    for (const original of worst.fresh)
+      expect(
+        spans.some(
+          (mark) =>
+            Date.parse(mark.from) <= Date.parse(original.from) &&
+            Date.parse(mark.to) >= Date.parse(original.to),
+        ),
+      ).toBe(true);
+    // Fresh spans go first; the missed and unsettled spans stay while they fit.
+    expect(back?.missed).toEqual(worst.missed);
+    expect(back?.unsettled).toEqual(worst.unsettled);
+  });
+
+  it("drops the older of the missed and unsettled spans only once the fresh spans are one", () => {
+    const worst = worstCursor(start.getTime());
+    const oneSpan = JSON.stringify({
+      ...worst,
+      fresh: [{ from: worst.fresh[0]?.from, to: worst.fresh.at(-1)?.to }],
+    });
+    const back = parseCursor(fitCursor(worst, oneSpan.length - 1));
+    expect(back?.fresh).toHaveLength(1);
+    expect(back?.missed).toBeUndefined();
+    expect(back?.unsettled).toEqual(worst.unsettled);
+  });
 });
 
 describe("directory change collector", () => {
@@ -1171,6 +1247,58 @@ describe("directory change collector", () => {
         (finding) => finding.title === "Late directory changes may be missing",
       ),
     ).toEqual([]);
+  });
+
+  it("saves at most 8 fresh spans and fits the budget when a skip adds a finding's span to a full cursor", async () => {
+    records.push(audit(ago(DAY)));
+    await setup();
+    await loadHistory();
+    wait(10 * MINUTE);
+    // Collection was off past what Microsoft keeps for the settle lane, the main lane is current,
+    // the first fresh span straddles the retention edge, and every failure field is set. This
+    // run raises an unsettled finding, which adds its span to the cursor before anything else
+    // changes.
+    const now = clock.getTime();
+    const edge = now - 30 * DAY;
+    const worst = worstCursor(now);
+    const { trying: _main, ...mainLane } = worst;
+    const { trying: _settle, ...settleLane } = worst.settle;
+    const iso = (at: number) => new Date(at).toISOString();
+    const fresh = Array.from({ length: 16 }, (_value, index) => ({
+      from: iso(edge - 5 * MINUTE + (index * 7 * DAY) / 8 + 123),
+      to: iso(edge + 5 * MINUTE + (index * 7 * DAY) / 8 + 123),
+    }));
+    const { unsettled: _unsettled, ...withoutUnsettled } = mainLane;
+    const candidate = {
+      ...withoutUnsettled,
+      start: iso(edge - 2 * HOUR),
+      settle: { ...settleLane, at: iso(edge - HOUR) },
+      fresh,
+    };
+    const stored = JSON.stringify(candidate);
+    expect(stored.length).toBeLessThanOrEqual(2_048);
+    expect(stored.length).toBeGreaterThan(1_850);
+    expect(parseCursor(stored)).not.toBeNull();
+    await setCursor(stored);
+    // Microsoft keeps failing where the settle lane now stands, so the fresh spans stay.
+    failWith = ({ from }) => (from < edge + DAY ? 500 : null);
+    await scheduler.tick();
+    wait(10 * MINUTE);
+    await scheduler.tick();
+    expect((await allRuns()).slice(-2).map((run) => run.status)).not.toContain("failed");
+    const saved = await database.tenant(tenantId, (sql) =>
+      sql.query<{ value: string }>(
+        "SELECT value FROM prism365_cursor WHERE module='directory.changes'",
+      ),
+    );
+    const text = saved.rows[0]?.value ?? "";
+    expect(text.length).toBeLessThanOrEqual(1_900);
+    expect(parseCursor(text)?.phase).toBe("live");
+    expect(parseCursor(text)?.through).toBe(clock.toISOString());
+    expect((parseCursor(text)?.fresh ?? []).length).toBeLessThanOrEqual(8);
+    expect((await findings()).map((finding) => finding.title)).toContain(
+      "Late directory changes may be missing",
+    );
   });
 
   it("keeps one missed-span finding while a lane recovering at the retention edge falls behind it again", async () => {

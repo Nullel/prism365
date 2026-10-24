@@ -11,8 +11,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
-  type ChangesViewProps,
   ChangesView,
+  type ChangesViewProps,
   categoryLabel,
   changesQuery,
   DirectoryChanges,
@@ -286,6 +286,38 @@ describe("directory changes page", () => {
     );
     expect(view({ session: session({ enabledFeatures: ["directory.users.read"] }) })).toContain(
       "Add audit.directory.read to ENABLED_READ_FEATURES",
+    );
+  });
+
+  it("points at flagged changes for a partial run only when a finding says changes could not be read", () => {
+    const partial = modules({
+      status: "partial",
+      credentialKind: "delegated",
+      startedAt: "2026-10-22T16:00:00.000Z",
+      finishedAt: "2026-10-22T16:00:20.000Z",
+      fetched: 40,
+      inserted: 3,
+      findings: 0,
+      skipped: 0,
+      errorCategory: null,
+    });
+    // Only a role finding: the reads that failed will be retried.
+    const retried = view({ modules: partial });
+    expect(retried).toContain("some reads failed and will be retried");
+    expect(retried).not.toContain("see the flagged changes");
+    const gap: Finding = {
+      ...finding,
+      id: "77777777-7777-4777-8777-777777777777",
+      ruleId: "collection.gap",
+      purpose: "operations",
+      severity: "medium",
+      title: "Some directory changes could not be read",
+    };
+    const flagged = view({ modules: partial, findings: [finding, gap] });
+    expect(flagged).toContain("some changes could not be read (see the flagged changes)");
+    // A gap someone resolved is no longer pointed at.
+    expect(view({ modules: partial, findings: [{ ...gap, state: "resolved" }] })).toContain(
+      "some reads failed and will be retried",
     );
   });
 

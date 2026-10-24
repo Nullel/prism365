@@ -55,7 +55,10 @@ const FRESH_WINDOW_MS = 30 * MINUTE;
 // so it is not retitled again on every run. It stays open for a person to check.
 export const READ_AGAIN_TITLE = "A gap in directory changes was read again";
 // Fresh spans kept for the settle lane; beyond this the two closest are merged.
-const FRESH_SPANS = 16;
+const FRESH_SPANS = 8;
+// The scheduler keeps a cursor of at most 2,048 characters. Every save is fitted to this, with
+// room to spare.
+export const CURSOR_BUDGET = 1_900;
 
 const iso = (value: Date | number) => new Date(value).toISOString();
 
@@ -639,6 +642,39 @@ function trimFresh(fresh: readonly SpanMark[], at: number): SpanMark[] {
     .map((mark) => ({ from: Math.max(mark.from, at), to: mark.to }));
 }
 
+// A cursor as saved, fitted to the budget: first the fresh spans are merged, closest first (a
+// merged span can only widen an unsettled finding, never drop one), then the older of the missed
+// and unsettled spans is dropped (a later span then raises a new finding instead of widening that
+// one). What is left is a position and a few bounded fields.
+export function fitCursor(cursor: DirectoryChangesCursor, budget = CURSOR_BUDGET): string {
+  let value = cursor;
+  let text = JSON.stringify(value);
+  while (text.length > budget) {
+    const spans = (value.fresh ?? []).map((mark) => ({
+      from: Date.parse(mark.from),
+      to: Date.parse(mark.to),
+    }));
+    if (spans.length > 1) {
+      const merged = mergeClosest(spans);
+      value = {
+        ...value,
+        fresh: merged.map((mark) => ({ from: iso(mark.from), to: iso(mark.to) })),
+      };
+    } else if (value.missed || value.unsettled) {
+      const { missed, unsettled, ...rest } = value;
+      const dropMissed =
+        missed && (!unsettled || Date.parse(missed.to) <= Date.parse(unsettled.to));
+      value = {
+        ...rest,
+        ...(dropMissed ? {} : missed ? { missed } : {}),
+        ...(dropMissed && unsettled ? { unsettled } : {}),
+      };
+    } else break;
+    text = JSON.stringify(value);
+  }
+  return text;
+}
+
 // Two neighbouring spans with the least between them, as one. What lay between them counts as
 // fresh too, which can only widen a finding, never drop one.
 function mergeClosest(fresh: readonly SpanMark[]): SpanMark[] {
@@ -709,8 +745,9 @@ export async function collectDirectoryChanges(
   }));
   const persist = () => {
     fresh = trimFresh(fresh, settle.at);
+    while (fresh.length > FRESH_SPANS) fresh = mergeClosest(fresh);
     return context.cursor.set(
-      JSON.stringify({
+      fitCursor({
         v: 1,
         phase,
         start: iso(start),
@@ -722,7 +759,7 @@ export async function collectDirectoryChanges(
         ...(fresh.length > 0
           ? { fresh: fresh.map((mark) => ({ from: iso(mark.from), to: iso(mark.to) })) }
           : {}),
-      } satisfies DirectoryChangesCursor),
+      }),
     );
   };
   // One finding for a span that keeps growing: a new span that starts within the margin of the

@@ -76,7 +76,7 @@ export const cursorSchema = z
     missed: span.optional(),
     unsettled: span.optional(),
     // The spans the main lane read while they were younger than the late-arrival margin and the
-    // settle lane has not read again yet, oldest first. What the main lane read when it was
+    // settle lane has not read again yet, oldest first. At most 8 are written (16 are read). What the main lane read when it was
     // already old enough to have settled (the history load, a catch-up after collection was
     // stopped) is not in them, so the settle lane losing it to Microsoft's retention loses
     // nothing.

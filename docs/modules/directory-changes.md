@@ -129,11 +129,14 @@ that stepped back cannot hold collection.
 - If the settle lane falls behind what Microsoft still keeps, it moves to what Microsoft keeps.
   The part of the span it skipped that the main lane read while it was fresh (younger than the
   margin) is recorded as "Late directory changes may be missing": a change Microsoft published
-  late there may never have been read. The cursor keeps those fresh spans (up to 16; beyond
+  late there may never have been read. The cursor keeps those fresh spans (up to 8; beyond
   that the two closest are merged, which can only widen a finding), so what the main lane read
   when it was already old (the history load, a catch-up after a stop) counts as settled and is
   never claimed. For both kinds, a new span that starts within the margin of the last one's end
   widens the same finding.
+- Every save of the cursor is fitted to 1,900 characters (the scheduler keeps at most 2,048):
+  fresh spans are merged first, then the older of the missed and unsettled spans is dropped,
+  so a later span raises a new finding instead of widening that one.
 - A saved position in the future (a clock that ran ahead and came back) brings the main lane
   back to now. When the clock ran ahead by more than the margin, the settle lane reads
   everything Microsoft still keeps again, since changes made meanwhile may lie behind it.

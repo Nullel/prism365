@@ -272,6 +272,9 @@ export function ChangeFeedList({
   );
 }
 
+// The rule of the findings that say a span of the log could not be read.
+const GAP_RULE = "collection.gap";
+
 type ModuleView = ModuleList["modules"][number];
 type RunView = NonNullable<ModuleView["collectors"][number]["lastRun"]>;
 
@@ -285,7 +288,13 @@ const failureCopy: Record<string, string> = {
   timeout: "The run took too long and stopped. The next run continues where it left off.",
 };
 
-export function changesRunLine(run: RunView | null, collecting: boolean): string {
+// `gapFlagged`: a finding says some changes could not be read. A partial run without one only
+// had reads that failed and will be retried, so the line does not point at flagged changes.
+export function changesRunLine(
+  run: RunView | null,
+  collecting: boolean,
+  gapFlagged = false,
+): string {
   if (!run)
     return "No collection has run yet. The first run loads the 30 days Microsoft keeps, oldest first.";
   if (run.status === "running")
@@ -300,7 +309,9 @@ export function changesRunLine(run: RunView | null, collecting: boolean): string
     run.skipped > 0
       ? `, ${number.format(run.skipped)} unreadable and left out`
       : run.status === "partial"
-        ? ", but some changes could not be read (see the flagged changes)"
+        ? gapFlagged
+          ? ", but some changes could not be read (see the flagged changes)"
+          : ", but some reads failed and will be retried"
         : "";
   return `Last run ${when(run.startedAt)}: ${number.format(run.fetched)} records read, ${number.format(run.inserted)} new${note}.`;
 }
@@ -360,7 +371,13 @@ export function ChangesView(props: ChangesViewProps) {
             <p aria-live="polite">
               {!enabled
                 ? `This installation does not read the directory audit log. Add ${PACK} to ENABLED_READ_FEATURES, then start collecting on Sign-in audit.`
-                : changesRunLine(run, collecting)}
+                : changesRunLine(
+                    run,
+                    collecting,
+                    findings.some(
+                      (finding) => finding.ruleId === GAP_RULE && finding.state !== "resolved",
+                    ),
+                  )}
             </p>
             {enabled && missing.length > 0 ? (
               <p className="signin-collection__note">
