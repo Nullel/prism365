@@ -121,15 +121,36 @@ export const permissionPacks = [
     mode: "either",
     phase: "mvp",
     defaultEnabled: false,
-    purpose: "Show current Microsoft 365 service health and advisories.",
-    deniedBehavior: "Service-health cards are unavailable.",
+    purpose: "Show current Microsoft 365 service health, incidents and advisories.",
+    deniedBehavior: "The service-health panel says it cannot check, and why.",
     clouds: allGraphClouds,
     prerequisites: [],
-    roleNotes: "Delegated callers must also satisfy Microsoft's role requirements.",
-    licenseNotes: "Service messages are limited to services available to the tenant.",
+    roleNotes:
+      "Delegated callers also need an admin role that can view service health, such as Global Reader or Service Support Administrator.",
+    licenseNotes: "Microsoft reports only the services the tenant subscribes to.",
     documentationUrl:
-      "https://learn.microsoft.com/en-us/graph/api/serviceannouncement-list-healthoverviews?view=graph-rest-1.0",
-    documentationLastVerified: "2026-10-13",
+      "https://learn.microsoft.com/en-us/graph/api/serviceannouncement-list-issues?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-22",
+  },
+  {
+    id: "service.messages.read",
+    label: "Message center",
+    source: "microsoftGraph",
+    permission: "ServiceMessage.Read.All",
+    mode: "either",
+    phase: "mvp",
+    defaultEnabled: false,
+    purpose:
+      "Read Message center posts: planned changes, retirements and actions Microsoft asks administrators to take.",
+    deniedBehavior: "Message center items are left out of Admin attention.",
+    clouds: allGraphClouds,
+    prerequisites: [],
+    roleNotes:
+      "Delegated callers also need a role that can read Message center, such as Message Center Reader or Global Reader.",
+    licenseNotes: "Microsoft lists posts for the services the tenant subscribes to.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/serviceannouncement-list-messages?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-22",
   },
   {
     id: "audit.signins.read",
@@ -148,6 +169,26 @@ export const permissionPacks = [
     licenseNotes: "Retention and sign-in fields vary with the tenant's Entra licensing.",
     documentationUrl: "https://learn.microsoft.com/en-us/graph/api/signin-list?view=graph-rest-1.0",
     documentationLastVerified: "2026-10-13",
+  },
+  {
+    id: "reports.authentication-methods.read",
+    label: "Authentication method registration",
+    source: "microsoftGraph",
+    permission: "AuditLog.Read.All",
+    mode: "either",
+    phase: "mvp",
+    defaultEnabled: false,
+    purpose:
+      "Read which sign-in methods each account has registered, for the MFA registration audit.",
+    deniedBehavior: "The MFA registration audit cannot run; other audits are unaffected.",
+    clouds: allGraphClouds,
+    prerequisites: [],
+    roleNotes:
+      "Delegated callers need Reports Reader, Security Reader, Security Administrator or Global Reader.",
+    licenseNotes: "Microsoft's report leaves out disabled accounts.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/authenticationmethodsroot-list-userregistrationdetails?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-22",
   },
   {
     id: "identity.conditional-access.read",

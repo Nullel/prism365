@@ -1,6 +1,12 @@
 import { z } from "zod";
+import { personHistorySchema } from "./people.ts";
 
+export * from "./attention.ts";
+export * from "./audits.ts";
 export * from "./investigation.ts";
+export * from "./licenses.ts";
+export * from "./people.ts";
+export * from "./text.ts";
 
 export const sessionSchema = z.object({
   mode: z.enum(["demo", "live"]),
@@ -430,3 +436,148 @@ export const aiProviderResultSchema = z.object({
   providerRequestId: z.string().min(1).optional(),
 });
 export type AiProviderResult = z.infer<typeof aiProviderResultSchema>;
+
+// Module runtime: findings, collector runs, and background collection status.
+export const findingStateSchema = z.enum(["open", "acknowledged", "resolved"]);
+export type FindingState = z.infer<typeof findingStateSchema>;
+
+export const findingSchema = z.object({
+  id: z.uuid(),
+  module: z.string().min(1),
+  ruleId: z.string().min(1),
+  ruleVersion: z.number().int().positive(),
+  purpose: z.enum(["security", "operations", "compliance", "adoption"]),
+  severity: severitySchema,
+  score: z.number().int().min(0).max(1_000),
+  subject: z.object({
+    kind: z.enum(["tenant", "service", "resource", "person"]),
+    id: z.string().min(1),
+    label: z.string().nullable(),
+  }),
+  title: z.string().min(1),
+  summary: z.string().min(1),
+  evidence: z.array(
+    z.object({
+      source: z.string().min(1),
+      ref: z.string().min(1),
+      observedAt: z.string().datetime({ offset: true }),
+      fields: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
+    }),
+  ),
+  limitations: z.array(z.string().min(1)),
+  windowStart: z.string().datetime({ offset: true }),
+  windowEnd: z.string().datetime({ offset: true }),
+  state: findingStateSchema,
+  occurrences: z.number().int().positive(),
+  firstSeen: z.string().datetime({ offset: true }),
+  lastSeen: z.string().datetime({ offset: true }),
+  stateChangedAt: z.string().datetime({ offset: true }).nullable(),
+});
+export type Finding = z.infer<typeof findingSchema>;
+
+export const findingListSchema = z.object({
+  mode: z.enum(["demo", "live"]),
+  items: z.array(findingSchema),
+});
+export type FindingList = z.infer<typeof findingListSchema>;
+
+// One account's stored record: its sign-in history (null when none is stored) and the findings
+// about it.
+export const personRecordSchema = z.object({
+  history: personHistorySchema.nullable(),
+  findings: z.array(findingSchema),
+});
+export type PersonRecord = z.infer<typeof personRecordSchema>;
+
+export const findingStateRequestSchema = z.object({ state: findingStateSchema });
+
+export const moduleRunSchema = z.object({
+  status: z.enum(["running", "succeeded", "partial", "failed", "abandoned"]),
+  credentialKind: z.enum(["delegated", "application"]),
+  startedAt: z.string().datetime({ offset: true }),
+  finishedAt: z.string().datetime({ offset: true }).nullable(),
+  fetched: z.number().int().nonnegative(),
+  inserted: z.number().int().nonnegative(),
+  findings: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+  errorCategory: z.string().nullable(),
+});
+export type ModuleRun = z.infer<typeof moduleRunSchema>;
+
+export const collectionStatusSchema = z.object({
+  available: z.boolean(),
+  state: z.enum(["stopped", "collecting"]),
+  credentialKind: z.enum(["delegated", "application"]).nullable(),
+  boundAt: z.string().datetime({ offset: true }).nullable(),
+  lastStopReason: z
+    .enum(["operator_stopped", "signed_out", "credential_unavailable", "replaced", "shutdown"])
+    .nullable(),
+  durableStorage: z.boolean(),
+  reason: z.string().nullable(),
+  // An administrator chose to collect and nobody stopped it: collection resumes on that
+  // administrator's next signed-in request.
+  resumes: z.boolean().default(false),
+});
+export type CollectionStatus = z.infer<typeof collectionStatusSchema>;
+
+export const moduleListSchema = z.object({
+  mode: z.enum(["demo", "live"]),
+  collection: collectionStatusSchema,
+  modules: z.array(
+    z.object({
+      id: z.string().min(1),
+      title: z.string().min(1),
+      description: z.string().min(1),
+      packs: z.array(z.string().min(1)),
+      permissions: z.array(z.string().min(1)),
+      missingPermissions: z.array(z.string().min(1)),
+      collectors: z.array(
+        z.object({
+          id: z.string().min(1),
+          title: z.string().min(1),
+          cadenceSeconds: z.number().int().positive(),
+          lastRun: moduleRunSchema.nullable(),
+        }),
+      ),
+    }),
+  ),
+});
+export type ModuleList = z.infer<typeof moduleListSchema>;
+
+// Sign-in audit module: tenant-level aggregates only. Addresses are reduced to their network.
+export const signinSummarySchema = z.object({
+  days: z.number().int().min(1).max(90),
+  totals: z.object({
+    successes: z.number().int().nonnegative(),
+    failures: z.number().int().nonnegative(),
+    blockedByPolicy: z.number().int().nonnegative(),
+    legacySuccesses: z.number().int().nonnegative(),
+    accounts: z.number().int().nonnegative(),
+  }),
+  countries: z.array(
+    z.object({
+      country: z.string().min(1).max(8),
+      successes: z.number().int().nonnegative(),
+      failures: z.number().int().nonnegative(),
+    }),
+  ),
+  failingNetworks: z.array(
+    z.object({
+      network: z.string().min(1).max(64),
+      failures: z.number().int().nonnegative(),
+      accounts: z.number().int().nonnegative(),
+    }),
+  ),
+  coverage: z.object({
+    events: z.number().int().nonnegative(),
+    firstEvent: z.string().datetime({ offset: true }).nullable(),
+    lastEvent: z.string().datetime({ offset: true }).nullable(),
+    lastCollected: z.string().datetime({ offset: true }).nullable(),
+  }),
+  history: z.object({
+    phase: z.enum(["none", "backfill", "live"]),
+    from: z.string().datetime({ offset: true }).nullable(),
+    through: z.string().datetime({ offset: true }).nullable(),
+  }),
+});
+export type SigninSummary = z.infer<typeof signinSummarySchema>;

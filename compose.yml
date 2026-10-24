@@ -16,7 +16,7 @@ services:
       STATE_ENCRYPTION_KEY: ${STATE_ENCRYPTION_KEY:-}
       AI_LOCAL_MODEL: ${AI_LOCAL_MODEL:-}
     volumes:
-      - ./secrets:/run/secrets:ro
+      - ${SECRETS_DIR:-./secrets}:/run/secrets:ro
     read_only: true
     tmpfs:
       - /tmp:size=32m
@@ -40,7 +40,7 @@ services:
   migrate:
     build: .
     profiles: [live]
-    command: [node, packages/storage/src/migrate.ts]
+    command: [node, apps/api/src/migrate.ts]
     environment:
       DATABASE_ADMIN_URL: postgresql://postgres:${DATABASE_ADMIN_PASSWORD:-}@db:5432/prism365
       DATABASE_APP_PASSWORD: ${DATABASE_APP_PASSWORD:-}

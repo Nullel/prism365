@@ -47,6 +47,34 @@ Model credentials, full prompts, evidence bundles, and answers are excluded from
 The AI access ledger records non-content metadata needed for accountability. Prism365 does not
 use tenant prompts, responses, or evidence to train a shared model.
 
+## Module data
+
+Modules declare a retention period for each table they own; the scheduler deletes older rows for
+each tenant once a day. Collector run history is kept 30 days. Findings are kept until they are
+deleted; a deletion route and export for findings do not exist yet and are required before a
+stable release. Background collection uses the signed-in administrator's delegated access, starts
+only when that administrator asks for it, and stops when they sign out.
+
+The People view shows one account's full IP addresses, locations and devices, which the tenant
+summary masks. Opening a person, paging their sign-ins, a live directory read and an email
+lookup each write an access-ledger entry that names the datasets, not the person; the list of
+people does not. Stored sign-in tables are encrypted at rest only by the host's disk
+encryption (FileVault, BitLocker or LUKS); Prism365 does not encrypt those columns itself.
+Backups made with `scripts/docker-live.sh backup` are plain `pg_dump` files outside retention.
+
+The "Check Have I Been Pwned" button on a person page opens haveibeenpwned.com with that person's
+address in the link, so the administrator's browser, not Prism365, sends it to HIBP, only when
+the button is pressed. The address also lands in that browser's history.
+
+## Audit results
+
+Each audit run stores the rows it found in `prism365_audit_run`: account names, sign-in names,
+last sign-in dates, account state, license names and, for the MFA audit, registered method types
+(never the phone numbers or keys themselves). The newest 10 successful and 5 failed runs per
+audit are kept and older ones deleted. Starting a run, opening a result and exporting it each write an access-ledger
+entry that names the audit and the run, not an account. A downloaded CSV is outside Prism365's
+retention and should be handled like the directory export it is.
+
 ## Retention defaults
 
 Final durations will be configured during the storage milestone. The design baseline is:

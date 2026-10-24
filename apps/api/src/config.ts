@@ -1,10 +1,15 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
+import { type SigninsAuditConfig, signinsAuditConfigFromEnv } from "@prism365/module-signins-audit";
 import { readFile } from "node:fs/promises";
 
 export const supportedReadFeatures = {
   "directory.users.read": "User.Read.All",
   "user.licenses.read": "LicenseAssignment.Read.All",
+  "tenant.licenses.read": "LicenseAssignment.Read.All",
   "audit.signins.read": "AuditLog.Read.All",
+  "reports.authentication-methods.read": "AuditLog.Read.All",
+  "service.health.read": "ServiceHealth.Read.All",
+  "service.messages.read": "ServiceMessage.Read.All",
 } as const;
 export type SupportedReadFeature = keyof typeof supportedReadFeatures;
 
@@ -30,6 +35,14 @@ export interface AppConfig {
   databaseUrl?: string;
   encryptionKey?: string;
   aiModel?: string;
+  // PGlite data directory for module data when no PostgreSQL URL is configured. Unset means
+  // module data lives in memory and is gone when the process stops.
+  moduleDataDir?: string;
+  // Sign-in audit settings (SIGNINS_EXPECTED_COUNTRIES, SIGNINS_TRUSTED_NETWORKS, SIGNINS_TIME_ZONE).
+  signinsAudit?: SigninsAuditConfig;
+  // Reverse proxies in front of the API whose X-Forwarded-For entry is trusted for the client
+  // address (TRUST_PROXY_HOPS). 0 trusts none. The Docker install runs behind one proxy.
+  trustProxyHops?: number;
 }
 
 export function isUuid(value: string) {
@@ -114,7 +127,11 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
   } else if (env.ENTRA_CLIENT_SECRET && !production) {
     credential = { clientSecret: env.ENTRA_CLIENT_SECRET };
   } else {
-    missing.push("ENTRA_CERTIFICATE_PATH / ENTRA_PRIVATE_KEY_PATH");
+    missing.push(
+      production
+        ? "ENTRA_CERTIFICATE_PATH / ENTRA_PRIVATE_KEY_PATH"
+        : "ENTRA_CLIENT_SECRET (development) or ENTRA_CERTIFICATE_PATH / ENTRA_PRIVATE_KEY_PATH",
+    );
   }
   if (env.DATABASE_URL && env.STATE_ENCRYPTION_KEY) {
     if (!/^[a-f0-9]{64}$/i.test(env.STATE_ENCRYPTION_KEY))
@@ -125,6 +142,16 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     missing.push("DATABASE_URL / STATE_ENCRYPTION_KEY");
   }
   if (env.AI_LOCAL_MODEL) base.aiModel = env.AI_LOCAL_MODEL;
+  base.signinsAudit = signinsAuditConfigFromEnv(env);
+  if (env.TRUST_PROXY_HOPS) {
+    if (!/^[0-3]$/.test(env.TRUST_PROXY_HOPS))
+      throw new Error("TRUST_PROXY_HOPS must be a whole number from 0 to 3.");
+    base.trustProxyHops = Number(env.TRUST_PROXY_HOPS);
+  }
+  if (env.PRISM_DATA_DIR) {
+    if (/[\0\n\r]/.test(env.PRISM_DATA_DIR)) throw new Error("PRISM_DATA_DIR is not a valid path.");
+    base.moduleDataDir = env.PRISM_DATA_DIR;
+  }
   base.missingConfiguration = missing;
   if (missing.length === 0 && credential)
     base.identity = {

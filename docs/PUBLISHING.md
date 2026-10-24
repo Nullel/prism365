@@ -9,10 +9,10 @@ request can read it. Do not skip that verification.
 - [ ] Review every tracked file with `git status` and `git diff --cached`.
 - [ ] Run `npm run check` and `npm run build` from a clean checkout.
 - [ ] Confirm fixtures and screenshots are synthetic and no secret scanner reports findings.
-- [ ] Confirm the authenticated GitHub login is exactly `nlj3`.
-- [ ] Confirm `https://github.com/nlj3/prism365` is still available.
+- [ ] Confirm the authenticated GitHub login is exactly `Nullel`.
+- [ ] Confirm `https://github.com/Nullel/prism365` is still available.
 
-GitHub CLI account access was verified as `nlj3` on 2026-10-14. If access expires, authenticate
+GitHub CLI account access was verified as `nlj3` on 2026-10-14 (the account has since been renamed to `Nullel`). If access expires, authenticate
 interactively and re-verify the login before any publishing action:
 
 ```bash
@@ -20,10 +20,10 @@ gh auth login -h github.com
 gh api user --jq .login
 ```
 
-Only if the second command prints `nlj3`, create the public repository:
+Only if the second command prints `Nullel`, create the public repository:
 
 ```bash
-gh repo create nlj3/prism365 \
+gh repo create Nullel/prism365 \
   --public \
   --source=. \
   --remote=origin \
@@ -51,7 +51,7 @@ gh repo create nlj3/prism365 \
 
 Publishing is complete only when all are true:
 
-1. `gh repo view nlj3/prism365 --json isPrivate,url` reports `isPrivate: false`.
-2. The returned URL is `https://github.com/nlj3/prism365`.
+1. `gh repo view Nullel/prism365 --json isPrivate,url` reports `isPrivate: false`.
+2. The returned URL is `https://github.com/Nullel/prism365`.
 3. An unauthenticated request can read the repository README.
 4. CI has run on `main` and the required checks are visible.

@@ -7,6 +7,17 @@ import {
   type AiProvider,
 } from "@prism365/ai";
 import {
+  type Audit,
+  auditDefinition,
+  builtInAudits,
+  findAudit,
+  getRun,
+  latestRuns as latestAuditRuns,
+  listRuns,
+  readAuditSettings,
+  writeAuditScope,
+} from "@prism365/audits";
+import {
   createAutomationPreview,
   listAutomationWorkflows,
   inspectAutomationPackage,
@@ -14,6 +25,24 @@ import {
 } from "@prism365/automation";
 import {
   aiAccessGrantSchema,
+  type AuditAvailability,
+  auditCatalogSchema,
+  auditCsv,
+  auditIdSchema,
+  auditRunDetailSchema,
+  auditRunListSchema,
+  auditScopeSchema,
+  auditSettingsSchema,
+  auditStartSchema,
+  queryAuditRows,
+  attentionItemSchema,
+  attentionListSchema,
+  attentionMuteRequestSchema,
+  attentionPreferencesSchema,
+  attentionReviewRequestSchema,
+  attentionSettingsSchema,
+  serviceHealthStatusSchema,
+  type SystemAlert,
   automationPackageSummarySchema,
   automationPackageListSchema,
   investigationEmailSchema,
@@ -21,22 +50,72 @@ import {
   capabilitySummarySchema,
   type AiEvidenceRecord,
   type UserInvestigation,
+  collectionStatusSchema,
+  findingListSchema,
+  findingStateRequestSchema,
+  findingStateSchema,
+  moduleListSchema,
+  personIdSchema,
+  personListSchema,
+  personLookupSchema,
+  personRecordSchema,
+  personSigninPageSchema,
   sessionSchema,
+  signinSummarySchema,
 } from "@prism365/contracts";
 import {
   createDemoUserInvestigation,
   GraphHttpClient,
   investigateUser,
+  lookupPersonId,
   microsoftCloudProfiles,
   permissionPacks,
+  readPersonDirectory,
   UserInvestigationError,
 } from "@prism365/graph";
-import { MemoryStateStore, type StateStore } from "@prism365/storage";
+import {
+  listPeople,
+  personHistory,
+  personSignins,
+  MODULE_ID as SIGNINS_MODULE,
+  summarizeSignins,
+} from "@prism365/module-signins-audit";
+import {
+  HEALTH_MODULE,
+  MESSAGES_MODULE,
+  serviceHealthStatus,
+} from "@prism365/module-service-health";
+import {
+  attentionCounts,
+  clearCollectionIntent,
+  type CollectionIntent,
+  latestRuns,
+  listAttention,
+  listFindings,
+  markAttentionRead,
+  modulePermissions,
+  readAttentionPreferences,
+  readCollectionIntent,
+  setAttentionMuted,
+  setAttentionReview,
+  setFindingState,
+  writeAttentionPreferences,
+  writeCollectionIntent,
+} from "@prism365/modules";
+import { MemoryStateStore, type SqlClient, type StateStore } from "@prism365/storage";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { type AppConfig, type SupportedReadFeature, supportedReadFeatures } from "./config.ts";
 import { demoDashboard } from "./demo-data.ts";
-import { digest, equalSecret, IdentityService, type IdentitySession } from "./identity.ts";
+import {
+  digest,
+  equalSecret,
+  IdentityService,
+  type IdentitySession,
+  LoginRejectedError,
+} from "./identity.ts";
+import { AuditRunner } from "./audits.ts";
+import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
 
 export interface AppOptions {
   config?: AppConfig;
@@ -45,6 +124,9 @@ export interface AppOptions {
   graphFetch?: typeof fetch;
   webRoot?: string;
   aiProvider?: AiProvider;
+  modules?: ModuleRuntime;
+  // Defaults to a runner on the module database. Tests pass one with a short time limit.
+  audits?: AuditRunner;
 }
 
 function readCookie(request: FastifyRequest, name: string) {
@@ -80,9 +162,111 @@ export function createApp(options: AppOptions = {}) {
   const aiAvailable = Boolean(
     config.mode === "live" && identity && store.durable && config.aiModel,
   );
+  const modules = config.mode === "live" && identity ? (options.modules ?? null) : null;
+  // Audits store their runs in the module database, so they exist wherever modules do.
+  const audits = modules
+    ? (options.audits ?? new AuditRunner({ database: modules.database }))
+    : null;
+  // Read packs this installation enabled, as Microsoft permission names. Background collection
+  // never uses a consented scope the operator did not enable here.
+  const enabledPermissions = () => [
+    "User.Read",
+    ...config.enabledFeatures.map((feature) => supportedReadFeatures[feature]),
+  ];
+  const unbindSession = (handle: string | undefined) => {
+    if (!modules || !handle) return;
+    const key = digest(handle);
+    if (
+      modules.scheduler.isBound(
+        (credential) =>
+          credential instanceof DelegatedSessionCredential && credential.sessionKey === key,
+      )
+    )
+      modules.scheduler.unbind("signed_out");
+  };
+  // The standing choice to collect (see packages/modules/src/collection-intent.ts), cached
+  // after the first read. undefined until read.
+  let intent: CollectionIntent | null | undefined;
+  // Start, stop and resume change the choice and the binding together, one at a time, so a stop
+  // can never be overtaken by a resume that read the choice before it.
+  let collectionQueue: Promise<unknown> = Promise.resolve();
+  const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = collectionQueue.then(work, work);
+    collectionQueue = next.catch(() => {});
+    return next;
+  };
+  const collectionIntent = async (): Promise<CollectionIntent | null> => {
+    if (intent !== undefined || !modules || !identity) return intent ?? null;
+    const tenantId = identity.tenantId;
+    intent = await modules.database.tenant(tenantId, (sql) => readCollectionIntent(sql, tenantId));
+    return intent;
+  };
+  // Sessions Microsoft refused a token for while collecting (a sign-in frequency policy, a
+  // revoked refresh token). They never resume collection again: otherwise every page load would
+  // rebind a session Microsoft keeps refusing, and every run would fail and unbind it. Signing in
+  // again gives a new session that may; pressing Start retries this one.
+  const refusedSessions = new Set<string>();
+  let collecting: DelegatedSessionCredential | null = null;
+  const bindCollection = (handle: string, session: IdentitySession) => {
+    if (!modules || !identity) return;
+    const credential = new DelegatedSessionCredential(
+      identity,
+      handle,
+      session,
+      enabledPermissions,
+    );
+    modules.scheduler.bind(credential);
+    collecting = credential;
+  };
+  // Resumes collection on the session of the administrator who started it, when nothing is
+  // collecting: after a restart, a sign-out or an expired session.
+  const resumeCollection = (session: IdentitySession, handle: string | undefined) =>
+    exclusive(async () => {
+      if (!modules || !identity || !handle) return;
+      if (modules.scheduler.status().state === "collecting") return;
+      if (refusedSessions.has(digest(handle))) return;
+      const standing = await collectionIntent();
+      if (!standing || standing.actorId !== session.actorId) return;
+      // The ledger entry comes first: collection never reads without one.
+      await store.appendAudit(session.tenantId, session.actorId, {
+        type: "collection.resumed",
+        credentialKind: "delegated",
+        occurredAt: new Date().toISOString(),
+      });
+      bindCollection(handle, session);
+      void modules.scheduler.tick().catch(() => {});
+    });
+  if (modules)
+    modules.scheduler.subscribe((event) => {
+      if (event.type === "collection.unbound") {
+        if (event.reason === "credential_unavailable" && collecting?.refused) {
+          if (refusedSessions.size >= 100) refusedSessions.clear();
+          refusedSessions.add(collecting.sessionKey);
+        }
+        collecting = null;
+      }
+      // Operator stops are recorded by the stop route with the operator who stopped it.
+      if (
+        event.type === "collection.unbound" &&
+        event.actorId &&
+        event.reason !== "shutdown" &&
+        event.reason !== "operator_stopped"
+      )
+        void store
+          .appendAudit(event.tenantId, event.actorId, {
+            type: "collection.stopped",
+            reason: event.reason,
+            occurredAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+    });
 
+  const trustedHops = config.trustProxyHops ?? 0;
   const app = Fastify({
     logger: false,
+    // Behind a proxy, request.ip would be the proxy for every caller, so all of them would share
+    // one sign-in rate-limit bucket. Trust only as many hops as are configured.
+    trustProxy: trustedHops > 0 ? (_address: string, hop: number) => hop < trustedHops : false,
     requestIdHeader: "x-request-id",
     bodyLimit: 1_000_000,
     rewriteUrl: (request) =>
@@ -100,7 +284,12 @@ export function createApp(options: AppOptions = {}) {
   });
 
   app.addHook("preHandler", async (request, reply) => {
-    const pathname = request.url.split("?")[0];
+    // Authorization keys on the route the router matched, never on the raw URL. The router
+    // decodes percent-encoding, so "/%76%31/findings" reaches the /v1/findings handler; a string
+    // test on request.url would let that request skip the session and CSRF checks below.
+    // An unmatched request has no route and is answered by the 404 handler with no data.
+    const pathname = request.routeOptions.url;
+    if (pathname === undefined) return;
     if (config.mode === "live" && pathname === "/v1/auth/login") {
       const key = `login:${digest(request.ip)}`;
       const now = Date.now();
@@ -139,6 +328,15 @@ export function createApp(options: AppOptions = {}) {
         .header("Retry-After", "60")
         .status(429)
         .send({ error: "rate_limited", message: "Wait a minute before trying again." });
+    // Collection paused by a restart or a sign-out picks up again on the next page load. Only
+    // reads trigger it, and only for the administrator whose standing choice it is; a failure to
+    // resume never fails the request.
+    if (request.method === "GET")
+      await Promise.race([
+        resumeCollection(session, readCookie(request, cookieName)).catch(() => {}),
+        // A stuck storage call must not hold every page load: wait at most five seconds.
+        new Promise((resolve) => setTimeout(resolve, 5_000).unref()),
+      ]);
     if (request.method !== "GET" && request.method !== "HEAD") {
       if (
         request.headers.origin !== config.origin ||
@@ -195,8 +393,11 @@ export function createApp(options: AppOptions = {}) {
       });
     const query = z
       .object({
+        // Any supported read pack. The service-health and audit "Grant access" links use this.
         feature: z
-          .enum(["directory.users.read", "user.licenses.read", "audit.signins.read"])
+          .enum(
+            Object.keys(supportedReadFeatures) as [SupportedReadFeature, ...SupportedReadFeature[]],
+          )
           .default("directory.users.read"),
       })
       .safeParse(request.query);
@@ -216,7 +417,10 @@ export function createApp(options: AppOptions = {}) {
       .object({ code: z.string().min(1).max(20_000), state: z.string().min(32).max(100) })
       .safeParse(request.query);
     reply.header("Set-Cookie", cookie(oauthCookieName, "", 0));
-    if (!parsed.success) return reply.redirect(`${config.origin}/?auth=failed`);
+    if (!parsed.success) {
+      console.warn("Prism365 sign-in rejected: invalid_callback_parameters");
+      return reply.redirect(`${config.origin}/?auth=failed`);
+    }
     try {
       const result = await identity.finishLogin(
         parsed.data.code,
@@ -225,13 +429,19 @@ export function createApp(options: AppOptions = {}) {
       );
       const oldHandle = readCookie(request, cookieName);
       const oldSession = await sessionFor(request);
-      if (oldHandle && oldSession) await identity.logout(oldHandle, oldSession);
+      if (oldHandle && oldSession) {
+        unbindSession(oldHandle);
+        await identity.logout(oldHandle, oldSession);
+      }
       reply.header("Set-Cookie", [
         cookie(oauthCookieName, "", 0),
         cookie(cookieName, result.handle, 8 * 60 * 60),
       ]);
       return reply.redirect(config.origin);
-    } catch {
+    } catch (error) {
+      // The browser only learns "failed". The operator's console gets the category so an
+      // allowlist mistake can be told apart from a token problem without logging either.
+      console.warn(`Prism365 sign-in rejected: ${signInFailureCategory(error)}`);
       return reply.redirect(`${config.origin}/?auth=failed`);
     }
   });
@@ -239,9 +449,952 @@ export function createApp(options: AppOptions = {}) {
   app.post("/v1/auth/logout", async (request, reply) => {
     const handle = readCookie(request, cookieName);
     const session = await sessionFor(request);
+    unbindSession(handle);
     if (identity && handle && session) await identity.logout(handle, session);
     reply.header("Set-Cookie", cookie(cookieName, "", 0));
     return { signedOut: true };
+  });
+
+  // `viewerHandle`: the session asking. A session that will not resume collection is told so.
+  const collectionStatus = (viewerHandle?: string) => {
+    const status = modules?.scheduler.status();
+    return collectionStatusSchema.parse({
+      available: Boolean(modules),
+      state: status?.state ?? "stopped",
+      credentialKind: status?.credentialKind ?? null,
+      boundAt: status?.boundAt ?? null,
+      lastStopReason: status?.lastStopReason ?? null,
+      durableStorage: modules?.database.durable ?? false,
+      resumes:
+        status?.state !== "collecting" &&
+        Boolean(intent) &&
+        !(viewerHandle && refusedSessions.has(digest(viewerHandle))),
+      reason:
+        config.mode === "demo"
+          ? "Demo mode does not collect tenant data."
+          : modules
+            ? null
+            : "Module collection is not configured for this installation.",
+    });
+  };
+
+  app.get("/v1/modules", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (config.mode === "live" && !session)
+      return reply.status(401).send({ error: "authentication_required" });
+    const runs =
+      modules && identity
+        ? await modules.database.tenant(identity.tenantId, (sql) =>
+            latestRuns(sql, identity.tenantId),
+          )
+        : [];
+    const allowed = new Set(enabledPermissions());
+    const granted = new Set((session?.scopes ?? []).filter((scope) => allowed.has(scope)));
+    return moduleListSchema.parse({
+      mode: config.mode,
+      collection: collectionStatus(readCookie(request, cookieName)),
+      modules: (modules?.registry.list() ?? []).map((module) => {
+        const permissions = modulePermissions(module);
+        return {
+          id: module.id,
+          title: module.title,
+          description: module.description,
+          packs: [...module.packs],
+          permissions,
+          missingPermissions: permissions.filter((permission) => !granted.has(permission)),
+          collectors: module.collectors.map((collector) => {
+            const run = runs.find(
+              (candidate) => candidate.module === module.id && candidate.collector === collector.id,
+            );
+            return {
+              id: collector.id,
+              title: collector.title,
+              cadenceSeconds: collector.cadenceSeconds,
+              lastRun: run
+                ? {
+                    status: run.status,
+                    credentialKind: run.credentialKind,
+                    startedAt: run.startedAt,
+                    finishedAt: run.finishedAt,
+                    fetched: run.fetched,
+                    inserted: run.inserted,
+                    findings: run.findings,
+                    skipped: run.skipped,
+                    errorCategory: run.errorCategory,
+                  }
+                : null,
+            };
+          }),
+        };
+      }),
+    });
+  });
+
+  app.post("/v1/collection/start", async (request, reply) => {
+    const session = await sessionFor(request);
+    const handle = readCookie(request, cookieName);
+    if (!modules || !identity || !session || !handle)
+      return reply.status(409).send({
+        error: "collection_unavailable",
+        message: "Background collection needs live mode and a signed-in administrator.",
+      });
+    await exclusive(async () => {
+      const previous = await collectionIntent();
+      const standing = { actorId: session.actorId, since: new Date().toISOString() };
+      await modules.database.tenant(session.tenantId, (sql) =>
+        writeCollectionIntent(sql, session.tenantId, standing),
+      );
+      intent = standing;
+      try {
+        await store.appendAudit(session.tenantId, session.actorId, {
+          type: "collection.started",
+          credentialKind: "delegated",
+          modules: modules.registry.list().map((module) => module.id),
+          occurredAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        // No ledger entry, no start: put back the choice that was there before (possibly another
+        // administrator's), rather than erasing it.
+        intent = previous;
+        await modules.database
+          .tenant(session.tenantId, (sql) =>
+            previous
+              ? writeCollectionIntent(sql, session.tenantId, previous)
+              : clearCollectionIntent(sql, session.tenantId),
+          )
+          .catch(() => {});
+        throw error;
+      }
+      // An explicit start retries a session Microsoft refused before.
+      refusedSessions.delete(digest(handle));
+      bindCollection(handle, session);
+    });
+    void modules.scheduler.tick().catch(() => {});
+    return collectionStatus();
+  });
+
+  app.post("/v1/collection/stop", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!modules || !session) return reply.status(409).send({ error: "collection_unavailable" });
+    const saved = await exclusive(async () => {
+      // Collection stops first, whatever happens to the stored choice after it.
+      if (modules.scheduler.status().state === "collecting") {
+        modules.scheduler.unbind("operator_stopped");
+        await store
+          .appendAudit(session.tenantId, session.actorId, {
+            type: "collection.stopped",
+            reason: "operator_stopped",
+            occurredAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
+      // Stopping ends the standing choice too, so nothing resumes until someone starts it again.
+      intent = null;
+      try {
+        await modules.database.tenant(session.tenantId, (sql) =>
+          clearCollectionIntent(sql, session.tenantId),
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!saved)
+      return reply.status(500).send({
+        error: "stop_not_saved",
+        message:
+          "Collection stopped, but the choice could not be saved. It may resume after the server restarts; press Stop again then.",
+      });
+    return collectionStatus();
+  });
+
+  app.get("/v1/findings", async (request, reply) => {
+    if (config.mode === "demo") return findingListSchema.parse({ mode: "demo", items: [] });
+    if (!(await sessionFor(request)))
+      return reply.status(401).send({ error: "authentication_required" });
+    if (!modules || !identity)
+      return reply.status(409).send({
+        error: "modules_unavailable",
+        message: "Module findings are not configured for this installation.",
+      });
+    const query = z
+      .object({
+        module: z
+          .string()
+          .regex(/^[a-z][a-z0-9.-]{1,80}$/)
+          .optional(),
+        state: findingStateSchema.optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+      })
+      .safeParse(request.query);
+    if (!query.success)
+      return reply
+        .status(400)
+        .send({ error: "invalid_request", message: "Check the finding filters and retry." });
+    const filter = {
+      ...(query.data.module ? { module: query.data.module } : {}),
+      ...(query.data.state ? { state: query.data.state } : {}),
+      ...(query.data.limit ? { limit: query.data.limit } : {}),
+    };
+    const items = await modules.database.tenant(identity.tenantId, (sql) =>
+      listFindings(sql, identity.tenantId, filter),
+    );
+    return findingListSchema.parse({ mode: "live", items });
+  });
+
+  app.get("/v1/modules/signins.audit/summary", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!modules || !session || !modules.registry.get(SIGNINS_MODULE))
+      return reply.status(409).send({
+        error: "modules_unavailable",
+        message: "The sign-in audit module is not available in this installation.",
+      });
+    const query = z
+      .object({ days: z.coerce.number().int().min(1).max(90).default(7) })
+      .safeParse(request.query);
+    if (!query.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Choose 1 to 90 days." });
+    const summary = await modules.database.tenant(session.tenantId, (sql) =>
+      summarizeSignins(sql, session.tenantId, new Date(), query.data.days),
+    );
+    return signinSummarySchema.parse(summary);
+  });
+
+  // People: one page per account, joining stored sign-ins with the live directory.
+  const peopleAvailable = () => Boolean(modules?.registry.get(SIGNINS_MODULE));
+  const delegatedGraph = (session: IdentitySession, handle: string) => {
+    if (!identity) throw new Error("Live mode is not configured.");
+    const permitted = new Set(enabledPermissions());
+    const scopes = session.scopes.filter((scope) => permitted.has(scope));
+    const client = new GraphHttpClient({
+      requestTimeoutMilliseconds: 30_000,
+      getAccessToken: () => identity.accessToken(handle, scopes),
+      ...(options.graphFetch ? { fetchImplementation: options.graphFetch } : {}),
+    });
+    return { client, scopes };
+  };
+  const personParams = z.object({ userId: personIdSchema });
+
+  app.get("/v1/people", async (request, reply) => {
+    if (config.mode === "demo")
+      return personListSchema.parse({ mode: "demo", days: 30, items: [], truncated: false });
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!modules || !peopleAvailable())
+      return reply.status(409).send({
+        error: "modules_unavailable",
+        message: "People needs the sign-in audit module, which is not available here.",
+      });
+    const query = z
+      .object({
+        search: z.string().max(200).optional(),
+        days: z.coerce.number().int().min(1).max(90).default(30),
+      })
+      .safeParse(request.query);
+    if (!query.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Check the search." });
+    const result = await modules.database.tenant(session.tenantId, (sql) =>
+      listPeople(sql, session.tenantId, {
+        now: new Date(),
+        days: query.data.days,
+        ...(query.data.search ? { search: query.data.search } : {}),
+      }),
+    );
+    return personListSchema.parse({ mode: "live", days: query.data.days, ...result });
+  });
+
+  // Finds the account behind a work email in the directory, for people with no stored sign-ins.
+  app.get("/v1/people/lookup", async (request, reply) => {
+    const session = await sessionFor(request);
+    const handle = readCookie(request, cookieName);
+    if (config.mode !== "live" || !session || !handle)
+      return reply.status(401).send({ error: "authentication_required" });
+    const query = z.object({ email: investigationEmailSchema }).safeParse(request.query);
+    if (!query.success)
+      return reply
+        .status(400)
+        .send({ error: "invalid_input", message: "Enter a valid work email address." });
+    const { client, scopes } = delegatedGraph(session, handle);
+    if (!scopes.includes("User.Read.All"))
+      return reply.status(403).send({
+        error: "missing_consent",
+        message: "Looking people up needs the User.Read.All feature pack.",
+      });
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "person.lookup",
+      datasets: ["directory"],
+      occurredAt: new Date().toISOString(),
+    });
+    try {
+      const userId = await lookupPersonId({ userPrincipalName: query.data.email, client });
+      if (!userId)
+        return reply.status(404).send({
+          error: "user_not_found",
+          message: "No account has that email in the connected tenant.",
+        });
+      return personLookupSchema.parse({ userId });
+    } catch {
+      return reply.status(503).send({
+        error: "directory_unavailable",
+        message: "Microsoft's directory could not be read just now. Try again.",
+      });
+    }
+  });
+
+  app.get("/v1/people/:userId", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!modules || !peopleAvailable())
+      return reply.status(409).send({ error: "modules_unavailable" });
+    const params = personParams.safeParse(request.params);
+    if (!params.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Unknown account." });
+    const { userId } = params.data;
+    const record = await modules.database.tenant(session.tenantId, async (sql) => ({
+      history: await personHistory(sql, session.tenantId, userId),
+      findings: await listFindings(sql, session.tenantId, {
+        module: SIGNINS_MODULE,
+        personId: userId,
+        limit: 200,
+      }),
+    }));
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "person.viewed",
+      datasets: ["signIns", "findings"],
+      occurredAt: new Date().toISOString(),
+    });
+    return personRecordSchema.parse(record);
+  });
+
+  app.get("/v1/people/:userId/signins", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!modules || !peopleAvailable())
+      return reply.status(409).send({ error: "modules_unavailable" });
+    const params = personParams.safeParse(request.params);
+    const query = z
+      .object({
+        before: z.string().max(600).optional(),
+        result: z.enum(["all", "success", "failed"]).default("all"),
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+      })
+      .safeParse(request.query);
+    if (!params.success || !query.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Check the filters." });
+    try {
+      const page = await modules.database.tenant(session.tenantId, (sql) =>
+        personSignins(sql, session.tenantId, params.data.userId, {
+          before: query.data.before ?? null,
+          result: query.data.result,
+          limit: query.data.limit,
+        }),
+      );
+      await store.appendAudit(session.tenantId, session.actorId, {
+        type: "person.signins.viewed",
+        datasets: ["signIns"],
+        occurredAt: new Date().toISOString(),
+      });
+      return personSigninPageSchema.parse(page);
+    } catch (error) {
+      if (error instanceof RangeError)
+        return reply.status(400).send({ error: "invalid_request", message: "Reload the page." });
+      throw error;
+    }
+  });
+
+  app.get("/v1/people/:userId/directory", async (request, reply) => {
+    const session = await sessionFor(request);
+    const handle = readCookie(request, cookieName);
+    if (config.mode !== "live" || !session || !handle)
+      return reply.status(401).send({ error: "authentication_required" });
+    const params = personParams.safeParse(request.params);
+    if (!params.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Unknown account." });
+    const { client, scopes } = delegatedGraph(session, handle);
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "person.directory.viewed",
+      datasets: ["directory", "licenses", "signInActivity"],
+      occurredAt: new Date().toISOString(),
+    });
+    return readPersonDirectory({
+      key: { userId: params.data.userId },
+      client,
+      grantedScopes: scopes,
+    });
+  });
+
+  app.post("/v1/findings/:id/state", async (request, reply) => {
+    const session = await sessionFor(request);
+    const params = z.object({ id: z.uuid() }).safeParse(request.params);
+    const body = findingStateRequestSchema.safeParse(request.body);
+    if (!modules || !session) return reply.status(409).send({ error: "modules_unavailable" });
+    if (!params.success || !body.success)
+      return reply
+        .status(400)
+        .send({ error: "invalid_request", message: "Choose open, acknowledged, or resolved." });
+    const updated = await modules.database.tenant(session.tenantId, (sql) =>
+      setFindingState(sql, session.tenantId, params.data.id, body.data.state, session.actorId),
+    );
+    if (!updated)
+      return reply
+        .status(404)
+        .send({ error: "finding_not_found", message: "The finding is not available." });
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "finding.state.changed",
+      findingId: updated.id,
+      state: updated.state,
+      occurredAt: new Date().toISOString(),
+    });
+    return findingListSchema.shape.items.element.parse(updated);
+  });
+
+  // Notification center ("attention") and the Microsoft service-health panel.
+  // The enabled read pack that carries a permission. Several packs can share one permission
+  // (AuditLog.Read.All, LicenseAssignment.Read.All); consent can only be asked for an enabled one.
+  const featureFor = (permission: string) =>
+    config.enabledFeatures.find((feature) => supportedReadFeatures[feature] === permission);
+  // What each source can do right now. While collection runs, that is decided by the credential
+  // collecting (the scheduler's own skipped list), not by whoever is looking; when it is stopped,
+  // by the viewer's session, which is what starting collection would use.
+  const sourceStates = (session: IdentitySession) => {
+    const granted = new Set(
+      session.scopes.filter((scope) => new Set(enabledPermissions()).has(scope)),
+    );
+    const status = modules?.scheduler.status();
+    const collecting = status?.state === "collecting";
+    const skipped = new Map((status?.skipped ?? []).map((entry) => [entry.module, entry.missing]));
+    return (modules?.registry.list() ?? []).map((module) => {
+      const permissions = modulePermissions(module);
+      const notEnabled = module.packs.some(
+        (pack) => !config.enabledFeatures.includes(pack as SupportedReadFeature),
+      );
+      const missing = collecting
+        ? (skipped.get(module.id) ?? [])
+        : permissions.filter((permission) => !granted.has(permission));
+      return {
+        module: module.id,
+        title: module.title,
+        collectors: module.collectors,
+        state: notEnabled
+          ? ("not_enabled" as const)
+          : missing.length > 0
+            ? ("missing_permission" as const)
+            : collecting
+              ? ("available" as const)
+              : ("not_collecting" as const),
+        missing,
+      };
+    });
+  };
+  // Problems that stop Prism365 from checking the environment, worked out from collection state
+  // each time they are asked for. Sources the installation never enabled are not alerts.
+  const systemAlerts = async (session: IdentitySession) => {
+    if (!modules) return [];
+    const status = modules.scheduler.status();
+    const runs = await modules.database.tenant(session.tenantId, (sql) =>
+      latestRuns(sql, session.tenantId),
+    );
+    const alerts: SystemAlert[] = [];
+    const sources = sourceStates(session);
+    if (status.state === "stopped" && sources.some((source) => source.state !== "not_enabled"))
+      alerts.push({
+        id: "collection.stopped",
+        severity: status.lastStopReason === "credential_unavailable" ? "high" : "medium",
+        title: "Prism365 is not collecting",
+        detail:
+          status.lastStopReason === "credential_unavailable"
+            ? "The session collection ran on ended or lost access, so nothing is being checked. Sign in and start collecting again."
+            : "Nothing is being checked until an administrator starts collecting.",
+        observedAt: null,
+        action: { label: "Start collecting", href: "view:signins" },
+      });
+    for (const source of sources) {
+      if (source.state === "missing_permission") {
+        const feature = featureFor(source.missing[0] ?? "");
+        alerts.push({
+          id: `permission.${source.module}`,
+          severity: "medium",
+          title: `${source.title} cannot be checked`,
+          detail: `${status.state === "collecting" ? "The session Prism365 collects with" : "Your Microsoft session"} has not granted ${source.missing.join(", ")}. Grant it, and make sure the account has a role Microsoft accepts for it.`,
+          observedAt: null,
+          action: feature
+            ? {
+                label: "Grant access",
+                href: `/api/v1/auth/login?feature=${encodeURIComponent(feature)}`,
+              }
+            : null,
+        });
+        continue;
+      }
+      if (source.state !== "available") continue;
+      for (const collector of source.collectors) {
+        const run = runs.find(
+          (item) => item.module === source.module && item.collector === collector.id,
+        );
+        if (run?.status === "failed")
+          alerts.push({
+            id: `failed.${source.module}.${collector.id}`,
+            severity: "medium",
+            title: `The last ${collector.title.toLowerCase()} check failed`,
+            detail: `It failed with ${run.errorCategory ?? "an unknown error"}. The next run retries.`,
+            observedAt: run.startedAt,
+            action: null,
+          });
+        else if (
+          run &&
+          Date.now() - Date.parse(run.startedAt) > collector.cadenceSeconds * 3_000 + 120_000
+        )
+          alerts.push({
+            id: `stale.${source.module}.${collector.id}`,
+            severity: "low",
+            title: `${collector.title} has not been checked recently`,
+            detail: `Prism365 checks it every ${Math.round(collector.cadenceSeconds / 60)} minutes while collecting.`,
+            observedAt: run.startedAt,
+            action: null,
+          });
+      }
+    }
+    return alerts;
+  };
+  const attentionRoute = (request: FastifyRequest) => {
+    if (config.mode !== "live" || !modules) return null;
+    return sessionFor(request);
+  };
+
+  app.get("/v1/attention", async (request, reply) => {
+    if (config.mode === "demo")
+      return attentionListSchema.parse({
+        mode: "demo",
+        items: [],
+        system: [],
+        sources: [],
+        counts: { unread: 0, active: 0 },
+      });
+    const session = await attentionRoute(request);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    const query = z
+      .object({
+        filter: z.enum(["open", "unread", "all", "muted"]).default("open"),
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+      })
+      .safeParse(request.query);
+    if (!query.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Check the filter." });
+    const stored = await modules.database.tenant(session.tenantId, async (sql) => ({
+      items: await listAttention(sql, session.tenantId, query.data),
+      counts: await attentionCounts(sql, session.tenantId),
+    }));
+    return attentionListSchema.parse({
+      mode: "live",
+      ...stored,
+      system: await systemAlerts(session),
+      sources: sourceStates(session)
+        .filter((source) => source.module !== SIGNINS_MODULE)
+        .map(({ module, title, state, missing }) => ({ module, title, state, missing })),
+    });
+  });
+
+  const attentionParams = z.object({ id: z.uuid() });
+  app.post("/v1/attention/:id/review", async (request, reply) => {
+    const session = await attentionRoute(request);
+    const params = attentionParams.safeParse(request.params);
+    const body = attentionReviewRequestSchema.safeParse(request.body);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    if (!params.success || !body.success)
+      return reply
+        .status(400)
+        .send({ error: "invalid_request", message: "Choose new, reviewed or done." });
+    const item = await modules.database.tenant(session.tenantId, (sql) =>
+      setAttentionReview(sql, session.tenantId, params.data.id, body.data.state, session.actorId),
+    );
+    if (!item)
+      return reply.status(404).send({ error: "not_found", message: "The item is not available." });
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "attention.reviewed",
+      itemId: item.id,
+      state: item.review.state,
+      occurredAt: new Date().toISOString(),
+    });
+    return attentionItemSchema.parse(item);
+  });
+
+  app.post("/v1/attention/:id/mute", async (request, reply) => {
+    const session = await attentionRoute(request);
+    const params = attentionParams.safeParse(request.params);
+    const body = attentionMuteRequestSchema.safeParse(request.body);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    if (!params.success || !body.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Choose muted or not." });
+    const item = await modules.database.tenant(session.tenantId, (sql) =>
+      setAttentionMuted(sql, session.tenantId, params.data.id, body.data.muted),
+    );
+    if (!item)
+      return reply.status(404).send({ error: "not_found", message: "The item is not available." });
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "attention.muted",
+      itemId: item.id,
+      muted: item.muted,
+      occurredAt: new Date().toISOString(),
+    });
+    return attentionItemSchema.parse(item);
+  });
+
+  app.post("/v1/attention/:id/read", async (request, reply) => {
+    const session = await attentionRoute(request);
+    const params = attentionParams.safeParse(request.params);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    if (!params.success) return reply.status(400).send({ error: "invalid_request" });
+    const updated = await modules.database.tenant(session.tenantId, (sql) =>
+      markAttentionRead(sql, session.tenantId, params.data.id),
+    );
+    return { updated };
+  });
+
+  app.post("/v1/attention/read-all", async (request, reply) => {
+    const session = await attentionRoute(request);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    const updated = await modules.database.tenant(session.tenantId, (sql) =>
+      markAttentionRead(sql, session.tenantId, null),
+    );
+    return { updated };
+  });
+
+  const serviceNames = (sql: SqlClient, tenantId: string) =>
+    sql
+      .query<{ name: string }>(
+        "SELECT name FROM mod_service_health_service WHERE tenant_id=$1 ORDER BY name",
+        [tenantId],
+      )
+      .then((result) => result.rows.map((row) => row.name));
+
+  app.get("/v1/settings/attention", async (request, reply) => {
+    const session = await attentionRoute(request);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    const settings = await modules.database.tenant(session.tenantId, async (sql) => ({
+      preferences: await readAttentionPreferences(sql, session.tenantId),
+      services: await serviceNames(sql, session.tenantId),
+    }));
+    return attentionSettingsSchema.parse(settings);
+  });
+
+  app.post("/v1/settings/attention", async (request, reply) => {
+    const session = await attentionRoute(request);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    const body = attentionPreferencesSchema.safeParse(request.body);
+    if (!body.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Check the settings." });
+    const settings = await modules.database.tenant(session.tenantId, async (sql) => ({
+      preferences: await writeAttentionPreferences(
+        sql,
+        session.tenantId,
+        body.data,
+        session.actorId,
+      ),
+      services: await serviceNames(sql, session.tenantId),
+    }));
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "attention.settings.changed",
+      occurredAt: new Date().toISOString(),
+    });
+    return attentionSettingsSchema.parse(settings);
+  });
+
+  app.get("/v1/modules/service.health/status", async (request, reply) => {
+    if (config.mode === "demo")
+      return serviceHealthStatusSchema.parse({
+        state: "not_enabled",
+        detail: "Demo mode does not read Microsoft service health.",
+        lastSuccess: null,
+        lastAttempt: null,
+        services: [],
+        incidents: [],
+        messages: { state: "not_enabled", lastSuccess: null },
+      });
+    const session = await attentionRoute(request);
+    if (!session || !modules) return reply.status(401).send({ error: "authentication_required" });
+    const sources = sourceStates(session);
+    const source = (id: string) => sources.find((item) => item.module === id);
+    const flags = (id: string) => ({
+      enabled: source(id) !== undefined && source(id)?.state !== "not_enabled",
+      granted: source(id)?.state === "available" || source(id)?.state === "not_collecting",
+    });
+    const status = await modules.database.tenant(session.tenantId, async (sql) =>
+      serviceHealthStatus(sql, session.tenantId, {
+        now: new Date(),
+        collecting: modules.scheduler.status().state === "collecting",
+        runs: await latestRuns(sql, session.tenantId),
+        health: flags(HEALTH_MODULE),
+        messages: flags(MESSAGES_MODULE),
+      }),
+    );
+    return serviceHealthStatusSchema.parse(status);
+  });
+
+  // Audits (TL-025): checks an administrator runs on demand. Each run reads Microsoft with the
+  // delegated session of whoever started it, and its rows are kept for history and export.
+  const packPermission = (id: string) =>
+    permissionPacks.find((pack) => pack.id === id)?.permission ?? null;
+  const auditAvailability = (audit: Audit, session: IdentitySession): AuditAvailability => {
+    const enabled = new Set(enabledPermissions());
+    const granted = new Set(session.scopes.filter((scope) => enabled.has(scope)));
+    const { permissions } = auditDefinition(audit);
+    const notEnabled = permissions.filter((permission) => !enabled.has(permission));
+    if (notEnabled.length > 0)
+      return {
+        state: "not_enabled",
+        missing: notEnabled,
+        grantFeature: null,
+        enable: audit.packs.filter((pack) => notEnabled.includes(packPermission(pack) ?? "")),
+      };
+    const missing = permissions.filter((permission) => !granted.has(permission));
+    if (missing.length > 0)
+      return {
+        state: "missing_permission",
+        missing,
+        grantFeature: featureFor(missing[0] ?? "") ?? null,
+        enable: [],
+      };
+    return { state: "available", missing: [], grantFeature: null, enable: [] };
+  };
+  // Audits read whole directories, so they get the background reader's budgets.
+  const auditGraph = (session: IdentitySession, handle: string) => {
+    if (!identity) throw new Error("Live mode is not configured.");
+    const permitted = new Set(enabledPermissions());
+    const scopes = session.scopes.filter((scope) => permitted.has(scope));
+    const client = new GraphHttpClient({
+      requestTimeoutMilliseconds: 60_000,
+      maxResponseBytes: 8_388_608,
+      maxRetries: 3,
+      maxRetryWaitMilliseconds: 30_000,
+      getAccessToken: () => identity.accessToken(handle, scopes),
+      ...(options.graphFetch ? { fetchImplementation: options.graphFetch } : {}),
+    });
+    return { client, scopes };
+  };
+  const auditsUnavailable = {
+    error: "audits_unavailable",
+    message: "Audits need live mode with module storage, and a signed-in administrator.",
+  };
+  const runParams = z.object({ runId: z.uuid() });
+
+  app.get("/v1/audits", async (request, reply) => {
+    if (config.mode === "demo")
+      return auditCatalogSchema.parse({
+        mode: "demo",
+        audits: builtInAudits.map((audit) => ({
+          definition: auditDefinition(audit),
+          availability: { state: "available", missing: [], grantFeature: null, enable: [] },
+          lastRun: null,
+          runningId: null,
+        })),
+      });
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
+    await audits.recover(session.tenantId);
+    const latest = await modules.database.tenant(session.tenantId, (sql) =>
+      latestAuditRuns(sql, session.tenantId),
+    );
+    return auditCatalogSchema.parse({
+      mode: "live",
+      audits: builtInAudits.map((audit) => {
+        const id = audit.definition.id;
+        return {
+          definition: auditDefinition(audit),
+          availability: auditAvailability(audit, session),
+          lastRun: latest.find((run) => run.auditId === id) ?? null,
+          runningId: audits.runningId(session.tenantId, id),
+        };
+      }),
+    });
+  });
+
+  app.post("/v1/audits/:auditId/runs", async (request, reply) => {
+    const session = await sessionFor(request);
+    const handle = readCookie(request, cookieName);
+    if (!session || !handle) return reply.status(401).send({ error: "authentication_required" });
+    if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
+    const params = z.object({ auditId: auditIdSchema }).safeParse(request.params);
+    const audit = params.success ? findAudit(params.data.auditId) : undefined;
+    if (!audit)
+      return reply.status(404).send({ error: "unknown_audit", message: "There is no such audit." });
+    const availability = auditAvailability(audit, session);
+    if (availability.state !== "available")
+      return reply.status(403).send({
+        error: availability.state === "not_enabled" ? "feature_not_enabled" : "missing_consent",
+        message:
+          availability.state === "not_enabled"
+            ? `This installation has not enabled ${availability.enable.join(", ") || availability.missing.join(", ")}. Add it to ENABLED_READ_FEATURES and restart.`
+            : `Your session has not granted ${availability.missing.join(", ")}. Grant access and run it again.`,
+        availability,
+      });
+    const id = audit.definition.id;
+    const { client, scopes } = auditGraph(session, handle);
+    const definition = auditDefinition(audit);
+    // The ledger names what this run will read: required permissions, and optional ones the
+    // session granted (license names, sign-in dates).
+    const datasets = [
+      ...definition.permissions,
+      ...definition.optionalPermissions.filter((permission) => scopes.includes(permission)),
+    ];
+    const result = await audits.start({
+      tenantId: session.tenantId,
+      actor: { id: session.actorId, name: session.displayName ?? null },
+      audit,
+      client,
+      granted: scopes,
+      beforeRead: (started) =>
+        store.appendAudit(session.tenantId, session.actorId, {
+          type: "audit.run.started",
+          auditId: id,
+          runId: started.id,
+          datasets,
+          occurredAt: new Date().toISOString(),
+        }),
+    });
+    let run = result.run;
+    if (!run) {
+      const detail = await modules.database.tenant(session.tenantId, (sql) =>
+        getRun(sql, session.tenantId, result.runId),
+      );
+      if (detail) {
+        const { rows: _rows, ...summary } = detail;
+        run = summary;
+      }
+    }
+    if (!run)
+      return reply.status(409).send({ error: "run_unavailable", message: "Reload the page." });
+    return reply
+      .status(result.started ? 202 : 200)
+      .send(auditStartSchema.parse({ run, started: result.started }));
+  });
+
+  app.get("/v1/audits/:auditId/runs", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
+    const params = z.object({ auditId: auditIdSchema }).safeParse(request.params);
+    if (!params.success || !findAudit(params.data.auditId))
+      return reply.status(404).send({ error: "unknown_audit", message: "There is no such audit." });
+    await audits.recover(session.tenantId);
+    const runs = await modules.database.tenant(session.tenantId, (sql) =>
+      listRuns(sql, session.tenantId, params.data.auditId),
+    );
+    return auditRunListSchema.parse({ runs });
+  });
+
+  const loadRun = async (session: IdentitySession, runId: string) => {
+    if (!modules || !audits) return null;
+    await audits.recover(session.tenantId);
+    return modules.database.tenant(session.tenantId, (sql) => getRun(sql, session.tenantId, runId));
+  };
+
+  app.get("/v1/audit-runs/:runId", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
+    const params = runParams.safeParse(request.params);
+    if (!params.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Unknown audit run." });
+    const run = await loadRun(session, params.data.runId);
+    if (!run)
+      return reply.status(404).send({ error: "run_not_found", message: "That run was deleted." });
+    const current = findAudit(run.auditId);
+    if (current && run.auditVersion !== current.definition.version)
+      run.notes = [
+        `Made by version ${run.auditVersion} of this audit; the table now uses version ${current.definition.version}, so some columns may be empty. Run it again for a current result.`,
+        ...run.notes,
+      ].slice(0, 20);
+    // Polling a run in progress returns no rows, so only a finished result counts as viewed.
+    if (run.status !== "running")
+      await store.appendAudit(session.tenantId, session.actorId, {
+        type: "audit.run.viewed",
+        auditId: run.auditId,
+        runId: run.id,
+        occurredAt: new Date().toISOString(),
+      });
+    return auditRunDetailSchema.parse(run);
+  });
+
+  app.get("/v1/audit-runs/:runId/export.csv", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
+    const params = runParams.safeParse(request.params);
+    const query = z.record(z.string().max(60), z.string().max(200)).safeParse(request.query ?? {});
+    if (!params.success || !query.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Check the filters." });
+    const run = await loadRun(session, params.data.runId);
+    const audit = run ? findAudit(run.auditId) : undefined;
+    if (!run || !audit || run.status !== "succeeded")
+      return reply
+        .status(404)
+        .send({ error: "run_not_found", message: "That run has no results." });
+    const definition = auditDefinition(audit);
+    // Export what the page shows: ?view=, ?search=, ?sort=&direction=, and f.<column>= filters.
+    const { view, search, sort, direction } = query.data;
+    const facets = Object.fromEntries(
+      Object.entries(query.data)
+        .filter(([key]) => key.startsWith("f."))
+        .map(([key, value]) => [key.slice(2), value]),
+    );
+    const rows = queryAuditRows(definition, run.rows, {
+      view: view ?? null,
+      facets,
+      search: search ?? "",
+      sort: sort ? { column: sort, direction: direction === "asc" ? "asc" : "desc" } : null,
+    });
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "audit.run.exported",
+      auditId: run.auditId,
+      runId: run.id,
+      rows: rows.length,
+      occurredAt: new Date().toISOString(),
+    });
+    const day = run.startedAt.slice(0, 10);
+    return reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header(
+        "Content-Disposition",
+        // A limited result says so in its name, so a file passed on is never mistaken for the
+        // whole tenant.
+        `attachment; filename="prism365-${run.auditId}-${day}${run.scope && run.scope.length > 0 ? `-limited-to-${run.scope.length}-domain${run.scope.length === 1 ? "" : "s"}` : ""}.csv"`,
+      )
+      .send(auditCsv(definition, rows));
+  });
+
+  // The audit scope (docs/audits.md): which account domains the account audits cover. The
+  // domains to choose from come from the stored results of the audits that use it, so reading
+  // them makes no call to Microsoft.
+  app.get("/v1/settings/audits", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
+    const settings = await modules.database.tenant(session.tenantId, (sql) =>
+      readAuditSettings(sql, session.tenantId, builtInAudits),
+    );
+    return auditSettingsSchema.parse(settings);
+  });
+
+  app.post("/v1/settings/audits", async (request, reply) => {
+    const session = await sessionFor(request);
+    if (!session) return reply.status(401).send({ error: "authentication_required" });
+    if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
+    const body = auditScopeSchema.safeParse(request.body);
+    if (!body.success)
+      return reply.status(400).send({ error: "invalid_request", message: "Check the domains." });
+    // The ledger entry comes first, so no scope change is ever unrecorded. It holds how many
+    // domains, never which.
+    await store.appendAudit(session.tenantId, session.actorId, {
+      type: "audits.scope.changed",
+      domains: body.data.domains.length,
+      occurredAt: new Date().toISOString(),
+    });
+    const settings = await modules.database.tenant(session.tenantId, async (sql) => {
+      await writeAuditScope(sql, session.tenantId, body.data, session.actorId);
+      return readAuditSettings(sql, session.tenantId, builtInAudits);
+    });
+    return auditSettingsSchema.parse(settings);
   });
 
   app.get("/v1/dashboard/summary", async (_request, reply) => {
@@ -317,6 +1470,8 @@ export function createApp(options: AppOptions = {}) {
     ]);
     const scopes = session.scopes.filter((scope) => permitted.has(scope));
     const client = new GraphHttpClient({
+      // An interactive lookup waits longer than the default for Microsoft's slow sign-in log.
+      requestTimeoutMilliseconds: 30_000,
       getAccessToken: () => identity.accessToken(handle, scopes),
       ...(options.graphFetch ? { fetchImplementation: options.graphFetch } : {}),
     });
@@ -521,9 +1676,19 @@ export function createApp(options: AppOptions = {}) {
     }
   });
 
-  app.addHook("onClose", async () => store.close());
+  app.addHook("onClose", async () => {
+    // Audits first: an interrupted run is recorded before the database closes.
+    await audits?.close();
+    if (options.modules) {
+      await options.modules.scheduler.stop();
+      await options.modules.database.close();
+    }
+    await store.close();
+  });
 
-  app.get("/v1/automation/packages", async () => {
+  app.get("/v1/automation/packages", async (request, reply) => {
+    if (config.mode === "live" && !(await sessionFor(request)))
+      return reply.status(401).send({ error: "authentication_required" });
     const values = identity ? await store.list(identity.tenantId, "automationPackage") : [];
     const schema = z.object({ summary: automationPackageSummarySchema });
     return automationPackageListSchema.parse({
@@ -601,6 +1766,11 @@ export function createApp(options: AppOptions = {}) {
   }
 
   return app;
+}
+
+// Categories only: never the provider message, authorization code, token, or account identifier.
+export function signInFailureCategory(error: unknown): string {
+  return error instanceof LoginRejectedError ? error.reason : "token_exchange_failed";
 }
 
 function investigationEvidence(

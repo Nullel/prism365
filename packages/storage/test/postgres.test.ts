@@ -2,7 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PostgresStateStore } from "../src/index.ts";
+import { PostgresModuleDatabase, PostgresStateStore, runPostgresMigrations } from "../src/index.ts";
+import { isolationSuite, probeScope } from "./module-isolation-suite.ts";
 
 // This public password belongs only to the disposable CI database; it is not a secret.
 const syntheticPassword = "Prism365_Synthetic_Database_Test_Only_12345";
@@ -308,5 +309,73 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
     await expect(
       withTenant(tenantA, (client) => client.query("DELETE FROM prism365_audit")),
     ).rejects.toMatchObject({ code: "42501" });
+  });
+});
+
+// Module storage on real PostgreSQL: the same isolation suite the PGlite run uses. It lives in
+// this file so it runs after the state suite above instead of racing it for the shared
+// prism365_app role, and it connects as a throwaway member of that role so the role's password
+// is never read or changed.
+isolationSuite(
+  "PostgreSQL",
+  async () => {
+    const parsed = new URL(adminUrl ?? "");
+    if (!["localhost", "127.0.0.1"].includes(parsed.hostname) || parsed.pathname !== "/prism365_ci")
+      throw new Error("TEST_DATABASE_ADMIN_URL must point to a disposable prism365_ci database.");
+    const suffix = randomBytes(8).toString("hex");
+    const moduleDatabase = `prism365_modules_${suffix}`;
+    const memberRole = `prism365_modules_member_${suffix}`;
+    const bootstrap = new Pool({
+      connectionString: parsed.toString(),
+      connectionTimeoutMillis: 5_000,
+    });
+    const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
+    const createdAppRole = existing.rowCount === 0;
+    await bootstrap.query(`CREATE DATABASE ${identifier(moduleDatabase)}`);
+    parsed.pathname = `/${moduleDatabase}`;
+    const moduleAdminUrl = parsed.toString();
+    await runPostgresMigrations({
+      adminUrl: moduleAdminUrl,
+      appPassword: syntheticPassword,
+      scopes: [probeScope],
+    });
+    await bootstrap.query(
+      `CREATE ROLE ${identifier(memberRole)} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${syntheticPassword}' IN ROLE prism365_app`,
+    );
+    const owner = new Pool({ connectionString: moduleAdminUrl, connectionTimeoutMillis: 5_000 });
+    parsed.username = memberRole;
+    parsed.password = syntheticPassword;
+    const database = new PostgresModuleDatabase({ connectionString: parsed.toString() });
+    // verify() also grants the default table access; without it every query is refused.
+    await database.verify();
+    return {
+      database,
+      owner: async (sql: string) => {
+        await owner.query(sql);
+      },
+      close: async () => {
+        await database.close();
+        await owner.end();
+        try {
+          await bootstrap.query(`DROP DATABASE ${identifier(moduleDatabase)} WITH (FORCE)`);
+          await bootstrap.query(`DROP ROLE ${identifier(memberRole)}`);
+          if (createdAppRole) await bootstrap.query("DROP ROLE prism365_app");
+        } finally {
+          await bootstrap.end();
+        }
+      },
+    };
+  },
+  Boolean(adminUrl),
+);
+
+describe.skipIf(!adminUrl)("PostgreSQL module runtime role", () => {
+  it("rejects a superuser connection for module data", async () => {
+    const privileged = new PostgresModuleDatabase({ connectionString: adminUrl ?? "" });
+    try {
+      await expect(privileged.verify()).rejects.toThrow("superuser");
+    } finally {
+      await privileged.close();
+    }
   });
 });

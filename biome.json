@@ -8,7 +8,15 @@
     }
   },
   "files": {
-    "includes": ["**", "!**/dist", "!**/coverage", "!**/node_modules", "!LICENSE"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/dist-demo",
+      "!apps/web/demo/fixtures.json",
+      "!**/coverage",
+      "!**/node_modules",
+      "!LICENSE"
+    ]
   },
   "formatter": {
     "enabled": true,

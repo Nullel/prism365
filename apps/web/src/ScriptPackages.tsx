@@ -337,9 +337,8 @@ export function ScriptPackages({ session }: { session: PrismSession }) {
     <section className="script-packages" aria-labelledby="script-packages-title">
       <div className="script-packages__header">
         <div>
-          <span className="eyebrow">Private runbook library</span>
           <h2 id="script-packages-title" tabIndex={-1}>
-            Bring your organization’s scripts into Prism365.
+            Runbook library
           </h2>
           <p>
             Import a package for private storage and review. Its code stays in your installation and

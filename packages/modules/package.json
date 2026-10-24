@@ -1,0 +1,20 @@
+{
+  "name": "@prism365/modules",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@prism365/contracts": "0.0.0",
+    "@prism365/graph": "0.0.0",
+    "@prism365/policy": "0.0.0",
+    "@prism365/storage": "0.0.0",
+    "zod": "4.6.7"
+  }
+}

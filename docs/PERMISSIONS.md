@@ -30,6 +30,7 @@ This table groups the intended scope for review.
 | `user.licenses.read` | Graph | `LicenseAssignment.Read.All` | Pilot implemented | `/users/{id}/licenseDetails` supports delegated access only, plus an allowed Entra role |
 | `service.health.read` | Graph | `ServiceHealth.Read.All` | MVP | Service health available for tenant services |
 | `audit.signins.read` | Graph | `AuditLog.Read.All` | MVP | Delegated caller needs an allowed role; license affects fields/retention |
+| `reports.authentication-methods.read` | Graph | `AuditLog.Read.All` | MVP | MFA registration audit; Reports Reader, Security Reader, Security Administrator or Global Reader; excludes disabled accounts |
 | `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Usage-report availability and privacy setting; global/GCC target only |
 | `identity.conditional-access.read` | Graph | `Policy.Read.All` | Experimental | Supported role and applicable Conditional Access licensing |
 | `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Entra ID P2; not targeted for China |

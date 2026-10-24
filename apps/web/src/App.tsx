@@ -14,42 +14,110 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ActivityIcon,
   ArrowUpRightIcon,
+  BellIcon,
+  ChecklistIcon,
   ChevronIcon,
   GridIcon,
   LockIcon,
-  ReportIcon,
   SearchIcon,
-  SettingsIcon,
   ShieldIcon,
   SparkleIcon,
   UsersIcon,
 } from "./icons.tsx";
+import { Notifications } from "./Attention.tsx";
+import { Audits } from "./Audits.tsx";
 import { localDemoDashboard } from "./demo.ts";
+import { DemoBanner } from "./demo/DemoBanner.tsx";
 import { TenantConnection } from "./TenantConnection.tsx";
 import { UserIntelligence } from "./UserIntelligence.tsx";
 import { ScriptPackages } from "./ScriptPackages.tsx";
+import { LiveOverview } from "./LiveOverview.tsx";
+import { People } from "./People.tsx";
+import { SigninAudit } from "./SigninAudit.tsx";
 
-type WorkspaceView = "overview" | "users" | "lifecycle";
+export type WorkspaceView =
+  | "overview"
+  | "notifications"
+  | "people"
+  | "audits"
+  | "signins"
+  | "users"
+  | "lifecycle"
+  | "access";
 
-const navSections = [
+interface NavItem {
+  label: string;
+  icon: typeof GridIcon;
+  view: WorkspaceView;
+}
+
+// One navigation, in the sidebar. Only views that work are listed.
+const navGroups: { label: string; items: NavItem[] }[] = [
   {
-    label: "Workspace",
+    label: "",
     items: [
       { label: "Overview", icon: GridIcon, view: "overview" },
-      { label: "User Intelligence", icon: UsersIcon, view: "users" },
-      { label: "Lifecycle automation", icon: ActivityIcon, view: "lifecycle" },
-      { label: "Security", icon: ShieldIcon },
-      { label: "Audit stream", icon: ActivityIcon },
+      { label: "Notifications", icon: BellIcon, view: "notifications" },
+      { label: "People", icon: UsersIcon, view: "people" },
     ],
   },
   {
-    label: "Explore",
+    label: "Audit",
     items: [
-      { label: "Reports", icon: ReportIcon },
-      { label: "Configuration", icon: SettingsIcon },
+      { label: "Audits", icon: ChecklistIcon, view: "audits" },
+      { label: "Sign-in audit", icon: ShieldIcon, view: "signins" },
     ],
   },
-] as const;
+  {
+    label: "Tools",
+    items: [
+      { label: "Live lookup", icon: SearchIcon, view: "users" },
+      { label: "Lifecycle automation", icon: ActivityIcon, view: "lifecycle" },
+    ],
+  },
+];
+const accessItem: NavItem = { label: "Microsoft access", icon: LockIcon, view: "access" };
+
+const pageCopy: Record<WorkspaceView, { title: string; description: string }> = {
+  overview: { title: "Overview", description: "What needs attention across the tenant right now." },
+  notifications: {
+    title: "Notifications",
+    description:
+      "New Microsoft incidents, Message center deadlines, and what changed since you looked.",
+  },
+  people: {
+    title: "People",
+    description: "Everyone who signs in: where from, on which device, and anything flagged.",
+  },
+  audits: {
+    title: "Audits",
+    description:
+      "Checks you run against the tenant when you need them: inactive accounts, unused licenses, MFA gaps, guests and license capacity.",
+  },
+  signins: {
+    title: "Sign-in audit",
+    description:
+      "Collected sign-ins, each account's usual places, and the sign-ins that break them.",
+  },
+  users: {
+    title: "Live lookup",
+    description: "Look one account up directly in Microsoft, without stored history.",
+  },
+  lifecycle: {
+    title: "Lifecycle automation",
+    description: "Review onboarding and offboarding runbooks before anything changes.",
+  },
+  access: {
+    title: "Microsoft access",
+    description: "What this installation may read, and the session it reads with.",
+  },
+};
+
+function initials(name: string | null | undefined): string {
+  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "P";
+  return `${parts[0]?.[0] ?? ""}${parts.length > 1 ? (parts.at(-1)?.[0] ?? "") : ""}`.toUpperCase();
+}
 
 async function loadDashboard(signal: AbortSignal): Promise<DashboardSummary> {
   const response = await fetch("/api/v1/dashboard/summary", { signal });
@@ -181,74 +249,6 @@ function SignInChart({ data }: { data: DashboardSummary["signInTrend"] }) {
   );
 }
 
-function PermissionDialog({ onClose }: { onClose: () => void }) {
-  const titleId = useId();
-  const dialog = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const trigger = document.activeElement;
-    dialog.current?.showModal();
-    return () => {
-      dialog.current?.close();
-      if (trigger instanceof HTMLElement) trigger.focus();
-    };
-  }, []);
-
-  return (
-    <dialog
-      ref={dialog}
-      aria-labelledby={titleId}
-      className="permission-dialog"
-      onCancel={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
-    >
-      <div className="permission-dialog__header">
-        <div>
-          <span className="eyebrow">Access model</span>
-          <h2 id={titleId}>Permission by purpose</h2>
-        </div>
-        <button className="icon-button" onClick={onClose} type="button" aria-label="Close dialog">
-          ×
-        </button>
-      </div>
-      <p className="dialog-intro">
-        A tenant administrator enables each read-only feature separately. Microsoft also checks the
-        signed-in administrator’s role, license, and service availability.
-      </p>
-      <div className="permission-list">
-        {[
-          ["User inventory", "User.Read.All", "Selected directory profile fields"],
-          ["Sign-in audit", "AuditLog.Read.All", "Security and directory audit evidence"],
-          ["Usage reports", "Reports.Read.All", "Tenant-level service usage trends"],
-        ].map(([label, permission, detail]) => (
-          <div className="permission-row" key={permission}>
-            <span className="permission-row__icon">
-              <LockIcon />
-            </span>
-            <div>
-              <strong>{label}</strong>
-              <span>{detail}</span>
-            </div>
-            <code>{permission}</code>
-          </div>
-        ))}
-      </div>
-      <div className="dialog-note">
-        <ShieldIcon />
-        <p>
-          <strong>Write access is disabled.</strong> Purview audit search is a separate, optional
-          connector.
-        </p>
-      </div>
-      <button className="button button--primary button--full" onClick={onClose} type="button">
-        Understood
-      </button>
-    </dialog>
-  );
-}
-
 function LifecycleAutomation() {
   const emailId = useId();
   const workflowId = useId();
@@ -330,8 +330,7 @@ function LifecycleAutomation() {
     <section className="automation" aria-labelledby="automation-title">
       <div className="automation__header">
         <div>
-          <span className="eyebrow">Lifecycle automation</span>
-          <h2 id="automation-title">One clear path from email to completed checklist.</h2>
+          <h2 id="automation-title">Preview a runbook</h2>
           <p>
             Choose a reviewed runbook and inspect every proposed change before Prism365 can ask for
             approval.
@@ -512,14 +511,114 @@ function LifecycleAutomation() {
   );
 }
 
+export const signInFailedNotice =
+  "Microsoft sign-in did not complete. Check that your account is on this installation's operator list and that the app registration's redirect URI matches this address, then try again.";
+
+// The callback redirects to "/?auth=failed" for every rejected sign-in. Read it once, remove it
+// from the address bar, and show one sentence; the server log holds the category.
+export function readAuthNotice(): string {
+  if (typeof window === "undefined") return "";
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("auth") !== "failed") return "";
+  url.searchParams.delete("auth");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  return signInFailedNotice;
+}
+
+// The page in the address bar, so links can open a view, an account or an audit, and the back
+// button works: #/audits/accounts.inactive, #/people/<id>. Other hashes (the skip link) are not
+// routes and leave the page alone.
+export interface Route {
+  view: WorkspaceView;
+  person: string | null;
+  audit: string | null;
+}
+
+const workspaceViews: readonly WorkspaceView[] = [
+  "overview",
+  "notifications",
+  "people",
+  "audits",
+  "signins",
+  "users",
+  "lifecycle",
+  "access",
+];
+
+export function parseRoute(hash: string): Route | null {
+  if (!hash.startsWith("#/")) return null;
+  const [name = "", ...rest] = hash.slice(2).split("/");
+  const view = workspaceViews.find((item) => item === name);
+  if (!view) return null;
+  let detail: string | null = null;
+  try {
+    detail = rest.length > 0 && rest.join("/") ? decodeURIComponent(rest.join("/")) : null;
+  } catch {
+    detail = null;
+  }
+  return {
+    view,
+    person: view === "people" ? detail : null,
+    audit: view === "audits" ? detail : null,
+  };
+}
+
+export function routeHash(route: Route): string {
+  const detail =
+    route.view === "people" ? route.person : route.view === "audits" ? route.audit : null;
+  return `#/${route.view}${detail ? `/${encodeURIComponent(detail)}` : ""}`;
+}
+
+const initialRoute = (): Route =>
+  (typeof window === "undefined" ? null : parseRoute(window.location.hash)) ?? {
+    view: "overview",
+    person: null,
+    audit: null,
+  };
+
 export function App() {
   const [dashboard, setDashboard] = useState<DashboardSummary>(localDemoDashboard);
-  const [apiState, setApiState] = useState<"loading" | "connected" | "local">("loading");
-  const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
-  const [view, setView] = useState<WorkspaceView>("users");
+  const [view, setView] = useState<WorkspaceView>(() => initialRoute().view);
+  const [person, setPerson] = useState<string | null>(() => initialRoute().person);
+  const [audit, setAudit] = useState<string | null>(() => initialRoute().audit);
+  // Keep the address bar in step with the page, and follow back and forward. A load without
+  // a route replaces its entry rather than adding one.
+  useEffect(() => {
+    const next = routeHash({ view, person, audit });
+    if (window.location.hash === next) return;
+    const url = `${window.location.pathname}${window.location.search}${next}`;
+    if (parseRoute(window.location.hash)) window.history.pushState(null, "", url);
+    else window.history.replaceState(null, "", url);
+  }, [view, person, audit]);
+  useEffect(() => {
+    const follow = () => {
+      const route = parseRoute(window.location.hash);
+      if (!route) return;
+      setView(route.view);
+      setPerson(route.person);
+      setAudit(route.audit);
+    };
+    window.addEventListener("popstate", follow);
+    window.addEventListener("hashchange", follow);
+    return () => {
+      window.removeEventListener("popstate", follow);
+      window.removeEventListener("hashchange", follow);
+    };
+  }, []);
+  const openPerson = (userId: string) => {
+    setPerson(userId);
+    setView("people");
+  };
+  const navigate = (next: WorkspaceView) => {
+    if (next === "people") setPerson(null);
+    if (next === "audits") setAudit(null);
+    setView(next);
+  };
   const [session, setSession] = useState<PrismSession | null>(null);
   const [sessionError, setSessionError] = useState("");
+  const [authNotice, setAuthNotice] = useState(readAuthNotice);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [unread, setUnread] = useState(0);
 
   const refreshSession = useCallback(async (signal?: AbortSignal) => {
     setSessionError("");
@@ -531,7 +630,10 @@ export function App() {
       });
       if (!response.ok) throw new Error("Unable to check the Prism365 connection.");
       const data = sessionSchema.parse(await response.json());
-      if (!signal?.aborted) setSession(data);
+      if (!signal?.aborted) {
+        setSession(data);
+        if (data.authenticated) setAuthNotice("");
+      }
     } catch (error) {
       if (signal?.aborted) return;
       setSessionError(error instanceof Error ? error.message : "Unable to check the connection.");
@@ -571,21 +673,87 @@ export function App() {
     if (session?.mode !== "demo") return;
     const controller = new AbortController();
     loadDashboard(controller.signal)
-      .then((data) => {
-        setDashboard(data);
-        setApiState("connected");
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        setApiState("local");
+      .then(setDashboard)
+      .catch(() => {
+        // The bundled synthetic dashboard stays in place.
       });
     return () => controller.abort();
   }, [session?.mode]);
+
+  const live = session?.mode === "live" && session.authenticated;
+  const refreshUnread = useCallback(async () => {
+    try {
+      const response = await fetch("/api/v1/attention?filter=unread&limit=1", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as { counts?: { unread?: unknown } };
+      if (typeof body.counts?.unread === "number") setUnread(body.counts.unread);
+    } catch {
+      // The badge is a convenience; the Notifications view reports its own errors.
+    }
+  }, []);
+  useEffect(() => {
+    if (!live) return;
+    void refreshUnread();
+    const timer = setInterval(() => void refreshUnread(), 60_000);
+    return () => clearInterval(timer);
+  }, [live, refreshUnread]);
 
   const generatedTime = new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(dashboard.generatedAt));
+
+  const demo = session?.mode === "demo";
+  const signedIn = Boolean(session && (demo || session.authenticated));
+  // Until someone is signed in, the connection card is the page.
+  const gated = !signedIn;
+  const copy = pageCopy[view];
+  const showHeader =
+    !(view === "people" && person && signedIn) && !(view === "audits" && audit && signedIn);
+  const connection = (
+    <TenantConnection
+      session={session}
+      error={sessionError || authNotice}
+      onRetry={() => {
+        setAuthNotice("");
+        void refreshSession();
+      }}
+      onLogout={logout}
+      loggingOut={loggingOut}
+    />
+  );
+  const accountState = !session ? "checking" : demo ? "demo" : session.authenticated ? "on" : "off";
+  const accountLabel = {
+    checking: "Checking connection",
+    demo: "Demo data",
+    on: "Connected to Microsoft",
+    off: "Not signed in",
+  }[accountState];
+  const navButton = (item: NavItem) => {
+    const Icon = item.icon;
+    const active = view === item.view;
+    return (
+      <button
+        className={`nav__item${active ? " nav__item--active" : ""}`}
+        type="button"
+        onClick={() => navigate(item.view)}
+        key={item.view}
+        aria-current={active ? "page" : undefined}
+      >
+        <Icon />
+        <span>{item.label}</span>
+        {item.view === "notifications" && unread > 0 ? (
+          <span className="nav__badge">
+            {unread > 99 ? "99+" : unread}
+            <span className="visually-hidden"> unread</span>
+          </span>
+        ) : null}
+      </button>
+    );
+  };
 
   return (
     <div className="app-shell">
@@ -600,186 +768,137 @@ export function App() {
           <span>Prism365</span>
         </a>
 
-        <div className="workspace-switcher">
-          <span className="workspace-avatar">P</span>
-          <span>
-            <strong>{session?.mode === "demo" ? "Northstar Labs" : "Your organization"}</strong>
-            <small>{session?.mode === "demo" ? "Demo workspace" : "Microsoft 365 workspace"}</small>
-          </span>
-        </div>
-
-        <nav className="nav">
-          {navSections.map((section) => (
-            <div className="nav__section" key={section.label}>
-              <span className="nav__label">{section.label}</span>
-              {section.items.map((item) => {
-                const Icon = item.icon;
-                return "view" in item ? (
-                  <button
-                    className={`nav__item${view === item.view ? " nav__item--active" : ""}`}
-                    type="button"
-                    onClick={() => setView(item.view)}
-                    key={item.label}
-                    aria-current={view === item.view ? "page" : undefined}
-                  >
-                    <Icon />
-                    <span>{item.label}</span>
-                  </button>
-                ) : (
-                  <span
-                    className="nav__item nav__item--muted"
-                    key={item.label}
-                    title="Planned for a future milestone"
-                  >
-                    <Icon />
-                    <span>{item.label}</span>
-                    <small>Soon</small>
-                  </span>
-                );
-              })}
+        <nav className="nav" aria-label="Workspace">
+          {navGroups.map((group) => (
+            <div className="nav__section" key={group.label || "main"}>
+              {group.label ? <span className="nav__label">{group.label}</span> : null}
+              {group.items.map(navButton)}
             </div>
           ))}
         </nav>
 
-        <div className="sidebar__principle">
-          <LockIcon />
-          <p>
-            <strong>Privacy by default</strong>
-            <span>Read-only. Minimal consent. No worker scoring.</span>
-          </p>
+        <div className="sidebar__bottom">
+          <div className="nav__section">{navButton(accessItem)}</div>
+          <div className="account">
+            <span className="account__avatar" aria-hidden="true">
+              {demo ? "D" : initials(session?.displayName)}
+            </span>
+            <span className="account__text">
+              <strong>{demo ? "Demo workspace" : (session?.displayName ?? "Prism365")}</strong>
+              <small>
+                <span className={`status-dot status-dot--${accountState}`} />
+                {accountLabel}
+              </small>
+            </span>
+          </div>
+          {session?.authenticated ? (
+            <button
+              className="account__signout"
+              type="button"
+              onClick={() => void logout()}
+              disabled={loggingOut}
+            >
+              {loggingOut ? "Signing out…" : "Sign out"}
+            </button>
+          ) : null}
+          <a
+            className="sidebar__footer"
+            href="https://github.com/Nullel/prism365"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Prism365 pre-alpha
+            <ArrowUpRightIcon />
+          </a>
         </div>
-        <a
-          className="sidebar__footer"
-          href="https://github.com/nlj3"
-          target="_blank"
-          rel="noreferrer"
-        >
-          <span className="open-source-dot" />
-          Open-source pre-alpha
-          <ArrowUpRightIcon />
-        </a>
       </aside>
 
       <main className="main" id="main-content">
-        <header className="topbar">
-          <div className="mobile-brand">
-            <span className="brand__mark">
-              <span />
-            </span>
-            Prism365
-          </div>
-          <button
-            className="search"
-            type="button"
-            aria-label="Search is planned for a future milestone"
-            disabled
-          >
-            <SearchIcon />
-            <span>Search reports, users, or settings</span>
-            <kbd>⌘ K</kbd>
-          </button>
-          <div className="topbar__actions">
-            <span className={`api-status api-status--${apiState}`}>
-              <span />
-              {session?.mode === "live"
-                ? session.authenticated
-                  ? "Microsoft connected"
-                  : "Live setup"
-                : apiState === "connected"
-                  ? "Demo API"
-                  : apiState === "loading"
-                    ? "Checking API"
-                    : "Local preview"}
-            </span>
-            <span className="avatar-button" aria-hidden="true">
-              {session?.displayName?.slice(0, 2).toUpperCase() ?? "P"}
-            </span>
-          </div>
-        </header>
-
         <div className="content">
-          <section className="page-heading">
-            <div>
-              <span className="eyebrow">Good morning, administrator</span>
-              <h1>
-                {view === "users"
-                  ? "One account. Clear evidence."
-                  : view === "lifecycle"
-                    ? "Make the next change clear."
-                    : "Your tenant, clearly understood."}
-              </h1>
+          {import.meta.env.VITE_DEMO === "true" ? <DemoBanner /> : null}
+          {showHeader ? (
+            <header className="page-header">
+              <h1>{copy.title}</h1>
               <p>
-                {view === "users"
-                  ? "Directory details, license inventory, and sign-in context in one focused investigation."
-                  : view === "lifecycle"
-                    ? "Review onboarding and offboarding steps before taking action."
-                    : "Security posture, service signals, and evidence—without the noise."}
+                {demo && view === "overview"
+                  ? "Synthetic data. No tenant is connected."
+                  : copy.description}
               </p>
-            </div>
-            <div className="page-heading__actions">
-              <button
-                className="button button--secondary"
-                onClick={() => setPermissionDialogOpen(true)}
-                type="button"
-              >
-                <LockIcon /> Access model
-              </button>
-            </div>
-          </section>
-
-          <TenantConnection
-            session={session}
-            error={sessionError}
-            onRetry={() => {
-              void refreshSession();
-            }}
-            onLogout={logout}
-            loggingOut={loggingOut}
-          />
-
-          <nav className="workspace-tabs" aria-label="Workspace views">
-            {(
-              [
-                ["users", "User Intelligence"],
-                ["overview", "Overview"],
-                ["lifecycle", "Lifecycle automation"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                aria-current={view === key ? "page" : undefined}
-                className={view === key ? "is-active" : ""}
-                onClick={() => setView(key)}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-
-          {view === "users" && session ? (
-            <UserIntelligence key={`${session.mode}-${session.authenticated}`} session={session} />
+            </header>
           ) : null}
-          {view === "lifecycle" && session?.mode === "demo" ? <LifecycleAutomation /> : null}
-          {view === "lifecycle" && session ? <ScriptPackages session={session} /> : null}
-          {view === "overview" && session?.mode === "live" ? (
-            <section className="live-placeholder">
-              <GridIcon />
-              <h2>Tenant-wide reporting is next.</h2>
-              <p>
-                The first live source is available in User Intelligence. This overview will appear
-                when tenant-wide collection and reporting are connected.
-              </p>
-              <button
-                className="button button--primary"
-                type="button"
-                onClick={() => setView("users")}
-              >
-                Open User Intelligence
-              </button>
-            </section>
+
+          {demo ? connection : null}
+          {!demo && (gated || view === "access") ? connection : null}
+          {signedIn && !demo && sessionError && view !== "access" ? (
+            <p className="form-error form-error--banner" role="alert">
+              {sessionError}
+            </p>
           ) : null}
-          {view === "overview" && session?.mode === "demo" ? (
+
+          {signedIn && session ? (
+            <>
+              {view === "overview" && !demo ? (
+                <LiveOverview session={session} onOpenPerson={openPerson} onNavigate={navigate} />
+              ) : null}
+              {view === "notifications" && !demo ? (
+                <Notifications
+                  session={session}
+                  onNavigate={navigate}
+                  onCountsChanged={() => void refreshUnread()}
+                />
+              ) : null}
+              {view === "notifications" && demo ? (
+                <p className="empty-data">
+                  Demo mode has no notifications, because Prism365 does not invent Microsoft
+                  incidents.
+                </p>
+              ) : null}
+              {view === "people" ? (
+                <People
+                  key={`${session.mode}-${session.authenticated}`}
+                  session={session}
+                  selected={person}
+                  onSelect={setPerson}
+                />
+              ) : null}
+              {view === "audits" ? (
+                <Audits
+                  key={`${session.mode}-${session.authenticated}`}
+                  session={session}
+                  selected={audit}
+                  onSelect={setAudit}
+                  onOpenPerson={openPerson}
+                />
+              ) : null}
+              {view === "signins" ? (
+                <SigninAudit
+                  key={`${session.mode}-${session.authenticated}`}
+                  session={session}
+                  onOpenPerson={openPerson}
+                />
+              ) : null}
+              {view === "users" ? (
+                <UserIntelligence
+                  key={`${session.mode}-${session.authenticated}`}
+                  session={session}
+                />
+              ) : null}
+              {view === "lifecycle" && demo ? <LifecycleAutomation /> : null}
+              {view === "lifecycle" ? <ScriptPackages session={session} /> : null}
+              {view === "access" ? (
+                <section className="panel access-note" aria-label="Write access">
+                  <ShieldIcon />
+                  <p>
+                    <strong>Read-only by design.</strong> Prism365 asks Microsoft only for read
+                    permissions, and the Graph client refuses every write. Purview audit search
+                    would be a separate, optional connector.
+                  </p>
+                </section>
+              ) : null}
+            </>
+          ) : null}
+
+          {view === "overview" && demo ? (
             <>
               <section className="metrics" aria-label="Tenant summary">
                 {dashboard.metrics.map((metric, index) => (
@@ -938,29 +1057,17 @@ export function App() {
                   </ul>
                   <button
                     className="button button--secondary button--full"
-                    onClick={() => setPermissionDialogOpen(true)}
+                    onClick={() => navigate("access")}
                     type="button"
                   >
-                    Review permission design
+                    Review Microsoft access
                   </button>
                 </section>
               </div>
             </>
           ) : null}
-
-          <footer className="page-footer">
-            <span>Prism365 pre-alpha · built in the open</span>
-            <span>
-              {session?.mode === "live"
-                ? "Live evidence · administration writes disabled · private installation"
-                : "Demo mode · writes disabled · no tenant data stored"}
-            </span>
-          </footer>
         </div>
       </main>
-      {permissionDialogOpen ? (
-        <PermissionDialog onClose={() => setPermissionDialogOpen(false)} />
-      ) : null}
     </div>
   );
 }

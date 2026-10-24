@@ -83,6 +83,114 @@ makes stored sessions and script packages unreadable. Key rotation, backup/resto
 retention/deletion procedures still require an operator-reviewed deployment runbook before stable
 production use.
 
+## Module collection
+
+Live mode also starts the module runtime (ADR-0006). It stores module data, findings, collector
+cursors and run history in tenant-scoped tables with forced row-level security:
+
+- With `DATABASE_URL` configured, it uses that PostgreSQL database. Run `npm run db:migrate`
+  after upgrades; it now applies the core schema and every built-in module's migrations, and the
+  runtime refuses to start if a module's tables are missing.
+- Without it, it uses PGlite, an in-process PostgreSQL. Data is in memory and lost on restart
+  unless `PRISM_DATA_DIR` names a directory. That directory then contains tenant data; keep it on
+  an encrypted disk, outside cloud-synced folders, readable only by the service account. A
+  relative path resolves from `apps/api` under `npm run dev:api`, so prefer an absolute one.
+
+Background collection never starts on its own. An allow-listed administrator starts it with
+`POST /api/v1/collection/start` and stops it with `POST /api/v1/collection/stop`. It runs on that
+administrator's delegated session and stops when they sign out, the session expires, they are
+removed from `ENTRA_ADMIN_OBJECT_IDS`, someone else starts collection, or the server restarts.
+It uses only scopes that were both consented and enabled in `ENABLED_READ_FEATURES`.
+`GET /api/v1/modules` shows each module's missing permissions and its collectors' last runs.
+The first built-in module is the sign-in audit (`docs/modules/signins-audit.md`); its view has
+the start and stop controls, and the People view builds on what it stores.
+
+## Service health, Message center and notifications
+
+The Overview's "Is Microsoft down?" panel, Admin attention and the Notifications inbox read
+Microsoft's service communications. Each source is optional and independent:
+
+1. In the app registration, add the delegated Graph permission and grant admin consent:
+   `ServiceHealth.Read.All` for service health, `ServiceMessage.Read.All` for Message center.
+2. Add `service.health.read` and/or `service.messages.read` to `ENABLED_READ_FEATURES`
+   (in `.env.docker` for the Docker install), then restart.
+3. Sign in again or use the **Grant access** link, and start collecting. Your account needs a role
+   Microsoft accepts, such as Global Reader, Service Support Administrator or Message Center Reader.
+
+Notification settings (Notifications, then Settings) choose which kinds of item notify and which
+services count as important. See `docs/modules/service-health.md` and ADR-0007.
+
+## Audits
+
+**Audits** (in the sidebar under Audit) runs point-in-time checks when you press Run: inactive
+accounts by days since last sign-in, licenses to reclaim, MFA registration, guest accounts and
+license capacity. They use the packs above: `directory.users.read`, `audit.signins.read` and
+`user.licenses.read` together make every audit available, and the MFA audit's own pack,
+`reports.authentication-methods.read`, uses the same `AuditLog.Read.All`. Inactivity needs
+Microsoft Entra ID P1 or P2 and a role such as Reports Reader, Security Reader or Global Reader.
+Results are kept (the last 10 successful runs per audit) and can be exported as CSV. See `docs/audits.md`.
+
+## Breach lookup (Have I Been Pwned)
+
+Each person page has a **Check Have I Been Pwned** button. It opens haveibeenpwned.com in a new
+tab with the person's mailbox address (or, failing that, their sign-in name) already searched,
+using HIBP's documented link `https://haveibeenpwned.com/account/{address}`. Nothing needs
+configuring and no API key is used: the search runs in your own browser, and Prism365 itself
+sends nothing to HIBP. HIBP's public search does not show breaches it classes as sensitive.
+
+## Live install in Docker (persistent)
+
+`scripts/docker-live.sh` runs the live app with everything it collects kept in PostgreSQL:
+sessions (encrypted), collected sign-ins, baselines and findings survive restarts, image rebuilds
+and `down`. It layers `compose.live.yml` on `compose.yml`:
+
+- **proxy**: Caddy on `https://localhost:8443`, with a certificate from Caddy's local authority.
+- **app**: Prism365 in production mode, reachable only through the proxy.
+- **db**: PostgreSQL 17 in the `prism365_database` volume.
+- **migrate**: applies the schema and module migrations before the app starts.
+
+Production mode needs the certificate credential, not the client secret. Before the first start:
+
+1. In the app registration, under **Certificates & secrets → Certificates**, upload
+   `secrets/entra-public.pem` (create the pair as in "App registration" above if it is missing).
+2. Under **Authentication**, add the Web redirect URI
+   `https://localhost:8443/api/v1/auth/callback`.
+
+Then:
+
+```bash
+scripts/docker-live.sh init
+```
+
+```bash
+scripts/docker-live.sh up
+```
+
+`init` writes `.env.docker` (git-ignored, never copied into an image) with the tenant settings
+from `.env` and newly generated database passwords and session encryption key. Keep that file:
+the passwords and key belong to the data in the volume. The browser warns about the local
+certificate until it is trusted; `scripts/docker-live.sh export-ca` saves it and prints the
+macOS command to trust it.
+
+Other commands: `down` stops everything and keeps the data, `logs` follows the app, migration
+and proxy logs, `status` lists the containers, and `backup` writes a `pg_dump` to `backups/`
+(git-ignored, readable only by you). A backup is written under a temporary name and fully read
+back (every data block) before it is kept, so a failed dump never looks like a good one. It contains tenant data in plain
+form and retention does not reach it: keep it with `.env.docker`, on an encrypted disk, out of
+cloud-synced folders, and delete old ones yourself. Never run `docker compose down -v` against
+this project unless you intend to delete everything collected.
+
+The app trusts one proxy hop (`TRUST_PROXY_HOPS=1`) so sign-in rate limits apply per client
+address rather than to everything that comes through Caddy. On Docker Desktop every browser on
+the Mac arrives from the same address, so they still share one limit there.
+
+The image build refuses to run if the build context holds tenant data or keys (a PGlite
+directory, a backup, a `.pem` or `.env` file) anywhere in the tree, not only at the top.
+
+Collection is still delegated: it runs while an administrator is signed in and stops when the
+session ends (eight hours) or they sign out. Sessions now survive restarts. Around-the-clock
+collection needs the separate application credential described in ADR-0002.
+
 ## Self-host container
 
 For the synthetic demo:

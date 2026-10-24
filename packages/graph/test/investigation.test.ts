@@ -167,6 +167,23 @@ describe("delegated user investigation", () => {
     expect(result.signIns.state).toBe("providerUnavailable");
   });
 
+  it("leaves out one unreadable sign-in, keeps the rest, and accepts long provider text", async () => {
+    const { client } = clientFor({
+      signIns: Response.json({
+        value: [
+          { ...signIn, status: { ...signIn.status, failureReason: "r".repeat(900) } },
+          { ...signIn, id: "", createdDateTime: "not a date" },
+        ],
+      }),
+    });
+    const result = await investigateUser({ email, client, grantedScopes: scopes, now });
+    expect(result.signIns.state).toBe("available");
+    expect(result.signIns.data).toHaveLength(1);
+    expect(result.signIns.data[0]?.status.failureReason).toHaveLength(500);
+    expect(result.signIns.complete).toBe(false);
+    expect(result.signIns.message).toContain("could not be read");
+  });
+
   it("encodes principal names as data, including a leading dollar sign", async () => {
     const special = "$alex@example.invalid";
     const { client, fetchImplementation } = clientFor({

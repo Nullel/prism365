@@ -1,0 +1,12 @@
+# Local HTTPS front door for the live Docker install. Caddy issues the localhost certificate
+# from its own local authority; see docs/SETUP.md for trusting it in the browser.
+{
+	local_certs
+	auto_https disable_redirects
+	admin off
+}
+
+https://localhost {
+	reverse_proxy app:8787
+	header -Server
+}

@@ -1,6 +1,7 @@
 # ADR-0005: isolate imported lifecycle automation behind capability grants
 
-- Status: accepted for private import and preview; execution remains unapproved
+- Status: superseded for execution on 2026-10-22: Prism365 stays read-only (see `docs/ROADMAP.md`,
+  Milestone 6). Private import and preview remain as design artifacts; no runner will be built.
 - Date: 2026-10-13
 - Owners: maintainers
 - Implementation update: 2026-10-14

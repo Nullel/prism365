@@ -296,3 +296,6 @@ export class PostgresStateStore implements StateStore {
     await this.#pool.end();
   }
 }
+
+export * from "./module-db.ts";
+export { functionName, isAllowedFunction, type ParseNode, walkParseTree } from "./sql-policy.ts";

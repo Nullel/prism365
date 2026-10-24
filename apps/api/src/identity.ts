@@ -15,6 +15,23 @@ import {
   isUuid,
 } from "./config.ts";
 
+export type LoginRejection =
+  | "operator_not_allowed"
+  | "transaction_expired"
+  | "browser_binding_mismatch"
+  | "token_claims_mismatch";
+
+// Why a sign-in was refused, as a fixed category the callback can log without echoing any
+// provider message, code, or identifier.
+export class LoginRejectedError extends Error {
+  readonly reason: LoginRejection;
+  constructor(reason: LoginRejection, message: string) {
+    super(message);
+    this.name = "LoginRejectedError";
+    this.reason = reason;
+  }
+}
+
 export async function validateMicrosoftIdToken(
   token: string,
   expected: { tenantId: string; clientId: string; nonce: string },
@@ -31,7 +48,10 @@ export async function validateMicrosoftIdToken(
     !isUuid(payload.oid) ||
     payload.nonce !== expected.nonce
   )
-    throw new Error("Microsoft identity claims did not match the login transaction.");
+    throw new LoginRejectedError(
+      "token_claims_mismatch",
+      "Microsoft identity claims did not match the login transaction.",
+    );
   return {
     tenantId: expected.tenantId,
     actorId: payload.oid.toLowerCase(),
@@ -225,7 +245,10 @@ export class IdentityService {
   }
   async finishLogin(code: string, state: string, browserState: string) {
     if (!state || !browserState || !equalSecret(state, browserState))
-      throw new Error("Login browser binding did not match.");
+      throw new LoginRejectedError(
+        "browser_binding_mismatch",
+        "Login browser binding did not match.",
+      );
     const value = await this.#store.take(this.tenantId, "oauth", digest(state));
     const transaction = z
       .object({
@@ -237,13 +260,16 @@ export class IdentityService {
       })
       .parse(value);
     if (!equalSecret(transaction.state, state) || Date.now() - transaction.createdAt > 5 * 60_000)
-      throw new Error("Login transaction expired.");
+      throw new LoginRejectedError("transaction_expired", "Login transaction expired.");
     const identity = await this.#provider.redeem(code, transaction);
     if (
       identity.tenantId !== this.tenantId ||
       !this.#config.allowedActorIds.includes(identity.actorId)
     ) {
-      throw new Error("This Microsoft account is not an authorized Prism365 administrator.");
+      throw new LoginRejectedError(
+        "operator_not_allowed",
+        "This Microsoft account is not an authorized Prism365 administrator.",
+      );
     }
     const handle = randomHandle();
     const session = identitySessionSchema.parse({

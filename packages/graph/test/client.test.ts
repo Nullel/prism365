@@ -270,3 +270,101 @@ describe("GraphHttpClient", () => {
     ).rejects.toThrow("read-only");
   });
 });
+
+describe("GraphHttpClient continuation casing", () => {
+  it("follows a lower-case next-page link for the same endpoint and still rejects other endpoints", async () => {
+    const signIns = { feature: "audit.signins.read", permission: "AuditLog.Read.All" } as const;
+    const pages: Record<string, unknown> = {
+      "/v1.0/auditLogs/signIns": {
+        value: [{ id: "a" }],
+        "@odata.nextLink": "https://graph.microsoft.com/v1.0/auditLogs/signins?$skiptoken=next",
+      },
+      "/v1.0/auditLogs/signins": { value: [{ id: "b" }] },
+    };
+    const client = new GraphHttpClient({
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: async (input) =>
+        Response.json(pages[new URL(String(input)).pathname] ?? {}),
+    });
+    await expect(client.getCollection("auditLogs/signIns", signIns)).resolves.toEqual({
+      items: [{ id: "a" }, { id: "b" }],
+      complete: true,
+    });
+
+    const escaping = new GraphHttpClient({
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: async () =>
+        Response.json({
+          value: [{ id: "a" }],
+          "@odata.nextLink": "https://graph.microsoft.com/v1.0/users?$skiptoken=next",
+        }),
+    });
+    await expect(escaping.getCollection("auditLogs/signIns", signIns)).rejects.toMatchObject({
+      name: "GraphBoundaryError",
+      reason: "continuation",
+    });
+  });
+});
+
+describe("GraphHttpClient deadlines and cancellation", () => {
+  const paging = (onRequest: () => void) =>
+    (async (input: RequestInfo | URL, init?: RequestInit) => {
+      onRequest();
+      if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const url = new URL(String(input));
+      const page = Number(url.searchParams.get("$skiptoken") ?? "0");
+      url.searchParams.set("$skiptoken", String(page + 1));
+      return Response.json({ value: [{ id: String(page) }], "@odata.nextLink": url.toString() });
+    }) as typeof fetch;
+
+  it("starts no page after the deadline", async () => {
+    let requests = 0;
+    const client = new GraphHttpClient({
+      getAccessToken: async () => "synthetic",
+      fetchImplementation: paging(() => {
+        requests += 1;
+      }),
+    });
+    // The first page always runs; the deadline only stops later ones, and what was read is kept.
+    await expect(
+      client.getCollection("users", userContext, { maxPages: 5, deadline: Date.now() - 1 }),
+    ).resolves.toEqual({ items: [{ id: "0" }], complete: false, stopped: "deadline" });
+    expect(requests).toBe(1);
+  });
+
+  it("aborts the request in flight, not just the next page, when the caller's signal aborts", async () => {
+    const controller = new AbortController();
+    const client = new GraphHttpClient({
+      getAccessToken: async () => "synthetic",
+      requestTimeoutMilliseconds: 60_000,
+      // A request that only ends when its own signal aborts.
+      fetchImplementation: ((_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        })) as typeof fetch,
+    });
+    const started = Date.now();
+    const pending = client.getCollection("users", userContext, { signal: controller.signal });
+    setTimeout(() => controller.abort(new Error("stopped mid-request")), 50);
+    await expect(pending).rejects.toThrow("stopped mid-request");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("stops paging and the request in flight when the caller's signal aborts", async () => {
+    const controller = new AbortController();
+    let requests = 0;
+    const client = new GraphHttpClient({
+      getAccessToken: async () => "synthetic",
+      fetchImplementation: paging(() => {
+        requests += 1;
+        if (requests === 2) controller.abort(new Error("stopped by caller"));
+      }),
+    });
+    await expect(
+      client.getCollection("users", userContext, { maxPages: 50, signal: controller.signal }),
+    ).rejects.toThrow("stopped by caller");
+    expect(requests).toBe(2);
+  });
+});
