@@ -3,6 +3,7 @@ import type { Severity } from "@prism365/contracts";
 import {
   GraphBoundaryError,
   type GraphHttpClient,
+  GraphReportDownloadError,
   GraphRequestError,
   GraphRetryDeferredError,
 } from "@prism365/graph";
@@ -161,6 +162,10 @@ export function classifyCollectorError(error: unknown): ErrorCategory {
   if (error instanceof CredentialUnavailableError) return "credential_unavailable";
   if (error instanceof RunEndedError || error instanceof TransactionAbortedError) return "timeout";
   if (error instanceof GraphRetryDeferredError) return "throttled";
+  // A usage report's download link failing is Microsoft's side: never access denied, whatever
+  // the status, because the link carries no session or role.
+  if (error instanceof GraphReportDownloadError)
+    return error.status >= 500 ? "provider_unavailable" : "provider_error";
   if (error instanceof GraphRequestError) {
     if (error.status === 401 || error.status === 403) return "access_denied";
     if (error.status >= 500) return "provider_unavailable";
@@ -508,6 +513,8 @@ export class ModuleScheduler {
           get: (path, graphContext, schema) => handled(scoped.get(path, graphContext, schema)),
           getCollection: (path, graphContext, options) =>
             handled(scoped.getCollection(path, graphContext, options)),
+          getReport: (path, graphContext, options) =>
+            handled(scoped.getReport(path, graphContext, options)),
         } satisfies CollectorContext["graph"];
       })(),
       table: (name) => {

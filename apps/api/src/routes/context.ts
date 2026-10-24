@@ -27,8 +27,11 @@ export interface RouteSettings {
   readonly credentialKind: "certificate" | "secret" | null;
   // The public certificate's fingerprint and expiry, read when the configuration loaded.
   readonly certificate: { readonly thumbprintSha256: string; readonly expiresAt: string } | null;
-  // Module data and sessions survive a restart (PostgreSQL, or PGlite on disk).
+  // Module data survives a restart (PostgreSQL, or PGlite on disk).
   readonly durableStorage: boolean;
+  // Sessions and the access ledger survive a restart (the encrypted PostgreSQL state store). They
+  // do not with PRISM_DATA_DIR alone, which only keeps module data.
+  readonly durableSessions: boolean;
   // How long handoffs and receipts are kept, in days (HANDOFF_RETENTION_DAYS).
   readonly handoffRetentionDays: number;
 }

@@ -3651,6 +3651,105 @@ button.audit-tile:hover {
   }
 }
 
+/* Setup checklist (Setup.tsx) on the Microsoft access page. */
+.setup-checklist {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+.setup-checklist__intro,
+.setup-checklist__note {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.setup-checklist__note {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.setup-checklist__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+.setup-check {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.setup-check strong {
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.setup-check p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.setup-check .setup-check__fix {
+  color: var(--text);
+}
+.setup-check a {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 550;
+  text-underline-offset: 3px;
+}
+.setup-state {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  background: var(--surface-sunken);
+  font-size: var(--text-xs);
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+}
+.setup-state--ok {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.setup-state--warn {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.setup-state--fail {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+@media (max-width: 640px) {
+  .setup-check {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+}
+.connection-none {
+  margin: 16px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.connection-more {
+  margin-top: 12px;
+}
+.connection-more summary {
+  width: fit-content;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 550;
+  cursor: pointer;
+}
+
 /* Handoffs -------------------------------------------------------------- */
 
 .handoff-intro,

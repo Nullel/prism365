@@ -41,5 +41,9 @@ export function scopeGraph(
       check(context);
       return client.getCollection<T>(path, context, signal ? { ...options, signal } : options);
     },
+    async getReport(path: string, context: GraphRequestContext, options = {}) {
+      check(context);
+      return client.getReport(path, context, signal ? { ...options, signal } : options);
+    },
   };
 }

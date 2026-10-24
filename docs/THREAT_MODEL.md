@@ -83,6 +83,9 @@ login and authenticated request limits; and server-only token caches.
 
 The Graph reader rejects writes/redirects, enforces named feature/endpoint boundaries, validates
 provider schemas, caps time/response/paging, and defers rather than shortening provider throttles.
+Its one redirect is the usage report download (ADR-0010): only to `reports.office.com` under
+`/data/download/` over HTTPS, without the token, cookies or further redirects, used once, capped in
+bytes and parsed by a bounded CSV reader.
 The AI broker loads trusted expiring grants, checks current actor permissions, records attempts
 before evidence access/disclosure, minimizes fields, preserves structural coverage, and rejects
 invented citations and prohibited workforce claims. Its local transport rejects redirects and caps

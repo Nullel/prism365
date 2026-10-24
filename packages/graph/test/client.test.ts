@@ -97,13 +97,14 @@ describe("read packs added for the change feed and the consent-batch audits", ()
     expect(await allowed("reports/getM365AppUserCounts(period='D90')", ...usage)).toBe(false);
   });
 
-  it("allows the one usage report that answers in JSON", async () => {
+  it("allows the usage reports by period only; report.test.ts covers the full list", async () => {
     const pack = ["reports.usage.read", "Reports.Read.All"] as const;
     expect(await allowed("reports/getM365AppUserDetail(period='D90')", ...pack)).toBe(true);
-    expect(await allowed("reports/getOffice365ActiveUserDetail(period='D90')", ...pack)).toBe(
+    expect(await allowed("reports/getOffice365ActiveUserDetail(period='D90')", ...pack)).toBe(true);
+    expect(await allowed("reports/getM365AppUserDetail(period='D365')", ...pack)).toBe(false);
+    expect(await allowed("reports/getOffice365ActiveUserDetail(date=2026-10-01)", ...pack)).toBe(
       false,
     );
-    expect(await allowed("reports/getM365AppUserDetail(period='D365')", ...pack)).toBe(false);
   });
 });
 

@@ -25,7 +25,7 @@ This table groups the intended scope for review.
 
 | Packs | Source | Permission(s) | Phase | Important prerequisite |
 |---|---|---|---|---|
-| `profile`, `directory.users.read` | Graph | `User.Read`, `User.Read.All` | MVP | Work/school tenant; delegated access is bounded by the user's privileges |
+| `profile`, `directory.users.read` | Graph | `User.Read`, `User.Read.All` | MVP | Work/school tenant; delegated access is bounded by the user's privileges; `directory.users.read` also reads one user's direct memberships (`/users/{id}/memberOf`, not transitive), for which `User.Read.All` is Microsoft's documented least privilege |
 | `tenant.licenses.read` | Graph | `LicenseAssignment.Read.All` | MVP | Delegated caller needs an allowed directory role |
 | `user.licenses.read` | Graph | `LicenseAssignment.Read.All` | Pilot implemented | `/users/{id}/licenseDetails` supports delegated access only, plus an allowed Entra role |
 | `service.health.read` | Graph | `ServiceHealth.Read.All` | MVP | Service health available for tenant services |
@@ -34,7 +34,7 @@ This table groups the intended scope for review.
 | `directory.applications.read` | Graph | `Application.Read.All` | Experimental | App consents audit: enterprise applications and the application permissions granted to them; Microsoft does not list Global Reader for reading app role assignments |
 | `directory.permission-grants.read` | Graph | `Directory.Read.All` | Experimental | Optional for the app consents audit: delegated consents. `Directory.Read.All` is Microsoft's documented least privilege for listing grants (both the tenant-wide and the per-application list), and it can read the whole directory, so enable it only if you want delegated consents shown |
 | `reports.authentication-methods.read` | Graph | `AuditLog.Read.All` | MVP | MFA registration audit; Reports Reader, Security Reader, Security Administrator or Global Reader; excludes disabled accounts |
-| `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Only the per-user Microsoft 365 apps report (`getM365AppUserDetail`, JSON) and the name-concealment setting; per-user detail needs Reports Reader or a service admin role; global/GCC target only |
+| `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Eight per-user reports by period (D7, D30, D90, D180): Microsoft 365 apps (also as JSON), active users, email, Teams, OneDrive activity, OneDrive usage, SharePoint and mailbox usage; plus the name-concealment setting. The CSV reports come through Microsoft's pre-authenticated download on `reports.office.com`, which gets no token (ADR-0010); Microsoft allows 14 CSV report requests per ten minutes per app per tenant. Per-user detail needs Reports Reader or a service admin role; global/GCC target only |
 | `identity.conditional-access.read` | Graph | `Policy.Read.All` | Experimental | Conditional Access policies audit; Global Reader, Security Reader, Security Administrator or Conditional Access Administrator; Entra ID P1; 1 request per second per tenant, shared with risky users |
 | `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Risky users audit; Entra ID P2; Global Reader, Security Reader, Security Operator or Security Administrator; 1 request per second per tenant, shared with Conditional Access; not targeted for China |
 | `security.score.read` | Graph | `SecurityEvents.Read.All` | Experimental | Applicable subscriptions; not targeted for China |
@@ -61,6 +61,38 @@ and granted scopes, then reports source-specific failures; it does not yet imple
 role/license/service probes. A provider 403 is classified as uncertain, not automatically missing
 consent. See [Compatibility](COMPATIBILITY.md).
 
+## The setup script
+
+`npm run setup` (`scripts/setup/`, see [Setup](SETUP.md)) is the only code in the repository
+that writes to Microsoft, and only when an administrator runs it and confirms its plan. It signs
+in with a device code through Microsoft's public client for the Microsoft Graph command line
+tools (`14d82eec-204b-4c2f-b7e8-296a70dab67e`), asking for delegated `Application.ReadWrite.All`
+and `User.Read`, and keeps the token in memory only. With it, it creates or updates Prism365's
+own registration and service principal and adds a certificate. It never grants consent to that
+registration, never creates a secret, never removes consent, and never asks for an application
+permission. It never looks a registration up by label or name: it works on the one named with
+`--app-id` or by `ENTRA_CLIENT_ID` in the install's settings, or creates one. It uses an existing
+registration only when the signed-in administrator is its only owner (and the only owner of its
+service principal, unless they choose to keep the others), and neither has a client secret, a
+federated credential, an application permission, consent beyond Prism365's permissions, or
+another sign-in platform. Those checks are a snapshot: owners can change a registration later.
+
+That `Application.ReadWrite.All` is the one exception to the rule below against `*.ReadWrite.*`
+permissions. It is never on Prism365's registration or held by the running app, but the consent
+for it does not end with the run: Microsoft keeps it for the command line tools until it is
+revoked. Consent for yourself only (leave Consent on behalf of your organization unticked, which
+would let every account in the tenant use the tool with it), and revoke it once setup is done
+([Setup](SETUP.md#revoke-the-setups-access) has the steps). The setup prints that reminder at
+the end of every run.
+
+The registration it makes requests, as delegated Microsoft Graph permissions, `openid`,
+`profile`, `offline_access` and `User.Read` for sign-in (MSAL asks for the first three on every
+sign-in, and `offline_access` is what keeps a session and collection going), plus the permission
+of each pack in its feature list. By default that list is the core packs; the consent-batch
+packs are added only when named or with `--features all`, and `directory.permission-grants.read`
+(`Directory.Read.All`) only when named. The runtime still uses only the packs in
+`ENABLED_READ_FEATURES`.
+
 ## Not approved for the MVP
 
 - Any `*.ReadWrite.*` permission.
@@ -69,7 +101,7 @@ consent. See [Compatibility](COMPATIBILITY.md).
 - Broad Purview `AuditLogsQuery.Read.All` without a reviewed feature case.
 - A permission added only because it makes an implementation simpler.
 
-## Future lifecycle action packs — disabled
+## Future lifecycle action packs (disabled)
 
 The preview contracts name these permissions so an administrator can understand the eventual
 impact. They are not requested by the current app, are not present in the executable read catalog,

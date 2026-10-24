@@ -70,7 +70,8 @@ Some of the parts I care most about:
   query is checked on PostgreSQL's own parse tree (libpg-query) against a per-call table
   allowlist and a function allowlist, so quoting or comments cannot sneak a statement past it.
 - The Microsoft Graph boundary allows only the endpoints each permission pack declares, only
-  read methods, no redirects, bounded response sizes and times, and honours `Retry-After`.
+  read methods, bounded response sizes and times, and honours `Retry-After`. It follows no
+  redirect except Microsoft's usage report download, and sends that one no token (ADR-0010).
 - Sign-in collection is built never to lose data silently. Two saved positions follow the log:
   one reads new sign-ins, the other re-reads an hour behind for records Microsoft publishes
   late. Windows shrink when Microsoft is slow or busy, a stopped run is detected and recovered,
@@ -93,9 +94,18 @@ npm install
 npm run demo
 ```
 
-That builds the demo described above and serves it at `http://localhost:4173`. To connect a tenant, follow
-[Setup](docs/SETUP.md): it covers the app registration, the Docker install with PostgreSQL and
-HTTPS, and each feature's permissions.
+That builds the demo described above and serves it at `http://localhost:4173`.
+
+To connect your own tenant, one command registers the Entra app, makes its certificate and
+writes `.env`; it shows its plan and asks before changing anything:
+
+```bash
+npm run setup -- --tenant contoso.onmicrosoft.com
+```
+
+Then open the admin consent link it prints, and start the Docker install with
+`scripts/docker-live.sh init` and `scripts/docker-live.sh up`. [Setup](docs/SETUP.md) covers
+each step, the manual path, and what each feature needs.
 
 ## Documentation
 

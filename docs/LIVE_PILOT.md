@@ -121,7 +121,7 @@ workspace switcher reads "Your organization / Microsoft 365 workspace", the demo
 gone. Open User Intelligence and look up a test user; the licence and sign-in sections each
 report their own state.
 
-### 2.5 Two code fixes before the pilot (GREEN, mech)
+### 2.5 Two code fixes before the pilot (GREEN)
 
 1. **Surface a failed sign-in.** Done 2026-10-22 (`readAuthNotice` in `App.tsx`, category log in `app.ts`). Both failure paths in `/v1/auth/callback` redirect to
    `/?auth=failed`, and nothing in `apps/web` reads that parameter, so a rejected operator
@@ -192,11 +192,16 @@ operator's delegated session, with no scheduler and no new storage:
 | Open service incidents | `admin/serviceAnnouncement/healthOverviews` and `issues` | `service.health.read` | add the feature and consent `ServiceHealth.Read.All` |
 | Recent activity | open service issues plus failed-sign-in spikes | the two above | |
 
-Usage reports (`Reports.Read.All`) need a download adapter first: `GraphHttpClient` rejects
-every 3xx by design, and most `reports/get*` functions answer 302 with a pre-authenticated
-CSV URL. The per-user Microsoft 365 apps report (`getM365AppUserDetail`) is the exception: v1.0
-documents a JSON answer, and the Microsoft 365 app usage audit reads only that report. An adapter
-for the CSV reports (allow-listed redirect host, bounded CSV parse) is still its own task.
+Usage reports (`Reports.Read.All`): most `reports/get*` functions answer 302 with a
+pre-authenticated CSV link on `reports.office.com`. `GraphHttpClient.request()` still refuses
+every 3xx; `getReport()` is the one reader that follows it (ADR-0010), for eight per-user
+reports by period, without sending the token, and parses the file with a bounded CSV reader. The
+per-user Microsoft 365 apps report (`getM365AppUserDetail`) also has a documented JSON answer,
+which the Microsoft 365 app usage audit reads. On the pilot tenant, check that the download host
+is still `reports.office.com` and how the file is encoded. If Microsoft has moved the download, the
+audit page says "Microsoft sent the report from a host Prism365 does not recognise" with the host,
+and the server log line carries the same host with the `report_host` category; the link itself is
+never shown or logged.
 
 Deliverable: `/v1/dashboard/summary` returns live data in live mode, `MetricCard` reads
 `metric.state` instead of the hard-coded "Demo" chip, and the placeholder section goes away.
