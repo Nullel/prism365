@@ -313,11 +313,12 @@ async function main() {
   await setState(expected.burstAccount, "resolved");
   await setState(expected.burstAddress, "resolved");
 
-  // 4. Run every audit: two weeks ago, a week ago and now, so each has a trend.
+  // 4. Run every audit: five weeks ago, two weeks ago, a week ago and now, so each has a trend and
+  // the This week page has a result from before even its longest range to compare with.
   const catalog = await getJson<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
-  for (const daysAgo of [14, 7, 0]) {
+  for (const daysAgo of [35, 14, 7, 0]) {
     auditClock = daysAgo === 0 ? null : new Date(anchor.getTime() - daysAgo * DAY);
-    auditGraph = auditClock ? createSyntheticGraph({ now: auditClock }) : graph;
+    auditGraph = auditClock ? createSyntheticGraph({ now: auditClock, quietFrom: anchor }) : graph;
     for (const entry of catalog.audits) {
       const id = entry.definition.id;
       const response = await call("POST", `/api/v1/audits/${id}/runs`);
@@ -391,6 +392,8 @@ async function main() {
   await record("/api/v1/settings/audits");
   await record("/api/v1/settings/audit-schedule");
   await record("/api/v1/modules/service.health/status");
+  // The This week page, for each range it offers (the demo has no other).
+  for (const days of [1, 7, 14, 30]) await record(`/api/v1/digest?days=${days}`);
   await record("/api/v1/automation/workflows");
   await record("/api/v1/automation/packages");
   await record("/api/v1/ai/status");

@@ -1616,8 +1616,17 @@ function buildRegistrations(members: Member[], now: number) {
 // Assembling the tenant
 // ---------------------------------------------------------------------------------------------
 
-export function buildSyntheticTenant(now: Date): SyntheticTenant {
+export interface TenantOptions {
+  // When the accounts that went quiet were last seen is counted back from this time instead of
+  // from `now`. The recorder builds the tenant as it stood at an earlier time and gives its own
+  // time here, so an account whose silence has since passed 30 days was still active then, and the
+  // audits kept from the earlier runs show it moving.
+  quietFrom?: Date;
+}
+
+export function buildSyntheticTenant(now: Date, options: TenantOptions = {}): SyntheticTenant {
   const t = now.getTime();
+  const quietFrom = (options.quietFrom ?? now).getTime();
   const members = buildMembers(now);
   const byKey = new Map(members.map((member) => [member.seed.key, member]));
   const stories = plantStories(byKey, t);
@@ -1634,7 +1643,9 @@ export function buildSyntheticTenant(now: Date): SyntheticTenant {
     const rand = seeded(`signins:${seed.key}`);
     // Accounts that went quiet recently stop signing in at their last-seen time.
     const lastSeen =
-      seed.quietDays !== undefined ? t - seed.quietDays * DAY - between(rand, 1, 20) * HOUR : t;
+      seed.quietDays !== undefined
+        ? quietFrom - seed.quietDays * DAY - between(rand, 1, 20) * HOUR
+        : t;
     const ordinary =
       seed.kind === "guest"
         ? [
@@ -1723,7 +1734,7 @@ export function buildSyntheticTenant(now: Date): SyntheticTenant {
         lastSuccessfulSignInDateTime: iso(Math.max(seen.success, background)),
       };
     } else if (quiet !== undefined && member.seed.kind !== "never") {
-      const at = t - quiet * DAY - between(rand, 1, 20) * HOUR;
+      const at = quietFrom - quiet * DAY - between(rand, 1, 20) * HOUR;
       const background = at + between(rand, 0, 30) * MINUTE;
       member.user.signInActivity = {
         lastSignInDateTime: iso(at),
@@ -2021,8 +2032,11 @@ const REPORT_DOWNLOAD_HOST = "reports.office.com";
 const REPORT_DOWNLOAD_PATH = "/data/download/";
 const PENDING_DOWNLOADS = 32;
 
-export function createSyntheticGraph(options: { now: Date }): typeof fetch {
-  const tenant = buildSyntheticTenant(options.now);
+export function createSyntheticGraph(options: { now: Date; quietFrom?: Date }): typeof fetch {
+  const tenant = buildSyntheticTenant(
+    options.now,
+    options.quietFrom ? { quietFrom: options.quietFrom } : {},
+  );
   const communications = buildCommunications(options.now.getTime());
   const sortedSignIns = [...tenant.signIns].sort(
     (a, b) => b.createdDateTime.localeCompare(a.createdDateTime) || b.id.localeCompare(a.id),

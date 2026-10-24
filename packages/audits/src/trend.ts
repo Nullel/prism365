@@ -78,7 +78,7 @@ function parsedJson(value: unknown): unknown {
 
 // Stored tiles, read leniently: one that does not parse is left out rather than failing the
 // whole trend.
-function storedTiles(value: unknown): TrendTile[] {
+export function storedTiles(value: unknown): TrendTile[] {
   const parsed = parsedJson(value);
   if (!Array.isArray(parsed)) return [];
   const seen = new Set<string>();
@@ -93,7 +93,7 @@ function storedTiles(value: unknown): TrendTile[] {
   return tiles;
 }
 
-function storedScope(value: unknown): string[] | null {
+export function storedScope(value: unknown): string[] | null {
   const parsed = parsedJson(value);
   if (!Array.isArray(parsed)) return null;
   const domains = parsed.filter((item): item is string => typeof item === "string");
