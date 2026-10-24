@@ -26,6 +26,8 @@ changes the tenant.
 | Account activity (`accounts.activity`) | Is this account really unused, and does anyone depend on it? One row per account with sign-ins, mail, Teams, OneDrive and SharePoint use, mailbox size, licenses, groups and directory roles, and a verdict (section 16). | `User.Read.All`, `AuditLog.Read.All`, Microsoft Entra ID P1 or P2, a role such as Reports Reader, Security Reader or Global Reader; `Reports.Read.All` with Reports Reader or a service administrator role adds the workload columns, `ReportSettings.Read.All` tells whether names are concealed, `LicenseAssignment.Read.All` names the licenses |
 | Privileged roles (`directory.privileged-roles`) | Who holds Global Administrator and the other administrator roles, permanently, for a time, after an activation or only as eligible, and which holders are disabled accounts, guests or apps (section 17)? | `RoleManagement.Read.Directory` and a role such as Global Reader or Privileged Role Administrator; Microsoft Entra ID P2 or ID Governance for eligible and time-bound roles; `User.Read.All`, `Application.Read.All` and `AuditLog.Read.All` add names and MFA registration |
 | Passwords (`accounts.passwords`) | How old is each member account's password, which accounts are set never to expire or to skip the strong password rule, and when do passwords expire (section 18)? | `User.Read.All`; `Domain.Read.All` with a role such as Global Reader or Directory Readers adds expiry dates |
+| Groups and Teams (`groups.teams`) | Which groups and teams have no owner, only disabled owners, a single owner, no use for 90 days or an expiry date close, and who owns the rest (section 19)? | `Group.Read.All` and a role such as Global Reader or Directory Readers; `Reports.Read.All` with Reports Reader or Teams Administrator adds team usage, `ReportSettings.Read.All` tells whether names are concealed |
+| Mailbox storage (`mail.mailbox-storage`) | Which mailboxes are full or close to it, against the warning, send and send-and-receive quotas, and does the mailbox have an archive (section 20)? | `Reports.Read.All` and Reports Reader or Exchange Administrator; `ReportSettings.Read.All` tells whether names are concealed |
 
 `LicenseAssignment.Read.All`, when granted, also gives the account audits license names instead
 of Microsoft's product IDs.
@@ -923,3 +925,163 @@ than 1 year, Expired, Expires soon (only when domains were read) and Enabled, ne
 - A fine-grained password policy, or a password policy set anywhere other than the user and the
   domain.
 - Whether a password is weak. The audit sees the setting that allows one, not the password.
+
+## 19. Groups and Teams
+
+`groups.teams` answers "which groups and teams have nobody looking after them?" One row per group:
+its kind and a status, visibility, how many owners it has and how many are enabled, the first five
+owner names, when it was created, expires and was renewed, whether it can be given a directory role
+and whether it is synced from on-premises. With the Teams activity report each team also shows its
+last activity, active users, guests and active channels. The audit does not use the account scope
+(section 9), because a group has no sign-in name to sort by domain, and it offers no export for
+action ([Handoffs](handoff.md)): its rows are groups, not accounts.
+
+### What it reads
+
+Graph v1.0, checked 2026-10-24. Only the first read is required.
+
+1. `GET /groups`, with `$select` naming the fields below and `$top=999` (`Group.Read.All`, the
+   `directory.groups.read` pack). Up to 20,000 groups are read; past that the run says so and is
+   partial. The fields are `groupTypes`, `mailEnabled`, `securityEnabled`,
+   `resourceProvisioningOptions`, `visibility`, `expirationDateTime`, `renewedDateTime`,
+   `isAssignableToRole`, `onPremisesSyncEnabled` and `createdDateTime`. Teams are told apart on the
+   client, because the server filter may need advanced query headers and Prism365 sends none.
+2. `GET /groups/{object id}/owners` with `$select=id,displayName,userPrincipalName,accountEnabled`,
+   for Microsoft 365 groups, teams and groups that can be given a directory role, and for no other
+   kind. At most 3,000 owner lists are read in a run, four at a time, teams first and then the
+   oldest groups. The rest show Owners not read and the run is partial. Microsoft throttling, or a
+   refusal, stops the reading and keeps what was read.
+3. With `Reports.Read.All`, `GET /reports/getTeamsTeamActivityDetail(period='D90')`, once. It is
+   matched to groups by Team Id, which is the group's object ID, with the headers matched by name
+   and without regard to letter case. A team's name in the report is never used: the row shows the
+   group's own display name. With `ReportSettings.Read.All` the privacy setting is read when the
+   report's team identifiers look like hashes, only to say so correctly.
+
+Nothing else is read: no members, no `/teams` call and no SharePoint site. Members cannot be
+reached with this read pack.
+
+### Kind
+
+The first that fits. Team: the group's provisioning options include Team. Microsoft 365 group: its
+group types include Unified. Dynamic security group: its group types include DynamicMembership.
+Mail-enabled security group: mail-enabled and a security group. Security group: a security group.
+Distribution list: everything else. A few old unused teams lack the provisioning option and show as
+Microsoft 365 groups; a note counts the ones the Teams report lists.
+
+### Status
+
+The first that fits, for each group.
+
+1. No owners: the owner list was read and is empty.
+2. Only disabled owners: every owner is an account Microsoft says is disabled. An owner whose state
+   is not given, such as an app, stops a group from being called this.
+3. One owner: a team with exactly one owner.
+4. Inactive 90 days: a team that has a row in the Teams report and either no activity date or one
+   more than 90 days old.
+5. Expires within 30 days: the expiry date is at most 30 days away, or already past.
+6. Owners not read: owners were due and Prism365 did not get them.
+7. No usage data: a team the Teams report does not list, or the report was not read.
+8. OK.
+
+The tiles count the conditions, not the statuses, so a team with no owners that is also inactive is
+counted in both. The Teams report lags by 24 to 72 hours and sometimes by several days.
+
+### Columns
+
+Group, Kind, Status, Visibility, Owners, Enabled owners, Owner names, Created, Expires, Role-assignable,
+Last activity, Active users, Guests and Active channels, and hidden by default Renewed and Synced from
+on-premises. Kind, Status and Visibility can be used as filters.
+
+### Views and tiles
+
+Views: All groups (the default), No owners, Only disabled owners, Teams with one owner, Teams with
+guests, Inactive teams, Public teams, Expiring within 30 days, Role-assignable groups, Owners not
+read, No usage data and Teams.
+
+Tiles: Groups and teams with no owners (every group whose owners were read and found none, which
+adds role-assignable security groups to Microsoft 365 groups and teams), Groups with only disabled
+owners, Teams with one owner, Teams with guests, Inactive teams, Public teams, Groups expiring in 30
+days and Role-assignable groups. Without the Teams report the guest and inactive tiles say so and
+show 0.
+
+### What it cannot see
+
+- Members: who is in a group, how many people, or which guests. The Guests column is the Teams
+  report's count for a team.
+- Owners of security groups and distribution lists, which are not read.
+- A team whose group lacks the provisioning option, which counts as a Microsoft 365 group.
+- Whether an owner is an active person. An enabled account can belong to someone who left.
+- Not confirmed with Microsoft: that `$select` is accepted on the owner list and that an owner who
+  is an app returns the user fields; whether concealment hides Team Id in the Teams report (a
+  report whose team identifiers all look like hashes is treated as concealed and nothing is
+  matched); whether an empty activity date means no activity in the period.
+
+## 20. Mailbox storage
+
+`mail.mailbox-storage` answers "which mailboxes are about to stop working?" One row per mailbox:
+its sign-in name, display name and recipient type, how much it holds, its three quotas, how close it
+is to the prohibit send quota, items, deleted items, whether it has an archive, its last activity and
+a status. It uses the account scope (section 9) and has the Domain column. It offers no export for
+action ([Handoffs](handoff.md)): the report names mailboxes, not accounts.
+
+### What it reads
+
+Graph v1.0, checked 2026-10-24. One read: `GET /reports/getMailboxUsageDetail(period='D90')`
+(`Reports.Read.All`, the `reports.usage.read` pack) through the usage report reader (ADR-0010), once.
+Nothing is joined to the directory: the report names a mailbox by sign-in name and carries no object
+ID, so rows do not link to a person page. With `ReportSettings.Read.All` the privacy setting is
+read.
+
+Headers are matched by name and without regard to letter case. The sign-in name and the storage
+used are required; every other column is optional, and one the report lacks reads as unknown. The
+Recipient Type column is in Microsoft's current page but not in older copies. A row marked deleted is
+left out and counted in a note.
+
+A byte is a byte and a gigabyte here is 1,073,741,824 bytes. Sizes are shown in gigabytes to one
+decimal, and rows are ordered by the bytes.
+
+### Status
+
+The first that fits, for each mailbox. Reaching a quota counts as being over it.
+
+1. Cannot send or receive: at or over the prohibit send and receive quota.
+2. Cannot send: at or over the prohibit send quota.
+3. Quota unknown: the report gives no warning quota (and neither of the first two applies). A quota
+   that is blank, 0 or unreadable counts as missing.
+4. Over warning: at or over the warning quota.
+5. Near full: 90 percent of the warning quota or more.
+6. Near full, no archive: 80 percent of the warning quota or more, for a mailbox the report says has
+   no archive. An archive that is not stated is not called missing.
+7. OK.
+
+### When names are concealed
+
+When Microsoft conceals names, or the sign-in names in the report look like hashes, there are no rows
+to show: Prism365 does not match, show or store a name it cannot read, and does not unmask anything.
+The tiles still count the whole report. The audit scope cannot be applied to hashes, and the run says
+so.
+
+### Columns
+
+Mailbox, Display name, Recipient type, Status, Used, Warning quota, Prohibit send quota, Prohibit send
+and receive quota, Percent of prohibit send quota, Items, Deleted items, Has archive, Last activity,
+and Domain, with Items, Deleted items and Domain hidden by default. Recipient type, Status and Domain can
+be used as filters.
+
+### Views and tiles
+
+Views: All mailboxes (the default), Cannot send or receive, Cannot send, Over warning, Near full, Near
+full without an archive and Quota unknown. A mailbox that is OK is in none of the problem views.
+
+Tiles: Cannot send or receive, Cannot send, Over warning, Near full, Near full without an archive and
+Total storage used in gigabytes. Under a scope they count the mailboxes in it.
+
+### What it cannot see
+
+- Mail that has not reached the report. It lags by 24 to 72 hours and sometimes by several days, so a
+  mailbox can be fuller than shown.
+- A quota set for one mailbox that the report does not state, a litigation hold, or an archive's own
+  quota. The audit judges the primary mailbox against the quotas the report gives.
+- What a Recipient Type value looks like: Microsoft's page names the column and does not list its
+  values, so the audit shows whatever the report says.
+- Whether a mailbox is shared or a room when the report has no Recipient Type column.

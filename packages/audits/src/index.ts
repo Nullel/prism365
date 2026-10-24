@@ -6,9 +6,11 @@ import { licenseCapacityAudit } from "./capacity.ts";
 import { conditionalAccessAudit } from "./conditional-access.ts";
 import type { Audit } from "./definition.ts";
 import { managedDevicesAudit } from "./devices.ts";
+import { groupsTeamsAudit } from "./groups-teams.ts";
 import { guestAccountsAudit } from "./guests.ts";
 import { inactiveAccountsAudit } from "./inactive.ts";
 import { m365AppUsageAudit } from "./m365-app-usage.ts";
+import { mailboxStorageAudit } from "./mailbox-storage.ts";
 import { mfaRegistrationAudit } from "./mfa.ts";
 import { passwordsAudit } from "./passwords.ts";
 import { privilegedRolesAudit } from "./privileged-roles.ts";
@@ -52,6 +54,19 @@ export {
 export * from "./directory.ts";
 export { firstAccepted, readPages } from "./graph-pages.ts";
 export {
+  createGroupsTeamsAudit,
+  GROUP_KINDS,
+  GROUP_STATUSES,
+  type GroupKind,
+  type GroupsTeamsLimits,
+  type GroupStatus,
+  groupsTeamsAudit,
+  kindOf,
+  MAX_GROUPS,
+  MAX_OWNER_LISTS,
+  OWNER_CONCURRENCY,
+} from "./groups-teams.ts";
+export {
   createM365AppUsageAudit,
   lastActivityOf,
   MAX_USAGE_ACCOUNTS,
@@ -59,6 +74,13 @@ export {
   PERIOD_DAYS,
   usageOf,
 } from "./m365-app-usage.ts";
+export {
+  MAILBOX_STATUSES,
+  type MailboxStatus,
+  mailboxStatus,
+  mailboxStorageAudit,
+  type Quotas,
+} from "./mailbox-storage.ts";
 export { methodLabel, strongestMethod } from "./mfa.ts";
 export * from "./paced-read.ts";
 export { createRiskyUsersAudit, riskyUsersAudit } from "./risky-users.ts";
@@ -91,6 +113,8 @@ export const builtInAudits: readonly Audit[] = [
   accountActivityAudit,
   privilegedRolesAudit,
   passwordsAudit,
+  groupsTeamsAudit,
+  mailboxStorageAudit,
 ];
 
 function permissionsOf(packs: readonly GraphFeatureId[]): string[] {

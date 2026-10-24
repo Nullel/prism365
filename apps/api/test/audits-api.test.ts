@@ -192,6 +192,8 @@ describe("audits API", () => {
       "accounts.activity",
       "directory.privileged-roles",
       "accounts.passwords",
+      "groups.teams",
+      "mail.mailbox-storage",
     ]);
     // Reads this installation has not enabled are named, so the page says what to add.
     expect(by("devices.managed")).toMatchObject({
@@ -217,6 +219,14 @@ describe("audits API", () => {
     expect(by("directory.privileged-roles")).toMatchObject({
       state: "not_enabled",
       enable: ["directory.roles.read"],
+    });
+    expect(by("groups.teams")).toMatchObject({
+      state: "not_enabled",
+      enable: ["directory.groups.read"],
+    });
+    expect(by("mail.mailbox-storage")).toMatchObject({
+      state: "not_enabled",
+      enable: ["reports.usage.read"],
     });
     expect(by("licenses.capacity")).toMatchObject({
       state: "not_enabled",

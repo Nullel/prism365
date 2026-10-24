@@ -63,6 +63,7 @@ const features = [
   "directory.applications.read",
   "directory.permission-grants.read",
   "directory.roles.read",
+  "directory.groups.read",
   "directory.domains.read",
   "reports.usage.read",
   "reports.settings.read",
@@ -82,6 +83,7 @@ const scopes = [
   "Reports.Read.All",
   "ReportSettings.Read.All",
   "RoleManagement.Read.Directory",
+  "Group.Read.All",
   "Domain.Read.All",
 ];
 const origin = "http://localhost:5173";

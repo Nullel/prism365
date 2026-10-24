@@ -101,7 +101,7 @@ OneDrive sizes, and the names of its groups and directory roles. It never stores
 content, and the counts are not a measure of anyone's work. The Privileged roles audit stores who
 holds each directory role, how and until when, with the holder's name and sign-in name or, for a
 group, its ID. The Passwords audit stores each member account's password change date and whether
-it has the never-expires or weak-password setting, never a password or a hash. The newest 10 successful and 5 failed runs per
+it has the never-expires or weak-password setting, never a password or a hash. The Groups and Teams audit stores each group's name, kind and dates and, for Microsoft 365 groups, teams and role-assignable groups, the names of up to five owners with a count of all owners; it never reads members. The Mailbox storage audit stores each mailbox's sign-in name, display name, sizes, quotas and item counts, never message content. The newest 10 successful and 5 failed runs per
 audit are kept and older ones deleted. Starting a run, opening a result and exporting it each write an access-ledger
 entry that names the audit and the run, not an account. A downloaded CSV is outside Prism365's
 retention and should be handled like the directory export it is.

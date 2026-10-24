@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { type DirectoryUser, guid, ORGANISATION, type SyntheticTenant } from "../tenant.ts";
+import { LABORATORY, LICENSING, STAFF, TEAM_USAGE } from "./groups.ts";
 import type { DemoGraphExtension } from "./types.ts";
 
 // The Microsoft 365 apps usage report, the seven CSV usage reports behind the Account activity
 // audit (active users, email, Teams, OneDrive activity, OneDrive usage, SharePoint and mailbox),
-// the direct group memberships it reads, and the report privacy setting for the synthetic tenant.
+// the direct group memberships it reads, the per-team Teams activity report behind the Groups and
+// Teams audit, and the report privacy setting for the synthetic tenant.
 // Names are shown in the demo (a Global Administrator turned concealment off), so the report names
 // people by sign-in name. Accounts that have not signed in for 90 days have no activity, which is
 // what ties this report to the Inactive accounts audit.
@@ -186,7 +188,32 @@ const SIGN_IN_AND_USE_NOTHING = new Set([keyOf("bokafor"), keyOf("icalloway")]);
 const FILES_STILL_OPENED = keyOf("dokoro");
 const LARGE_QUIET_MAILBOX = keyOf("rpemberton");
 const SHARED_MAILBOX = keyOf("labresults");
+// An unlicensed resource account the mailbox report lists as a room.
+const ROOM_MAILBOX = keyOf("kiosk");
 const GUEST_ON_SHAREPOINT = keyOf("awhitcombe");
+
+// Mailboxes the Mailbox storage audit has something to say about, by roster key: the size in
+// gibibytes, set against the usual quotas of 49, 49.5 and 50 GiB so that each lands on a different
+// status. None of them belongs to an account the Account activity audit calls quiet, so its large
+// mailbox view still holds one mailbox.
+const MAILBOX_STORIES = new Map<
+  string,
+  { gib: number; items: number; archive: boolean; quotas?: "blank" }
+>([
+  // Full: nothing more arrives.
+  [SHARED_MAILBOX, { gib: 50.3, items: 212_400, archive: false }],
+  // Cannot send.
+  [keyOf("mbrandt"), { gib: 49.7, items: 96_300, archive: true }],
+  // Over the warning quota.
+  [keyOf("dholloway"), { gib: 49.2, items: 88_150, archive: true }],
+  // Near full, with an archive to move old mail to.
+  [keyOf("isolheim"), { gib: 46.5, items: 71_900, archive: true }],
+  // Near full and nowhere to move it.
+  [keyOf("korne"), { gib: 41, items: 54_600, archive: false }],
+  // The report gives no quotas.
+  [keyOf("waris"), { gib: 8.2, items: 31_200, archive: false, quotas: "blank" }],
+  [ROOM_MAILBOX, { gib: 0.4, items: 410, archive: false }],
+]);
 
 interface Activity {
   // Days since each workload was last used by the account's owner; null for none in 90 days.
@@ -220,7 +247,10 @@ function activitiesOf(tenant: SyntheticTenant): Map<string, Activity> {
     const member = user.userType === "Member";
     const suite = member && parts.includes("SPB");
     const shared = user.id === SHARED_MAILBOX;
-    const hasMailbox = shared || (member && (suite || parts.includes("EXCHANGESTANDARD")));
+    const hasMailbox =
+      shared ||
+      user.id === ROOM_MAILBOX ||
+      (member && (suite || parts.includes("EXCHANGESTANDARD")));
     const signedIn = user.signInActivity.lastSuccessfulSignInDateTime;
     const since = signedIn === null ? null : Math.floor((now - Date.parse(signedIn)) / DAY);
     const nothing = SIGN_IN_AND_USE_NOTHING.has(user.id);
@@ -235,6 +265,7 @@ function activitiesOf(tenant: SyntheticTenant): Map<string, Activity> {
     };
     const amount = (label: string, base: number, spread: number) =>
       base + Math.floor(unit(`${user.id}:${label}`) * spread);
+    const story = MAILBOX_STORIES.get(user.id);
     const mail = shared ? 1 : lastUse("mail", hasMailbox, 1);
     const teams = lastUse("teams", suite, 0.85);
     const oneDrive = lastUse("onedrive", suite, 0.7);
@@ -276,11 +307,13 @@ function activitiesOf(tenant: SyntheticTenant): Map<string, Activity> {
         ? null
         : user.id === LARGE_QUIET_MAILBOX
           ? { items: 61_240, bytes: Math.round(12.4 * GIB), archive: true }
-          : {
-              items: amount("items", 200, 8_000),
-              bytes: Math.round((0.1 + unit(`${user.id}:mailbox`) * 2.4) * GIB),
-              archive: unit(`${user.id}:archive`) < 0.2,
-            },
+          : story
+            ? { items: story.items, bytes: Math.round(story.gib * GIB), archive: story.archive }
+            : {
+                items: amount("items", 200, 8_000),
+                bytes: Math.round((0.1 + unit(`${user.id}:mailbox`) * 2.4) * GIB),
+                archive: unit(`${user.id}:archive`) < 0.2,
+              },
       teamsLicensed: suite,
     });
   }
@@ -328,7 +361,11 @@ const SHAREPOINT_COLUMNS = columnsOf(
   "Report Refresh Date,User Principal Name,Is Deleted,Deleted Date,Last Activity Date,Viewed Or Edited File Count,Synced File Count,Shared Internally File Count,Shared Externally File Count,Visited Page Count,Assigned Products,Report Period",
 );
 const MAILBOX_COLUMNS = columnsOf(
-  "Report Refresh Date,User Principal Name,Display Name,Is Deleted,Deleted Date,Created Date,Last Activity Date,Item Count,Storage Used (Byte),Issue Warning Quota (Byte),Prohibit Send Quota (Byte),Prohibit Send/Receive Quota (Byte),Deleted Item Count,Deleted Item Size (Byte),Deleted Item Quota (Byte),Has Archive,Report Period",
+  "Report Refresh Date,User Principal Name,Display Name,Is Deleted,Deleted Date,Created Date,Last Activity Date,Item Count,Storage Used (Byte),Issue Warning Quota (Byte),Prohibit Send Quota (Byte),Prohibit Send/Receive Quota (Byte),Deleted Item Count,Deleted Item Size (Byte),Deleted Item Quota (Byte),Has Archive,Recipient Type,Report Period",
+);
+// The per-team report, in the order of the v1.0 page (checked 2026-10-24).
+const TEAMS_TEAM_COLUMNS = columnsOf(
+  "Report Refresh Date,Team Name,Team Id,Team Type,Last Activity Date,Report Period,Active Users,Active Channels,Guests,Reactions,Meetings Organized,Post Messages,Reply Messages,Channel Messages,Urgent Messages,Mentions,Active Shared Channels,Active External Users",
 );
 const EMAIL = /^reports\/getEmailActivityUserDetail\(period='D(?:7|30|90|180)'\)$/;
 const TEAMS = /^reports\/getTeamsUserActivityUserDetail\(period='D(?:7|30|90|180)'\)$/;
@@ -336,6 +373,7 @@ const ONEDRIVE_ACTIVITY = /^reports\/getOneDriveActivityUserDetail\(period='D(?:
 const ONEDRIVE_USAGE = /^reports\/getOneDriveUsageAccountDetail\(period='D(?:7|30|90|180)'\)$/;
 const SHAREPOINT = /^reports\/getSharePointActivityUserDetail\(period='D(?:7|30|90|180)'\)$/;
 const MAILBOX = /^reports\/getMailboxUsageDetail\(period='D(?:7|30|90|180)'\)$/;
+const TEAMS_TEAM = /^reports\/getTeamsTeamActivityDetail\(period='D(?:7|30|90|180)'\)$/;
 
 const PERIOD_COLUMN = String(PERIOD);
 const refreshOf = (tenant: SyntheticTenant) => day(tenant.now.getTime() - REPORT_LAG_DAYS * DAY);
@@ -498,6 +536,7 @@ function mailboxOf(tenant: SyntheticTenant): string {
   const rows = tenant.users.flatMap((user) => {
     const use = profile.get(user.id);
     if (!use?.mailbox) return [];
+    const blank = MAILBOX_STORIES.get(user.id)?.quotas === "blank";
     return [
       {
         "Report Refresh Date": refreshOf(tenant),
@@ -508,18 +547,54 @@ function mailboxOf(tenant: SyntheticTenant): string {
         "Last Activity Date": daysAgo(tenant, use.mail),
         "Item Count": count(use.mailbox.items),
         "Storage Used (Byte)": count(use.mailbox.bytes),
-        "Issue Warning Quota (Byte)": count(49 * GIB),
-        "Prohibit Send Quota (Byte)": count(49.5 * GIB),
-        "Prohibit Send/Receive Quota (Byte)": count(50 * GIB),
+        "Issue Warning Quota (Byte)": blank ? "" : count(49 * GIB),
+        "Prohibit Send Quota (Byte)": blank ? "" : count(49.5 * GIB),
+        "Prohibit Send/Receive Quota (Byte)": blank ? "" : count(50 * GIB),
         "Deleted Item Count": count(Math.floor(use.mailbox.items / 40)),
         "Deleted Item Size (Byte)": count(Math.floor(use.mailbox.bytes / 60)),
         "Deleted Item Quota (Byte)": count(30 * GIB),
         "Has Archive": use.mailbox.archive ? "True" : "False",
+        "Recipient Type": recipientOf(user),
         "Report Period": PERIOD_COLUMN,
       },
     ];
   });
   return fileOf(MAILBOX_COLUMNS, rows);
+}
+
+// How the mailbox report names the kind of mailbox. The wording is a guess: Microsoft's page names
+// the column and does not list its values.
+const recipientOf = (user: DirectoryUser) =>
+  user.id === SHARED_MAILBOX
+    ? "SharedMailbox"
+    : user.id === ROOM_MAILBOX
+      ? "RoomMailbox"
+      : "UserMailbox";
+
+// The per-team Teams activity report behind the Groups and Teams audit: one row for each team in
+// groups.ts that has used Teams, with the counts that report carries.
+function teamsTeamOf(tenant: SyntheticTenant): string {
+  const rows = TEAM_USAGE.map((team) => ({
+    "Report Refresh Date": refreshOf(tenant),
+    "Team Name": team.name,
+    "Team Id": team.id,
+    "Team Type": team.type,
+    "Last Activity Date": daysAgo(tenant, team.lastDaysAgo),
+    "Report Period": PERIOD_COLUMN,
+    "Active Users": count(team.users),
+    "Active Channels": count(team.channels),
+    Guests: count(team.guests),
+    Reactions: count(team.users * 6),
+    "Meetings Organized": count(Math.floor(team.users / 3)),
+    "Post Messages": count(team.users * 4),
+    "Reply Messages": count(team.users * 7),
+    "Channel Messages": count(team.users * 11),
+    "Urgent Messages": count(Math.floor(team.users / 8)),
+    Mentions: count(team.users * 2),
+    "Active Shared Channels": "0",
+    "Active External Users": count(team.guests),
+  }));
+  return fileOf(TEAMS_TEAM_COLUMNS, rows);
 }
 
 // The active users report (getOffice365ActiveUserDetail), the first of the CSV reports that
@@ -579,20 +654,16 @@ const csvReports: readonly [RegExp, (tenant: SyntheticTenant) => string][] = [
   [ONEDRIVE_USAGE, oneDriveUsageOf],
   [SHAREPOINT, sharePointOf],
   [MAILBOX, mailboxOf],
+  [TEAMS_TEAM, teamsTeamOf],
 ];
 
 // ---------------------------------------------------------------------------------------------
 // Direct group memberships
 // ---------------------------------------------------------------------------------------------
 
-// The groups of the synthetic tenant. The licensing group is the one tenant.ts names as the
-// source of the Business Premium license of accounts that get it through a group.
-const STAFF = { id: guid("group:staff"), name: "Larkspur staff" };
-const LICENSING = {
-  id: guid("group:licensing"),
-  name: "Licensing, Microsoft 365 Business Premium",
-};
-const LABORATORY = { id: guid("group:laboratory"), name: "Laboratory team" };
+// Three of the groups of the synthetic tenant (groups.ts has them all). The licensing group is the
+// one tenant.ts names as the source of the Business Premium license of accounts that get it
+// through a group.
 const ROLES = new Map<string, string[]>([
   [keyOf("admin"), ["Global Administrator"]],
   [keyOf("tvance"), ["Helpdesk Administrator"]],

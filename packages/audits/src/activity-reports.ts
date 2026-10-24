@@ -67,7 +67,7 @@ export interface AccountFacts {
 }
 
 type Cell = (name: string) => string | undefined;
-interface Tally {
+export interface Tally {
   // Values that were neither empty nor the kind of value the column holds.
   unreadable: number;
 }
@@ -78,7 +78,7 @@ const dateOf = (raw: string | undefined): string | null | undefined => {
   return value === "" ? null : value.slice(0, 40);
 };
 
-function countOf(raw: string | undefined, tally: Tally): number | null | undefined {
+export function countOf(raw: string | undefined, tally: Tally): number | null | undefined {
   if (raw === undefined) return undefined;
   const value = raw.trim();
   if (value === "") return null;
@@ -89,7 +89,7 @@ function countOf(raw: string | undefined, tally: Tally): number | null | undefin
   return Number(value);
 }
 
-function flagOf(raw: string | undefined, tally: Tally): boolean | null | undefined {
+export function flagOf(raw: string | undefined, tally: Tally): boolean | null | undefined {
   if (raw === undefined) return undefined;
   const value = raw.trim().toLowerCase();
   if (value === "") return null;
@@ -259,7 +259,7 @@ export const joinKey = (value: string): string => value.normalize("NFKC").trim()
 
 // Why a report could not be read, as a fixed phrase, or null for an error the audit must not
 // swallow (a session that ended, or anything that is a bug rather than an answer).
-function failureOf(error: unknown): string | null {
+export function failureOf(error: unknown): string | null {
   if (error instanceof GraphReportHostError)
     return error.host === null
       ? "Microsoft sent a download link Prism365 could not read"
