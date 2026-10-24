@@ -390,6 +390,9 @@ against it, and the role and licence columns summarise the notes kept there.
 | `devices.intune.read` | `DeviceManagementManagedDevices.Read.All` | An Intune role | Needs an active Intune licence |
 | `directory.applications.read` | `Application.Read.All` | Global Reader or Cloud Application Administrator | No extra licence |
 | `directory.permission-grants.read` | `Directory.Read.All` | Global Reader | Reads the whole directory; enable it only to see delegated consents |
+| `directory.roles.read` | `RoleManagement.Read.Directory` | Global Reader or Privileged Role Administrator | Eligible and time-bound roles need Entra ID P2 or ID Governance |
+| `directory.groups.read` | `Group.Read.All` | Global Reader or Directory Readers | No extra licence |
+| `directory.domains.read` | `Domain.Read.All` | Global Reader or Directory Readers | No extra licence |
 | `reports.usage.read` | `Reports.Read.All` | A reports or directory role, such as Reports Reader | Depends on the tenant's subscriptions |
 | `reports.settings.read` | `ReportSettings.Read.All` | A supported role | Reads the name-concealment setting only |
 

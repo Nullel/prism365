@@ -50,6 +50,11 @@ export const probePaths: Partial<
   "directory.applications.read": () => "servicePrincipals?$top=1&$select=id",
   "directory.permission-grants.read": () =>
     `oauth2PermissionGrants?$filter=${encodeURIComponent("clientId eq '00000000-0000-0000-0000-000000000000'")}`,
+  "directory.roles.read": () =>
+    `roleManagement/directory/roleDefinitions?$filter=${encodeURIComponent("id eq '62e90394-69f5-4237-9190-012177145e10'")}&$select=id`,
+  "directory.groups.read": () => "groups?$top=1&$select=id",
+  // Microsoft documents a known issue with $top on the domain list; a tenant has few domains.
+  "directory.domains.read": () => "domains?$select=id",
   "reports.settings.read": () => "admin/reportSettings",
 };
 

@@ -20,6 +20,9 @@ export const supportedReadFeatures = {
   "devices.intune.read": "DeviceManagementManagedDevices.Read.All",
   "directory.applications.read": "Application.Read.All",
   "directory.permission-grants.read": "Directory.Read.All",
+  "directory.roles.read": "RoleManagement.Read.Directory",
+  "directory.groups.read": "Group.Read.All",
+  "directory.domains.read": "Domain.Read.All",
   "reports.usage.read": "Reports.Read.All",
   "reports.settings.read": "ReportSettings.Read.All",
 } as const;

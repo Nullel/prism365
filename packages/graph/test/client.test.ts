@@ -108,6 +108,95 @@ describe("read packs added for the change feed and the consent-batch audits", ()
   });
 });
 
+describe("read packs for the roles, groups and password audits", () => {
+  const client = () =>
+    new GraphHttpClient({
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: async () => Response.json({ value: [] }),
+    });
+  const allowed = async (path: string, feature: string, permission: string) =>
+    client()
+      .request(path, { feature, permission } as never)
+      .then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof Error && /does not belong/.test(error.message)) return false;
+          throw error;
+        },
+      );
+  const roles = ["directory.roles.read", "RoleManagement.Read.Directory"] as const;
+  const groups = ["directory.groups.read", "Group.Read.All"] as const;
+  const domains = ["directory.domains.read", "Domain.Read.All"] as const;
+  const group = "0f0e0d0c-0b0a-4908-8706-050403020100";
+
+  it("reads the four role lists and nothing else under role management", async () => {
+    for (const list of [
+      "roleDefinitions",
+      "roleAssignments",
+      "roleAssignmentScheduleInstances",
+      "roleEligibilityScheduleInstances",
+    ])
+      expect(await allowed(`roleManagement/directory/${list}?$select=id`, ...roles), list).toBe(
+        true,
+      );
+    for (const path of [
+      "roleManagement/directory/roleAssignments/a-1",
+      "roleManagement/directory/roleDefinitions/62e90394-69f5-4237-9190-012177145e10",
+      "roleManagement/directory/roleEligibilityScheduleRequests",
+      "roleManagement/directory/roleAssignmentScheduleRequests",
+      "roleManagement/directory/roleEligibilitySchedules",
+      "roleManagement/directory/roleAssignmentApprovals",
+      "roleManagement/entitlementManagement/roleAssignments",
+      "roleManagement/directory/roleAssignments%2Fa-1",
+      "directoryRoles",
+      "users",
+    ])
+      expect(await allowed(path, ...roles), path).toBe(false);
+  });
+
+  it("reads the group list and one group's owners, never members or other navigations", async () => {
+    expect(await allowed("groups?$select=id,displayName", ...groups)).toBe(true);
+    expect(await allowed(`groups/${group}/owners?$select=id`, ...groups)).toBe(true);
+    expect(await allowed(`groups/${group.toUpperCase()}/owners`, ...groups)).toBe(true);
+    for (const path of [
+      `groups/${group}`,
+      `groups/${group}/members`,
+      `groups/${group}/transitiveMembers`,
+      `groups/${group}/owners/extra`,
+      `groups/${group}/team`,
+      `groups/${group}/drive`,
+      `groups/${group}/conversations`,
+      "groups/not-a-guid/owners",
+      `groups/${group}%2Fowners`,
+      "groups/delta",
+      "groupLifecyclePolicies",
+      "teams",
+      "users",
+    ])
+      expect(await allowed(path, ...groups), path).toBe(false);
+  });
+
+  it("reads the domain list only", async () => {
+    expect(await allowed("domains?$select=id,passwordValidityPeriodInDays", ...domains)).toBe(true);
+    for (const path of ["domains/contoso.com", "domains/contoso.com/serviceConfigurationRecords"])
+      expect(await allowed(path, ...domains), path).toBe(false);
+  });
+
+  it("keeps each new list out of every other pack", async () => {
+    const users = ["directory.users.read", "User.Read.All"] as const;
+    const grants = ["directory.permission-grants.read", "Directory.Read.All"] as const;
+    for (const pack of [users, grants, groups, domains])
+      expect(await allowed("roleManagement/directory/roleAssignments", pack[0], pack[1])).toBe(
+        false,
+      );
+    for (const pack of [users, grants, roles, domains])
+      expect(await allowed(`groups/${group}/owners`, pack[0], pack[1])).toBe(false);
+    for (const pack of [users, grants, roles, groups])
+      expect(await allowed("domains", pack[0], pack[1])).toBe(false);
+    expect(await allowed("users?$select=id", ...groups)).toBe(false);
+  });
+});
+
 describe("GraphHttpClient", () => {
   it("blocks mutations by default", async () => {
     const client = new GraphHttpClient({
