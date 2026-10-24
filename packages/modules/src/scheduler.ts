@@ -196,7 +196,7 @@ export class ModuleScheduler {
   readonly #database: ModuleDatabase;
   readonly #graphClient: SchedulerOptions["graphClient"];
   readonly #enabledPacks: ReadonlySet<string>;
-  readonly #sinks: readonly FindingSink[];
+  readonly #sinks: FindingSink[];
   readonly #now: () => Date;
   readonly #tickMilliseconds: number;
   readonly #retentionInterval: number;
@@ -223,7 +223,7 @@ export class ModuleScheduler {
     this.#database = options.database;
     this.#graphClient = options.graphClient;
     this.#enabledPacks = new Set(options.enabledPacks);
-    this.#sinks = options.sinks ?? [];
+    this.#sinks = [...(options.sinks ?? [])];
     this.#now = options.now ?? (() => new Date());
     this.#tickMilliseconds = options.tickMilliseconds ?? 60_000;
     this.#retentionInterval = options.retentionIntervalMilliseconds ?? 24 * 60 * 60_000;
@@ -336,6 +336,16 @@ export class ModuleScheduler {
   subscribe(listener: (event: SchedulerEvent) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  // Adds a finding sink after construction, for the API's alert delivery, which needs the app
+  // around it. A sink is awaited with the sink timeout, so it must hand work off, not do it.
+  addSink(sink: FindingSink): () => void {
+    this.#sinks.push(sink);
+    return () => {
+      const index = this.#sinks.indexOf(sink);
+      if (index >= 0) this.#sinks.splice(index, 1);
+    };
   }
 
   #emit(event: SchedulerEvent): void {

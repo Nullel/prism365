@@ -100,6 +100,8 @@ packs are added only when named or with `--features all`, and `directory.permiss
 - Mail, chat, channel-message, file-content, calendar-content, or presence permissions.
 - Broad Purview `AuditLogsQuery.Read.All` without a reviewed feature case.
 - A permission added only because it makes an implementation simpler.
+- `Mail.Send` or any other `*.Send` permission. Alerts go through the operator's own mail relay or
+  a webhook (ADR-0011, `docs/alerts.md`), so they need no Microsoft permission at all.
 
 ## Future lifecycle action packs (disabled)
 

@@ -208,6 +208,14 @@ interface Running {
   done: Promise<void>;
 }
 
+// A run whose result is stored, and with it the audit's new trend point.
+export interface AuditStoredEvent {
+  tenantId: string;
+  auditId: string;
+  runId: string;
+  trigger: AuditRunTrigger;
+}
+
 export interface AuditRunnerOptions {
   database: ModuleDatabase;
   timeoutMilliseconds?: number;
@@ -220,12 +228,20 @@ export class AuditRunner {
   readonly #now: () => Date;
   readonly #running = new Map<string, Running>();
   readonly #recovered = new Map<string, Promise<void>>();
+  readonly #listeners = new Set<(event: AuditStoredEvent) => void>();
   #closed = false;
 
   constructor(options: AuditRunnerOptions) {
     this.#database = options.database;
     this.#timeout = options.timeoutMilliseconds ?? AUDIT_TIMEOUT_MILLISECONDS;
     this.#now = options.now ?? (() => new Date());
+  }
+
+  // Called after each successful run is stored. Listeners must not throw or block: a failing one
+  // is ignored, and nothing waits for what it starts.
+  subscribe(listener: (event: AuditStoredEvent) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   runningId(tenantId: string, auditId: string): string | null {
@@ -358,6 +374,7 @@ export class AuditRunner {
       packs: readonly GraphFeatureId[];
       granted: readonly string[];
       scope: ReadonlySet<string> | null;
+      trigger?: AuditRunTrigger;
     },
     entry: Running,
   ): Promise<boolean> {
@@ -414,7 +431,21 @@ export class AuditRunner {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
-    if (await this.#record(tenantId, entry.runId, audit, outcome)) return true;
+    if (await this.#record(tenantId, entry.runId, audit, outcome)) {
+      if (outcome.status === "succeeded")
+        for (const listener of this.#listeners)
+          try {
+            listener({
+              tenantId,
+              auditId: audit.definition.id,
+              runId: entry.runId,
+              trigger: input.trigger ?? "manual",
+            });
+          } catch {
+            // Observers, such as alert rules, must not be able to fail a run.
+          }
+      return true;
+    }
     console.warn(`Prism365 audit ${audit.definition.id} result could not be stored.`);
     // A result storage refused still closes the run, as its own failure rather than an
     // interruption. If even that fails, the next recovery closes it.

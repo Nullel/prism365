@@ -2,6 +2,7 @@ import { digestQuerySchema, digestSchema } from "@prism365/contracts";
 import { DIRECTORY_CHANGES_MODULE } from "@prism365/module-directory-changes";
 import { HEALTH_MODULE, MESSAGES_MODULE } from "@prism365/module-service-health";
 import { MODULE_ID as SIGNINS_MODULE } from "@prism365/module-signins-audit";
+import type { ModuleRegistry } from "@prism365/modules";
 import type { FastifyInstance } from "fastify";
 import {
   buildDigest,
@@ -24,22 +25,28 @@ const sources: { name: DigestSourceName; module: string; noun: string }[] = [
 
 // Why a module's section cannot be read, for each module that cannot be: it is not installed, or
 // its read pack is not enabled (so nothing new is collected for it, and what is stored is stale).
-function unavailableSources(context: RouteContext): Partial<Record<DigestSourceName, string>> {
+// The weekly alert summary (delivery.ts) reads the digest the same way.
+export function digestUnavailable(
+  registry: Pick<ModuleRegistry, "get"> | null,
+  enabledFeatures: readonly string[],
+): Partial<Record<DigestSourceName, string>> {
   const unavailable: Partial<Record<DigestSourceName, string>> = {};
   for (const { name, module: id, noun } of sources) {
-    const module = context.modules?.registry.get(id);
+    const module = registry?.get(id);
     if (!module) {
       unavailable[name] = `${noun} is not available in this installation.`;
       continue;
     }
-    const off = module.packs.filter(
-      (pack) => !context.settings.enabledFeatures.some((enabled) => enabled === pack),
-    );
+    const off = module.packs.filter((pack) => !enabledFeatures.some((enabled) => enabled === pack));
     if (off.length > 0)
       unavailable[name] =
         `This installation has not enabled ${off.join(", ")}. Add it to ENABLED_READ_FEATURES and restart.`;
   }
   return unavailable;
+}
+
+function unavailableSources(context: RouteContext): Partial<Record<DigestSourceName, string>> {
+  return digestUnavailable(context.modules?.registry ?? null, context.settings.enabledFeatures);
 }
 
 export function registerDigestRoutes(app: FastifyInstance, context: RouteContext): void {

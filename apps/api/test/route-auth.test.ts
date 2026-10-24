@@ -68,6 +68,7 @@ describe("route authorization", () => {
       "/v1/audits/accounts.inactive/trend",
       "/v1/settings/audit-schedule",
       "/v1/settings/canaries",
+      "/v1/alerts",
     ])
       for (const url of [path, encode(path), `/api${encode(path)}`]) {
         const response = await app.inject({ method: "GET", url });
@@ -88,12 +89,29 @@ describe("route authorization", () => {
       "/v1/receipts",
       "/v1/settings/audit-schedule",
       "/v1/settings/canaries",
+      "/v1/alerts/destinations",
+      "/v1/alerts/destinations/44444444-4444-4444-8444-444444444444/test",
+      "/v1/alerts/rules",
+      "/v1/alerts/rules/44444444-4444-4444-8444-444444444444",
+      "/v1/alerts/exports",
+      "/v1/alerts/weekly",
     ]) {
       const response = await app.inject({
         method: "POST",
         url: encode(path),
         headers: { cookie, origin },
         payload: { state: "resolved" },
+      });
+      expect(response.statusCode, encode(path)).toBe(403);
+    }
+    for (const path of [
+      "/v1/alerts/destinations/44444444-4444-4444-8444-444444444444",
+      "/v1/alerts/rules/44444444-4444-4444-8444-444444444444",
+    ]) {
+      const response = await app.inject({
+        method: "DELETE",
+        url: encode(path),
+        headers: { cookie, origin },
       });
       expect(response.statusCode, encode(path)).toBe(403);
     }
