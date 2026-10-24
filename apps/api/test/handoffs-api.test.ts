@@ -489,6 +489,7 @@ describe("handoff export", () => {
       .sort();
     expect(flagged).toEqual(
       [
+        "accounts.activity",
         "accounts.inactive",
         "guests.review",
         "identity.risky-users",

@@ -189,6 +189,7 @@ describe("audits API", () => {
       "devices.managed",
       "apps.consents",
       "usage.m365-apps",
+      "accounts.activity",
     ]);
     // Reads this installation has not enabled are named, so the page says what to add.
     expect(by("devices.managed")).toMatchObject({

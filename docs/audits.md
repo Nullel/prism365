@@ -23,6 +23,7 @@ changes the tenant.
 | Managed devices (`devices.managed`) | Which Intune devices are not compliant, have not checked in for 30 days, are personal, unencrypted or jailbroken? | `DeviceManagementManagedDevices.Read.All`, an Intune license, a role that can read Intune devices such as Global Reader or Intune Administrator |
 | App consents (`apps.consents`) | Which applications hold permissions here, which are unverified or hold high-risk permissions, and where did an administrator consent for everyone? | `Application.Read.All` and a role such as Directory Readers or Application Administrator; `Directory.Read.All` adds delegated consents |
 | Microsoft 365 app usage (`usage.m365-apps`) | Which accounts used none of Outlook, Word, Excel, PowerPoint, OneNote or Teams in 90 days, and which use only Teams, only the web or only a phone? | `Reports.Read.All` and Reports Reader or a service administrator role; `ReportSettings.Read.All` tells whether names are concealed |
+| Account activity (`accounts.activity`) | Is this account really unused, and does anyone depend on it? One row per account with sign-ins, mail, Teams, OneDrive and SharePoint use, mailbox size, licenses, groups and directory roles, and a verdict (section 16). | `User.Read.All`, `AuditLog.Read.All`, Microsoft Entra ID P1 or P2, a role such as Reports Reader, Security Reader or Global Reader; `Reports.Read.All` with Reports Reader or a service administrator role adds the workload columns, `ReportSettings.Read.All` tells whether names are concealed, `LicenseAssignment.Read.All` names the licenses |
 
 `LicenseAssignment.Read.All`, when granted, also gives the account audits license names instead
 of Microsoft's product IDs.
@@ -76,9 +77,11 @@ its own pack, `reports.authentication-methods.read`, which uses the same `AuditL
 installation that enabled `audit.signins.read` needs nothing more. The identity audits
 use two more packs: `identity.conditional-access.read` (`Policy.Read.All`) and
 `identity.risk.read` (`IdentityRiskyUser.Read.All`); the Conditional Access audit also uses
-`directory.users.read` and `tenant.licenses.read` when they are granted. A pack's permission must be
-both enabled in `ENABLED_READ_FEATURES` and granted by the session. The page says which is
-missing and links to **Grant access**.
+`directory.users.read` and `tenant.licenses.read` when they are granted. Account activity runs with
+the two sign-in packs alone, and adds its workload columns with `reports.usage.read`
+(`Reports.Read.All`), the name-concealment check with `reports.settings.read`, and license names with
+`tenant.licenses.read`. A pack's permission must be both enabled in `ENABLED_READ_FEATURES` and
+granted by the session. The page says which is missing and links to **Grant access**.
 
 ## 5. Storage and retention
 
@@ -87,7 +90,9 @@ forced row-level security like every other. Each row holds who started the run, 
 ended, its summary and notes, and its result rows: names, sign-in names, last sign-in dates,
 account state and license names. The devices, app consents and app usage audits add device names,
 serial numbers and Wi-Fi MAC addresses, application names with their permissions, and the apps and
-platforms each sign-in name used. Per audit, the newest 10 successful runs and the newest 5 failed
+platforms each sign-in name used, and Account activity adds each account's use dates and counts for
+mail, Teams, OneDrive and SharePoint, its mailbox and OneDrive sizes, and the names of its groups
+and directory roles. Per audit, the newest 10 successful runs and the newest 5 failed
 runs are kept, counted apart so a string of failures can never push out the last good result;
 older ones are deleted when a run finishes. A run left "running" by a stopped server is closed as
 interrupted the next time the audits are read. A run also stores the scope it used (`run_scope`)
@@ -155,7 +160,9 @@ real Graph client and endpoint allowlist, refusals, partial reads and field fall
 devices, app consents and app usage audits each have their own file there (`devices.test.ts`,
 `app-consents.test.ts`, `m365-app-usage.test.ts`), and `graph-pages.test.ts` covers the paging
 helpers they share. `scripts/demo/graph/apps-devices-usage.test.ts` runs the three audits against
-the demo's synthetic tenant. `packages/contracts/test/audits.test.ts`: views, filters, search, sorting and CSV. `apps/api/test/audits-api.test.ts`:
+the demo's synthetic tenant. Account activity has `account-activity.test.ts` (verdicts on each side
+of every boundary, the joins, failing and concealed reports, memberships, the request limit and the
+scope) and `scripts/demo/graph/account-activity.test.ts`, which runs it against the synthetic tenant. `packages/contracts/test/audits.test.ts`: views, filters, search, sorting and CSV. `apps/api/test/audits-api.test.ts`:
 sessions, CSRF, availability, one run at a time, history, export, failures, the time limit,
 recovery of interrupted runs, shutdown and pruning. `apps/api/test/audits-scope-api.test.ts`: the scope settings, their ledger entry and the scope applied to runs. `apps/web/test/audits.test.ts`: the catalog and the scope section.
 
@@ -174,8 +181,8 @@ list of domain names, up to 100, saved once per tenant under the key `audits.sco
 `prism365_preference`. An empty list means every domain, and so does a missing or unreadable value.
 
 A domain is the text after the last @ in an account's user principal name, in lower case. The
-Inactive accounts, Licenses to reclaim, MFA registration and Microsoft 365 app usage audits use the
-scope: an account is covered when its domain is in the list, and an account with no principal name
+Inactive accounts, Licenses to reclaim, MFA registration, Microsoft 365 app usage and Account
+activity audits use the scope: an account is covered when its domain is in the list, and an account with no principal name
 is covered only when the list is empty. Guest accounts, License capacity, Managed devices and App
 consents ignore the scope. A guest's principal name
 ends with the tenant's own domain, so guests appear under that domain in the scoped audits.
@@ -498,6 +505,9 @@ What it cannot see:
 - Which licensed accounts these are. The report does not carry licenses here, so reclaiming a
   license starts from the License reclaim audit and this list together.
 
+For mail, Teams, OneDrive and SharePoint activity of every account, with licenses and groups beside
+it, see Account activity (section 16), which reads the CSV reports instead.
+
 ## 14. Trends
 
 Every successful run, complete or partial, leaves a trend point: its summary tiles (inactive
@@ -604,3 +614,148 @@ audit's page.
 Saving the schedule writes `audits.schedule.changed` before the schedule is saved, with the audits
 the save changed and their new cadence (`"changes": [{ "auditId", "frequency" }]`) and how many
 audits run on their own after it. It holds audit ids and cadences only.
+
+## 16. Account activity
+
+`accounts.activity` answers "is this account really unused, and does anyone depend on it?" with one
+row per account: sign-ins, mail, Teams, OneDrive and SharePoint use, mailbox size, licenses, direct
+group memberships and directory roles, and a verdict. It is the list to check before offboarding an
+account or reclaiming its licenses, so it offers Export for action ([Handoffs](handoff.md)) and every
+row carries the account's directory ID. It uses the account scope (section 9) and has the Domain
+column. Prism365 reports what Microsoft recorded. A sign-in or an opened file says an account was
+used, not how well or why, and none of it measures anyone's work.
+
+### What it reads
+
+Graph v1.0, checked 2026-10-23. Only the first two reads are required.
+
+1. Every account with its sign-in activity and license assignment states, the way the Inactive
+   accounts audit reads them (`User.Read.All`, `AuditLog.Read.All`, Microsoft Entra ID P1 or P2).
+   Days since sign-in are counted as in section 2, including the rule that a date Microsoft could not
+   have recorded makes the account's dates unreadable.
+2. With `LicenseAssignment.Read.All`, the license names.
+3. With `Reports.Read.All` (the `reports.usage.read` pack), seven reports for the last 90 days
+   (`D90`), each once and one after the other, through the report reader of ADR-0010:
+   `getOffice365ActiveUserDetail`, `getEmailActivityUserDetail`, `getTeamsUserActivityUserDetail`,
+   `getOneDriveActivityUserDetail`, `getOneDriveUsageAccountDetail`, `getSharePointActivityUserDetail`
+   and `getMailboxUsageDetail`. Microsoft limits each report to 14 CSV requests per ten minutes, so a
+   run never throttles itself. Columns are read by their header name and every value is parsed as a
+   date, a count or a yes or no; no report text is ever shown.
+4. With `ReportSettings.Read.All` (the `reports.settings.read` pack), `GET /admin/reportSettings`,
+   before any report.
+5. For each account, `GET /users/{id}/memberOf?$select=id,displayName`: its direct groups, directory
+   roles and administrative units (`User.Read.All`). Nested groups are not followed. At most 2,000
+   accounts are asked about in a run, four requests at a time, quiet accounts in scope first, then
+   accounts outside the scope that are quiet everywhere, then the rest from least active. The accounts beyond the limit
+   show Not read for groups and roles, the run is partial and a note says how many. Microsoft asking
+   Prism365 to slow down, or refusing the call, stops the reading and keeps what was read.
+
+Reports are matched to accounts by sign-in name, ignoring letter case and compatibility forms
+(Unicode NFKC), and the Teams report by object ID first. OneDrive usage is matched by the owner's
+sign-in name. A row Microsoft marks deleted is ignored, a second row for one account is ignored, and
+names that match no account are counted in a note and never shown.
+
+A report that cannot be read (Microsoft refused it, throttled it, answered an error, sent the file
+from a host Prism365 does not accept, or sent one without the columns it needs) does not fail the run.
+Its columns show No data, the run is partial, and a note names the report and why. Accounts that
+share one reason are named in one note.
+
+### When names are concealed
+
+When the privacy setting says names are concealed, no report is requested. When it cannot be read or
+says names are shown but a report's identifiers all look like 32-character hashes, the reports after
+it are not requested. In both cases nothing is joined to accounts: the sign-in, license
+and group columns are shown, the workload columns show No data, every verdict that needs the reports
+is Not enough data, and a note tells a Global Administrator where to turn concealment off (Settings,
+Org settings, Services, Reports). Prism365 never tries to unmask a name.
+
+### What counts as use
+
+An account is used when any of these is dated inside the report period (fewer than 90 days ago) or
+has a count above zero: the last activity dates of the active users report (mail, Teams, OneDrive,
+SharePoint), the email, Teams, OneDrive activity, SharePoint activity and mailbox usage reports,
+mail sent, mail read, Teams chat messages sent (team and private), calls, meetings attended, files
+viewed or edited in OneDrive or SharePoint, pages visited, and Teams' "other action" flag. Mail an
+account only receives is shown but not counted, because someone else did that, and Microsoft's
+documentation does not say whether receiving mail moves a last activity date. A mail, Teams,
+OneDrive or SharePoint last activity column shows the later of the two dates that cover it.
+
+The OneDrive usage report describes the account's OneDrive, not what its owner did, so it is not use.
+It shows whether someone still opens the files: its last file activity inside the period, or an
+active file count above zero. Microsoft does not say whose activity it counts, or who opened a file.
+
+### Verdicts
+
+One per account, the first rule that fits. A sign-in age is days since the last successful sign-in,
+counted as in section 2. "The reports can say" means every workload has at least one report that was
+read (the active users report covers all four), the OneDrive usage report was read, and no date on
+the account was unreadable.
+
+1. Signs in, uses nothing: a successful sign-in less than 30 days ago, the reports can say, and no use
+   in the period.
+2. Active: a successful sign-in less than 30 days ago, or a use dated less than 30 days ago. Positive
+   evidence needs no complete reports.
+3. For an account with no sign-in on record: Quiet, others use their files when the reports can say it
+   has no use and its OneDrive shows file activity. Otherwise Never signed in when the account is 30 or
+   more days old, and Not enough data when it is younger.
+4. Not enough data, when the sign-in dates are unreadable, when the reports cannot say, or when the
+   account has failed sign-in attempts in the last 90 days and no success on record.
+5. Quiet, others use their files, or Quiet everywhere: 90 or more days since the last sign-in and no
+   use in the period. The first when the OneDrive shows file activity, the second when it does not.
+6. Recently quiet: everything else, which is a last sign-in 30 to 89 days ago, or a use that old.
+
+The first two are the line between an account in use and one that is not, 90 days is the line for
+quiet, and Recently quiet is the gap between them. A zero in Quiet everywhere never means all clear
+when the reports were not read: those accounts are Not enough data.
+
+### Columns
+
+Shown by default: Account, Verdict, Status, Last successful sign-in, Since sign-in, the last activity
+date of mail, Teams, OneDrive and SharePoint, License assignment and Groups. Hidden by default (and
+always exported): Type, Domain, the last interactive and background attempts; mail sent, received and
+read; Teams chats, calls and meetings attended; OneDrive files viewed or edited, the account's
+OneDrive last file activity, active files, files and storage (gigabytes of 1,073,741,824 bytes);
+SharePoint files and pages; mailbox storage, items, last activity and whether it has an archive;
+Licenses; License groups; Group names; Directory roles; Role names; Administrative units.
+
+License assignment is Direct, Through groups, Both, None, or Unknown when Microsoft's assignment
+states were not read. License groups names the groups that assign a license the account holds, from
+its direct memberships; a group that is not among them shows as "Another group". A counted column
+Not read means the account's memberships were not read.
+
+### Views and tiles
+
+Views: Quiet everywhere; Quiet, others use their files; Signs in, uses nothing; Recently quiet; Never
+signed in; Active; Not enough data; Licensed through groups only; Large mailbox, quiet (a mailbox
+over 10 GB on an account that is quiet everywhere); Has directory roles; Quiet everywhere, with
+directory roles; and All accounts. The label of each single-tag view an account is in becomes a
+reason in its handoff.
+
+Tiles:
+
+- Accounts.
+- Quiet everywhere, with directory roles (critical when above zero, otherwise plain: a zero also
+  happens when the reports or memberships were not read).
+- Quiet everywhere, with directory roles, outside the scope (critical, shown only when above zero):
+  a scope never hides these silently, for the reason the MFA audit gives for administrators without
+  MFA. Prism365 asks for the memberships of quiet accounts outside the scope for this.
+- Quiet everywhere and Quiet, others use their files (warning when above zero).
+- Signs in, uses nothing, and Licensed through groups only (plain counts). Removing a license from an
+  account that gets it through a group means changing the group.
+
+### What it cannot see
+
+- Microsoft's reports lag by 24 to 72 hours and sometimes by several days, so the last days of use can
+  be missing. The notes give the oldest refresh date of the reports used.
+- Per-user report detail needs Reports Reader or a service administrator role. Global Reader sees
+  tenant totals only, and the reports then fail or arrive empty.
+- Who opens a quiet account's files. The flag says someone does.
+- Group memberships past the direct ones, role assignments, eligibility and scope (it counts the
+  directory roles Microsoft lists as the account's direct memberships), and an account's mailbox
+  type (shared or user), forwarding and delegates, which Prism365 does not read (ADR-0009). An
+  action tool's receipt may report them.
+- A report row that cannot be read or goes past the 50,000 rows the reader keeps, which can make an
+  account look less used than it was. The run is partial and says so.
+- Whether Microsoft's field shapes match its pages: the dates, counts and yes or no values are
+  documented as fields but not their spelling, so a value Prism365 cannot read shows as No data and
+  is counted in a note.

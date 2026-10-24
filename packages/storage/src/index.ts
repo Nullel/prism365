@@ -152,6 +152,10 @@ export class PostgresStateStore implements StateStore {
       connectionTimeoutMillis: 5_000,
       statement_timeout: 10_000,
     });
+    // An idle connection the server closes (a restart, a terminated backend) is reported here;
+    // without a listener it would crash the process. The next query opens a new connection.
+    // Do not re-emit the driver error: it can carry the connection string.
+    this.#pool.on("error", () => {});
     this.#cipher = new StateCipher(options.encryptionKey);
   }
 

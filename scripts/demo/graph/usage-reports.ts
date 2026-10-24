@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import type { DirectoryUser, SyntheticTenant } from "../tenant.ts";
+import { type DirectoryUser, guid, ORGANISATION, type SyntheticTenant } from "../tenant.ts";
 import type { DemoGraphExtension } from "./types.ts";
 
-// The Microsoft 365 apps usage report, the active users report and the report privacy setting for
-// the synthetic tenant.
+// The Microsoft 365 apps usage report, the seven CSV usage reports behind the Account activity
+// audit (active users, email, Teams, OneDrive activity, OneDrive usage, SharePoint and mailbox),
+// the direct group memberships it reads, and the report privacy setting for the synthetic tenant.
 // Names are shown in the demo (a Global Administrator turned concealment off), so the report names
 // people by sign-in name. Accounts that have not signed in for 90 days have no activity, which is
 // what ties this report to the Inactive accounts audit.
@@ -170,8 +171,361 @@ function csvOf(rows: readonly (readonly string[])[]): string {
   return `\uFEFF${rows.map((row) => row.map(field).join(",")).join("\r\n")}\r\n`;
 }
 
-function activeUsersOf(tenant: SyntheticTenant): string {
+// ---------------------------------------------------------------------------------------------
+// What each account did, for the Account activity audit
+// ---------------------------------------------------------------------------------------------
+
+const MIB = 1_048_576;
+const GIB = 1_073_741_824;
+// Microsoft's reports run behind: nobody's last activity is later than this many days ago.
+const REPORT_LAG_DAYS = 2;
+
+const keyOf = (name: string) => guid(`user:${name}`);
+// Accounts the audit's stories are about, by roster key (scripts/demo/tenant.ts).
+const SIGN_IN_AND_USE_NOTHING = new Set([keyOf("bokafor"), keyOf("icalloway")]);
+const FILES_STILL_OPENED = keyOf("dokoro");
+const LARGE_QUIET_MAILBOX = keyOf("rpemberton");
+const SHARED_MAILBOX = keyOf("labresults");
+const GUEST_ON_SHAREPOINT = keyOf("awhitcombe");
+
+interface Activity {
+  // Days since each workload was last used by the account's owner; null for none in 90 days.
+  mail: number | null;
+  teams: number | null;
+  oneDrive: number | null;
+  sharePoint: number | null;
+  sent: number;
+  received: number;
+  read: number;
+  chats: number;
+  calls: number;
+  meetings: number;
+  files: number;
+  sharePointFiles: number;
+  pages: number;
+  // The account's own OneDrive, which others may still open; null without one.
+  drive: { lastDays: number | null; active: number; files: number; bytes: number } | null;
+  mailbox: { items: number; bytes: number; archive: boolean } | null;
+  teamsLicensed: boolean;
+}
+
+// What the reports say each account did, from its sign-ins: people who signed in recently used
+// their workloads, people who went quiet used them until they did. The stories are planted by key.
+function activitiesOf(tenant: SyntheticTenant): Map<string, Activity> {
   const now = tenant.now.getTime();
+  const partNumber = new Map(tenant.skus.map((sku) => [sku.skuId, sku.skuPartNumber]));
+  const result = new Map<string, Activity>();
+  for (const user of tenant.users) {
+    const parts = user.assignedLicenses.map((license) => partNumber.get(license.skuId) ?? "");
+    const member = user.userType === "Member";
+    const suite = member && parts.includes("SPB");
+    const shared = user.id === SHARED_MAILBOX;
+    const hasMailbox = shared || (member && (suite || parts.includes("EXCHANGESTANDARD")));
+    const signedIn = user.signInActivity.lastSuccessfulSignInDateTime;
+    const since = signedIn === null ? null : Math.floor((now - Date.parse(signedIn)) / DAY);
+    const nothing = SIGN_IN_AND_USE_NOTHING.has(user.id);
+    const lastUse = (workload: string, licensed: boolean, chance: number) => {
+      if (nothing || !licensed || since === null || since >= PERIOD) return null;
+      if (unit(`${user.id}:${workload}`) >= chance) return null;
+      const days = Math.max(
+        REPORT_LAG_DAYS,
+        since + Math.floor(unit(`${user.id}:${workload}:lag`) * 4),
+      );
+      return days < PERIOD ? days : null;
+    };
+    const amount = (label: string, base: number, spread: number) =>
+      base + Math.floor(unit(`${user.id}:${label}`) * spread);
+    const mail = shared ? 1 : lastUse("mail", hasMailbox, 1);
+    const teams = lastUse("teams", suite, 0.85);
+    const oneDrive = lastUse("onedrive", suite, 0.7);
+    const sharePoint = user.id === GUEST_ON_SHAREPOINT ? 5 : lastUse("sharepoint", suite, 0.6);
+    // A mailbox goes on receiving after its owner stops using it; only sending and reading count.
+    const received =
+      !hasMailbox || (!user.accountEnabled && !shared) ? 0 : amount("received", 20, 180);
+    const files = oneDrive === null ? 0 : amount("files", 2, 60);
+    const driveFiles = suite ? amount("drive-files", 20, 500) : 0;
+    result.set(user.id, {
+      mail,
+      teams,
+      oneDrive,
+      sharePoint,
+      sent: shared ? 0 : mail === null ? 0 : amount("sent", 5, 60),
+      received: shared ? 140 : received,
+      read: shared ? 22 : mail === null ? 0 : amount("read", 20, 120),
+      chats: teams === null ? 0 : amount("chats", 3, 80),
+      calls: teams === null ? 0 : amount("calls", 0, 12),
+      meetings: teams === null ? 0 : amount("meetings", 0, 20),
+      files,
+      sharePointFiles:
+        sharePoint === null ? 0 : user.id === GUEST_ON_SHAREPOINT ? 8 : amount("sp-files", 2, 40),
+      pages: sharePoint === null ? 0 : user.id === GUEST_ON_SHAREPOINT ? 3 : amount("pages", 1, 30),
+      drive: !suite
+        ? null
+        : user.id === FILES_STILL_OPENED
+          ? { lastDays: 6, active: 14, files: 212, bytes: 212 * 9 * MIB }
+          : {
+              lastDays: oneDrive,
+              active:
+                oneDrive === null
+                  ? 0
+                  : Math.min(driveFiles, 1 + Math.floor(unit(`${user.id}:active`) * 30)),
+              files: driveFiles,
+              bytes: driveFiles * Math.round((2 + unit(`${user.id}:size`) * 38) * MIB),
+            },
+      mailbox: !hasMailbox
+        ? null
+        : user.id === LARGE_QUIET_MAILBOX
+          ? { items: 61_240, bytes: Math.round(12.4 * GIB), archive: true }
+          : {
+              items: amount("items", 200, 8_000),
+              bytes: Math.round((0.1 + unit(`${user.id}:mailbox`) * 2.4) * GIB),
+              archive: unit(`${user.id}:archive`) < 0.2,
+            },
+      teamsLicensed: suite,
+    });
+  }
+  return result;
+}
+
+const profiles = new WeakMap<SyntheticTenant, Map<string, Activity>>();
+function profilesOf(tenant: SyntheticTenant): Map<string, Activity> {
+  let found = profiles.get(tenant);
+  if (!found) {
+    found = activitiesOf(tenant);
+    profiles.set(tenant, found);
+  }
+  return found;
+}
+
+const daysAgo = (tenant: SyntheticTenant, days: number | null) =>
+  days === null ? "" : day(tenant.now.getTime() - days * DAY);
+
+// An account that was deleted since: the reports still name it and the directory does not.
+const DEPARTED = "r.hollis@legacy.larkspur.example";
+
+// A report from its columns and rows by column name; a column a row does not name is empty.
+function fileOf(columns: readonly string[], rows: readonly Record<string, string>[]): string {
+  return csvOf([columns, ...rows.map((row) => columns.map((name) => row[name] ?? ""))]);
+}
+
+// The columns of the other six reports, in the order of the v1.0 pages (checked 2026-10-23).
+// Booleans are spelled True and False and the empty date is empty, as third-party samples show;
+// Microsoft documents neither.
+const columnsOf = (list: string) => list.split(",");
+const EMAIL_COLUMNS = columnsOf(
+  "Report Refresh Date,User Principal Name,Display Name,Is Deleted,Deleted Date,Last Activity Date,Send Count,Receive Count,Read Count,Meeting Created Count,Meeting Interacted Count,Assigned Products,Report Period",
+);
+const TEAMS_COLUMNS = columnsOf(
+  "Report Refresh Date,Tenant Display Name,Shared Channel Tenant Display Names,User Id,User Principal Name,Last Activity Date,Is Deleted,Deleted Date,Assigned Products,Team Chat Message Count,Private Chat Message Count,Call Count,Meeting Count,Post Messages,Reply Messages,Urgent Messages,Meetings Organized Count,Meetings Attended Count,Ad Hoc Meetings Organized Count,Ad Hoc Meetings Attended Count,Scheduled One-time Meetings Organized Count,Scheduled One-time Meetings Attended Count,Scheduled Recurring Meetings Organized Count,Scheduled Recurring Meetings Attended Count,Audio Duration,Video Duration,Screen Share Duration,Audio Duration In Seconds,Video Duration In Seconds,Screen Share Duration In Seconds,Has Other Action,Is Licensed,Report Period",
+);
+const ONEDRIVE_ACTIVITY_COLUMNS = columnsOf(
+  "Report Refresh Date,User Principal Name,Is Deleted,Deleted Date,Last Activity Date,Viewed Or Edited File Count,Synced File Count,Shared Internally File Count,Shared Externally File Count,Assigned Products,Report Period",
+);
+const ONEDRIVE_USAGE_COLUMNS = columnsOf(
+  "Report Refresh Date,Site URL,Owner Display Name,Is Deleted,Last Activity Date,File Count,Active File Count,Storage Used (Byte),Storage Allocated (Byte),Owner Principal Name,Report Period",
+);
+const SHAREPOINT_COLUMNS = columnsOf(
+  "Report Refresh Date,User Principal Name,Is Deleted,Deleted Date,Last Activity Date,Viewed Or Edited File Count,Synced File Count,Shared Internally File Count,Shared Externally File Count,Visited Page Count,Assigned Products,Report Period",
+);
+const MAILBOX_COLUMNS = columnsOf(
+  "Report Refresh Date,User Principal Name,Display Name,Is Deleted,Deleted Date,Created Date,Last Activity Date,Item Count,Storage Used (Byte),Issue Warning Quota (Byte),Prohibit Send Quota (Byte),Prohibit Send/Receive Quota (Byte),Deleted Item Count,Deleted Item Size (Byte),Deleted Item Quota (Byte),Has Archive,Report Period",
+);
+const EMAIL = /^reports\/getEmailActivityUserDetail\(period='D(?:7|30|90|180)'\)$/;
+const TEAMS = /^reports\/getTeamsUserActivityUserDetail\(period='D(?:7|30|90|180)'\)$/;
+const ONEDRIVE_ACTIVITY = /^reports\/getOneDriveActivityUserDetail\(period='D(?:7|30|90|180)'\)$/;
+const ONEDRIVE_USAGE = /^reports\/getOneDriveUsageAccountDetail\(period='D(?:7|30|90|180)'\)$/;
+const SHAREPOINT = /^reports\/getSharePointActivityUserDetail\(period='D(?:7|30|90|180)'\)$/;
+const MAILBOX = /^reports\/getMailboxUsageDetail\(period='D(?:7|30|90|180)'\)$/;
+
+const PERIOD_COLUMN = String(PERIOD);
+const refreshOf = (tenant: SyntheticTenant) => day(tenant.now.getTime() - REPORT_LAG_DAYS * DAY);
+const productsOf = (tenant: SyntheticTenant, user: DirectoryUser) => {
+  const partNumber = new Map(tenant.skus.map((sku) => [sku.skuId, sku.skuPartNumber]));
+  return user.assignedLicenses
+    .map((license) => productNames[partNumber.get(license.skuId) ?? ""] ?? "")
+    .filter(Boolean)
+    .join("+");
+};
+const count = (value: number) => String(value);
+
+// The people each report lists: those with the service. A guest is listed only where the story
+// puts one.
+function emailOf(tenant: SyntheticTenant): string {
+  const profile = profilesOf(tenant);
+  const rows = tenant.users.flatMap((user) => {
+    const use = profile.get(user.id);
+    if (!use?.mailbox) return [];
+    return [
+      {
+        "Report Refresh Date": refreshOf(tenant),
+        "User Principal Name": user.userPrincipalName,
+        "Display Name": user.displayName,
+        "Is Deleted": "False",
+        "Last Activity Date": daysAgo(tenant, use.mail),
+        "Send Count": count(use.sent),
+        "Receive Count": count(use.received),
+        "Read Count": count(use.read),
+        "Meeting Created Count": count(use.mail === null ? 0 : Math.floor(use.sent / 12)),
+        "Meeting Interacted Count": count(use.mail === null ? 0 : Math.floor(use.read / 6)),
+        "Assigned Products": productsOf(tenant, user),
+        "Report Period": PERIOD_COLUMN,
+      },
+    ];
+  });
+  rows.push({
+    "Report Refresh Date": refreshOf(tenant),
+    "User Principal Name": DEPARTED,
+    "Display Name": "R. Hollis",
+    "Is Deleted": "True",
+    "Last Activity Date": "",
+    "Send Count": "0",
+    "Receive Count": "0",
+    "Read Count": "0",
+    "Meeting Created Count": "0",
+    "Meeting Interacted Count": "0",
+    "Assigned Products": "",
+    "Report Period": PERIOD_COLUMN,
+  });
+  return fileOf(EMAIL_COLUMNS, rows);
+}
+
+function teamsOf(tenant: SyntheticTenant): string {
+  const profile = profilesOf(tenant);
+  const rows = tenant.users.flatMap((user) => {
+    const use = profile.get(user.id);
+    if (!use?.teamsLicensed) return [];
+    const team = use.teams === null ? 0 : Math.floor(use.chats * 0.35);
+    return [
+      {
+        "Report Refresh Date": refreshOf(tenant),
+        "Tenant Display Name": ORGANISATION,
+        "User Id": user.id,
+        "User Principal Name": user.userPrincipalName,
+        "Last Activity Date": daysAgo(tenant, use.teams),
+        "Is Deleted": "False",
+        "Assigned Products": productsOf(tenant, user),
+        "Team Chat Message Count": count(team),
+        "Private Chat Message Count": count(use.chats - team),
+        "Call Count": count(use.calls),
+        "Meeting Count": count(use.meetings + Math.floor(use.meetings / 4)),
+        "Meetings Attended Count": count(use.meetings),
+        "Has Other Action":
+          use.teams !== null && use.chats + use.calls + use.meetings === 0 ? "True" : "False",
+        "Is Licensed": "Yes",
+        "Report Period": PERIOD_COLUMN,
+      },
+    ];
+  });
+  return fileOf(TEAMS_COLUMNS, rows);
+}
+
+function oneDriveActivityOf(tenant: SyntheticTenant): string {
+  const profile = profilesOf(tenant);
+  const rows = tenant.users.flatMap((user) => {
+    const use = profile.get(user.id);
+    if (!use?.teamsLicensed) return [];
+    return [
+      {
+        "Report Refresh Date": refreshOf(tenant),
+        "User Principal Name": user.userPrincipalName,
+        "Is Deleted": "False",
+        "Last Activity Date": daysAgo(tenant, use.oneDrive),
+        "Viewed Or Edited File Count": count(use.files),
+        "Synced File Count": count(use.oneDrive === null ? 0 : Math.floor(use.files / 2)),
+        "Shared Internally File Count": count(
+          use.oneDrive === null ? 0 : Math.floor(use.files / 5),
+        ),
+        "Shared Externally File Count": "0",
+        "Assigned Products": productsOf(tenant, user),
+        "Report Period": PERIOD_COLUMN,
+      },
+    ];
+  });
+  return fileOf(ONEDRIVE_ACTIVITY_COLUMNS, rows);
+}
+
+function oneDriveUsageOf(tenant: SyntheticTenant): string {
+  const profile = profilesOf(tenant);
+  const rows = tenant.users.flatMap((user) => {
+    const drive = profile.get(user.id)?.drive;
+    if (!drive) return [];
+    const owner = user.userPrincipalName.split("@")[0] ?? "";
+    return [
+      {
+        "Report Refresh Date": refreshOf(tenant),
+        "Site URL": `https://larkspur-my.sharepoint.example/personal/${owner.replace(/[^a-z0-9]+/gi, "_")}`,
+        "Owner Display Name": user.displayName,
+        "Is Deleted": "False",
+        "Last Activity Date": daysAgo(tenant, drive.lastDays),
+        "File Count": count(drive.files),
+        "Active File Count": count(drive.active),
+        "Storage Used (Byte)": count(drive.bytes),
+        "Storage Allocated (Byte)": count(1_099_511_627_776),
+        "Owner Principal Name": user.userPrincipalName,
+        "Report Period": PERIOD_COLUMN,
+      },
+    ];
+  });
+  return fileOf(ONEDRIVE_USAGE_COLUMNS, rows);
+}
+
+function sharePointOf(tenant: SyntheticTenant): string {
+  const profile = profilesOf(tenant);
+  const rows = tenant.users.flatMap((user) => {
+    const use = profile.get(user.id);
+    if (!use?.teamsLicensed && user.id !== GUEST_ON_SHAREPOINT) return [];
+    return [
+      {
+        "Report Refresh Date": refreshOf(tenant),
+        "User Principal Name": user.userPrincipalName,
+        "Is Deleted": "False",
+        "Last Activity Date": daysAgo(tenant, use?.sharePoint ?? null),
+        "Viewed Or Edited File Count": count(use?.sharePointFiles ?? 0),
+        "Synced File Count": "0",
+        "Shared Internally File Count": count(Math.floor((use?.sharePointFiles ?? 0) / 8)),
+        "Shared Externally File Count": "0",
+        "Visited Page Count": count(use?.pages ?? 0),
+        "Assigned Products": productsOf(tenant, user),
+        "Report Period": PERIOD_COLUMN,
+      },
+    ];
+  });
+  return fileOf(SHAREPOINT_COLUMNS, rows);
+}
+
+function mailboxOf(tenant: SyntheticTenant): string {
+  const profile = profilesOf(tenant);
+  const rows = tenant.users.flatMap((user) => {
+    const use = profile.get(user.id);
+    if (!use?.mailbox) return [];
+    return [
+      {
+        "Report Refresh Date": refreshOf(tenant),
+        "User Principal Name": user.userPrincipalName,
+        "Display Name": user.displayName,
+        "Is Deleted": "False",
+        "Created Date": day(Date.parse(user.createdDateTime)),
+        "Last Activity Date": daysAgo(tenant, use.mail),
+        "Item Count": count(use.mailbox.items),
+        "Storage Used (Byte)": count(use.mailbox.bytes),
+        "Issue Warning Quota (Byte)": count(49 * GIB),
+        "Prohibit Send Quota (Byte)": count(49.5 * GIB),
+        "Prohibit Send/Receive Quota (Byte)": count(50 * GIB),
+        "Deleted Item Count": count(Math.floor(use.mailbox.items / 40)),
+        "Deleted Item Size (Byte)": count(Math.floor(use.mailbox.bytes / 60)),
+        "Deleted Item Quota (Byte)": count(30 * GIB),
+        "Has Archive": use.mailbox.archive ? "True" : "False",
+        "Report Period": PERIOD_COLUMN,
+      },
+    ];
+  });
+  return fileOf(MAILBOX_COLUMNS, rows);
+}
+
+// The active users report (getOffice365ActiveUserDetail), the first of the CSV reports that
+// Microsoft answers with a redirect to a download (ADR-0010), dated from what each account did.
+function activeUsersOf(tenant: SyntheticTenant): string {
+  const profile = profilesOf(tenant);
   const partNumber = new Map(tenant.skus.map((sku) => [sku.skuId, sku.skuPartNumber]));
   const flag = (value: boolean) => (value ? "True" : "False");
   const people = tenant.users.filter(
@@ -181,16 +535,13 @@ function activeUsersOf(tenant: SyntheticTenant): string {
     const parts = user.assignedLicenses.map((license) => partNumber.get(license.skuId) ?? "");
     const suite = parts.includes("SPB");
     const exchange = suite || parts.includes("EXCHANGESTANDARD");
-    const signedIn = user.signInActivity.lastSuccessfulSignInDateTime;
-    // The report is two days behind, so nobody's last activity is later than that.
-    const last = signedIn === null ? null : Math.min(Date.parse(signedIn), now - 2 * DAY);
-    const activity = (workload: string, licensed: boolean, chance: number) =>
-      licensed && last !== null && unit(`${user.id}:${workload}`) < chance
-        ? day(last - Math.floor(unit(`${user.id}:${workload}:lag`) * 4) * DAY)
-        : "";
+    const use = profile.get(user.id);
+    // A little Yammer for some of the people who use the rest.
+    const yammer =
+      suite && use?.mail != null && unit(`${user.id}:yammer`) < 0.1 ? use.mail + 1 : null;
     const assigned = (licensed: boolean) => (licensed ? day(Date.parse(user.createdDateTime)) : "");
     const row: Record<ActiveUserColumn, string> = {
-      "Report Refresh Date": day(now - 2 * DAY),
+      "Report Refresh Date": refreshOf(tenant),
       "User Principal Name": user.userPrincipalName,
       "Display Name": user.displayName,
       "Is Deleted": "False",
@@ -201,12 +552,12 @@ function activeUsersOf(tenant: SyntheticTenant): string {
       "Has Skype For Business License": "False",
       "Has Yammer License": flag(suite),
       "Has Teams License": flag(suite),
-      "Exchange Last Activity Date": activity("exchange", exchange, 1),
-      "OneDrive Last Activity Date": activity("onedrive", suite, 0.7),
-      "SharePoint Last Activity Date": activity("sharepoint", suite, 0.6),
+      "Exchange Last Activity Date": exchange ? daysAgo(tenant, use?.mail ?? null) : "",
+      "OneDrive Last Activity Date": suite ? daysAgo(tenant, use?.oneDrive ?? null) : "",
+      "SharePoint Last Activity Date": suite ? daysAgo(tenant, use?.sharePoint ?? null) : "",
       "Skype For Business Last Activity Date": "",
-      "Yammer Last Activity Date": activity("yammer", suite, 0.1),
-      "Teams Last Activity Date": activity("teams", suite, 0.85),
+      "Yammer Last Activity Date": daysAgo(tenant, yammer),
+      "Teams Last Activity Date": suite ? daysAgo(tenant, use?.teams ?? null) : "",
       "Exchange License Assign Date": assigned(exchange),
       "OneDrive License Assign Date": assigned(suite),
       "SharePoint License Assign Date": assigned(suite),
@@ -220,12 +571,77 @@ function activeUsersOf(tenant: SyntheticTenant): string {
   return csvOf([ACTIVE_USER_COLUMNS, ...rows]);
 }
 
+const csvReports: readonly [RegExp, (tenant: SyntheticTenant) => string][] = [
+  [ACTIVE_USERS, activeUsersOf],
+  [EMAIL, emailOf],
+  [TEAMS, teamsOf],
+  [ONEDRIVE_ACTIVITY, oneDriveActivityOf],
+  [ONEDRIVE_USAGE, oneDriveUsageOf],
+  [SHAREPOINT, sharePointOf],
+  [MAILBOX, mailboxOf],
+];
+
+// ---------------------------------------------------------------------------------------------
+// Direct group memberships
+// ---------------------------------------------------------------------------------------------
+
+// The groups of the synthetic tenant. The licensing group is the one tenant.ts names as the
+// source of the Business Premium license of accounts that get it through a group.
+const STAFF = { id: guid("group:staff"), name: "Larkspur staff" };
+const LICENSING = {
+  id: guid("group:licensing"),
+  name: "Licensing, Microsoft 365 Business Premium",
+};
+const LABORATORY = { id: guid("group:laboratory"), name: "Laboratory team" };
+const ROLES = new Map<string, string[]>([
+  [keyOf("admin"), ["Global Administrator"]],
+  [keyOf("tvance"), ["Helpdesk Administrator"]],
+  [keyOf("agray"), ["Exchange Administrator"]],
+]);
+
+// What GET /users/{id}/memberOf returns: groups and directory roles, each with the type Microsoft
+// puts on every directory object. Direct memberships only.
+function membershipsOf(user: DirectoryUser) {
+  const groups = [
+    ...(user.userType === "Member" && user.accountEnabled ? [STAFF] : []),
+    ...(user.userType === "Member" && user.department === "Laboratory" ? [LABORATORY] : []),
+    ...(user.licenseAssignmentStates.some((state) => state.assignedByGroup === LICENSING.id)
+      ? [LICENSING]
+      : []),
+  ];
+  return [
+    ...groups.map((group) => ({
+      "@odata.type": "#microsoft.graph.group",
+      id: group.id,
+      displayName: group.name,
+    })),
+    ...(ROLES.get(user.id) ?? []).map((role) => ({
+      "@odata.type": "#microsoft.graph.directoryRole",
+      id: guid(`role:${role}`),
+      displayName: role,
+    })),
+  ];
+}
+
+const MEMBER_OF = /^users(?:\/([^/]+)|\('((?:[^']|'')*)'\))\/memberOf$/;
+
 const built = new WeakMap<SyntheticTenant, object[]>();
 
-// Microsoft 365 usage reports and the report privacy setting.
+// Microsoft 365 usage reports, the direct group memberships and the report privacy setting.
 export const usageReports: DemoGraphExtension = (request, tools) => {
   if (request.path === "admin/reportSettings") return tools.json({ displayConcealedNames: false });
-  if (ACTIVE_USERS.test(request.path)) return tools.download(activeUsersOf(request.tenant));
+  for (const [pattern, build] of csvReports)
+    if (pattern.test(request.path)) return tools.download(build(request.tenant));
+  const owner = MEMBER_OF.exec(request.path);
+  if (owner) {
+    const principal = (owner[2] ?? "").replaceAll("''", "'").toLowerCase();
+    const user = request.tenant.users.find((candidate) =>
+      owner[1] !== undefined
+        ? candidate.id === owner[1]
+        : candidate.userPrincipalName.toLowerCase() === principal,
+    );
+    return user ? tools.page(request.url, membershipsOf(user), null) : tools.notFound();
+  }
   if (request.path !== "reports/getM365AppUserDetail(period='D90')") return null;
   let report = built.get(request.tenant);
   if (!report) {

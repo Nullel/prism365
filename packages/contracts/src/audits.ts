@@ -63,7 +63,7 @@ export const auditDefinitionSchema = z.object({
   category: text,
   // What one row is, for counts: "account", "accounts".
   subject: z.object({ one: text, many: text }),
-  columns: z.array(auditColumnSchema).min(1).max(30),
+  columns: z.array(auditColumnSchema).min(1).max(40),
   views: z.array(auditViewSchema).min(1).max(20),
   defaultView: slug,
   defaultSort: z.object({ column: columnKey, direction: z.enum(["asc", "desc"]) }),
