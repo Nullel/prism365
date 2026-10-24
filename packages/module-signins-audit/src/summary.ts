@@ -1,5 +1,5 @@
-import type { SqlClient } from "@prism365/storage";
 import { moduleTablePrefix } from "@prism365/modules";
+import type { SqlClient } from "@prism365/storage";
 import { parseCursor } from "./cursor.ts";
 import {
   conditionalAccessBlockCode,

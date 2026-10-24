@@ -166,13 +166,13 @@ fake-fetch pattern and assert cursor advance, overlap dedupe and partial-page ho
 
 | Slice | Class | Content | Est. |
 |---|---|---|---|
-| S0 | RED, Opus 5.5 + refuter | module spine from `MODULES.md`: manifest, registry, scheduler, cursor, `finding` and `module_run` tables with RLS helper, sink interface, PGlite-or-Postgres decision. **Implemented 2026-10-22 (TL-020); review pending.** | 2 days |
-| S1 | YELLOW, spec-builder | collector, normalizer, `signins_event` and `signins_seen_*` tables, baseline updater, backfill | 1.5 days |
-| S2 | YELLOW, spec-builder | rules engine, the ported and new rules, scoring, synthetic scenario tests | 1.5 days |
-| S3 | YELLOW, spec-builder | the three views and the digest section | 1.5 days |
-| S4 | YELLOW, spec-builder | webhook sinks and the daily digest | 0.5 day |
+| S0 | RED, adversarial review | module spine from `MODULES.md`: manifest, registry, scheduler, cursor, `finding` and `module_run` tables with RLS helper, sink interface, PGlite-or-Postgres decision. **Implemented 2026-10-22 (TL-020); review pending.** | 2 days |
+| S1 | YELLOW | collector, normalizer, `signins_event` and `signins_seen_*` tables, baseline updater, backfill | 1.5 days |
+| S2 | YELLOW | rules engine, the ported and new rules, scoring, synthetic scenario tests | 1.5 days |
+| S3 | YELLOW | the three views and the digest section | 1.5 days |
+| S4 | YELLOW | webhook sinks and the daily digest | 0.5 day |
 | S5 | RED, Fable | application credential path: certificate, application `AuditLog.Read.All`, GA consent, 24/7 polling | 1 day |
-| S6 | YELLOW, spec-builder | enrichment provider with consent toggle | 0.5 day |
+| S6 | YELLOW | enrichment provider with consent toggle | 0.5 day |
 
 S1 to S4 run on the operator session, which means the first real findings at the pilot tenant arrive
 while you are signed in, before S5 exists.

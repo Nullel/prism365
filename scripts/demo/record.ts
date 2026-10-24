@@ -17,6 +17,7 @@ import {
 import { latestRuns, ModuleScheduler } from "@prism365/modules";
 import { MemoryStateStore, PGliteModuleDatabase } from "@prism365/storage";
 import { createApp } from "../../apps/api/src/app.ts";
+import { AuditRunner } from "../../apps/api/src/audits.ts";
 import type { AppConfig, IdentityConfig } from "../../apps/api/src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../../apps/api/src/identity.ts";
 import { createModuleRegistry } from "../../apps/api/src/modules.ts";
@@ -40,6 +41,7 @@ import {
 // server: the API is never listened on, requests go straight into it.
 
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const output = resolve(root, "apps/web/demo/fixtures.json");
 const started = Date.now();
@@ -158,11 +160,18 @@ async function main() {
         maxRetryWaitMilliseconds: 30_000,
       }),
   });
+  // Audits run on their own clock, against the synthetic tenant as it stood at that time, so the
+  // recording holds runs from earlier days and every audit's trend has points. Both go back to
+  // the present once the audits have run.
+  let auditClock: Date | null = null;
+  let auditGraph = graph;
+  const auditRunner = new AuditRunner({ database, now: () => auditClock ?? new Date() });
   const app = createApp({
     config,
     store,
     identity,
-    graphFetch: graph,
+    graphFetch: ((input, init) => auditGraph(input, init)) as typeof fetch,
+    audits: auditRunner,
     modules: { registry, database, scheduler },
   });
   log("API ready on an in-memory database.");
@@ -304,24 +313,39 @@ async function main() {
   await setState(expected.burstAccount, "resolved");
   await setState(expected.burstAddress, "resolved");
 
-  // 4. Run every audit.
+  // 4. Run every audit: two weeks ago, a week ago and now, so each has a trend.
   const catalog = await getJson<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
-  for (const entry of catalog.audits) {
-    const id = entry.definition.id;
-    const response = await call("POST", `/api/v1/audits/${id}/runs`);
-    if (response.statusCode !== 202) throw new Error(`Audit ${id} did not start: ${response.body}`);
-    const runId = (response.json() as { run: { id: string } }).run.id;
-    const read = () =>
-      getJson<{ status: string; rowCount: number; error: unknown }>(`/api/v1/audit-runs/${runId}`);
-    let detail = await read();
-    for (let poll = 0; detail.status === "running" && poll < 400; poll += 1) {
-      await new Promise((done) => setTimeout(done, 100));
-      detail = await read();
+  for (const daysAgo of [14, 7, 0]) {
+    auditClock = daysAgo === 0 ? null : new Date(anchor.getTime() - daysAgo * DAY);
+    auditGraph = auditClock ? createSyntheticGraph({ now: auditClock }) : graph;
+    for (const entry of catalog.audits) {
+      const id = entry.definition.id;
+      const response = await call("POST", `/api/v1/audits/${id}/runs`);
+      if (response.statusCode !== 202)
+        throw new Error(`Audit ${id} did not start: ${response.body}`);
+      const runId = (response.json() as { run: { id: string } }).run.id;
+      const read = () =>
+        getJson<{ status: string; rowCount: number; error: unknown }>(
+          `/api/v1/audit-runs/${runId}`,
+        );
+      let detail = await read();
+      for (let poll = 0; detail.status === "running" && poll < 400; poll += 1) {
+        await new Promise((done) => setTimeout(done, 100));
+        detail = await read();
+      }
+      if (detail.status !== "succeeded")
+        throw new Error(`Audit ${id} ${detail.status}: ${JSON.stringify(detail.error)}`);
+      log(`Audit ${id}${daysAgo ? ` (${daysAgo} days ago)` : ""}: ${detail.rowCount} rows.`);
     }
-    if (detail.status !== "succeeded")
-      throw new Error(`Audit ${id} ${detail.status}: ${JSON.stringify(detail.error)}`);
-    log(`Audit ${id}: ${detail.rowCount} rows.`);
   }
+  auditClock = null;
+  auditGraph = graph;
+  // Two audits run on their own. Saved after the last runs, so neither is due while recording.
+  const scheduled = await call("POST", "/api/v1/settings/audit-schedule", {
+    audits: { "accounts.inactive": "weekly", "mfa.registration": "daily" },
+  });
+  if (scheduled.statusCode !== 200)
+    throw new Error(`The audit schedule was not saved: ${scheduled.body}`);
 
   // 5. Record every request the web app makes.
   const responses: Fixtures["responses"] = {};
@@ -365,6 +389,7 @@ async function main() {
   await record("/api/v1/attention?filter=unread&limit=1");
   await record("/api/v1/settings/attention");
   await record("/api/v1/settings/audits");
+  await record("/api/v1/settings/audit-schedule");
   await record("/api/v1/modules/service.health/status");
   await record("/api/v1/automation/workflows");
   await record("/api/v1/automation/packages");
@@ -444,13 +469,15 @@ async function main() {
   const accounts: { id: string; principal: string }[] = [];
   for (const entry of audits.audits) {
     const id = entry.definition.id;
+    await record(`/api/v1/audits/${id}/trend?days=365`);
     const runs = await record<{ runs: { id: string }[] }>(`/api/v1/audits/${id}/runs`);
     for (const run of runs.runs) {
       const detail = await record<{
         rows: { personId: string | null; cells: { person?: { principal: string | null } } }[];
       }>(`/api/v1/audit-runs/${run.id}`);
-      // The accounts audit lists everyone in the directory, so it is the list of person pages.
-      if (id === "accounts.inactive")
+      // The accounts audit lists everyone in the directory, so its newest run is the list of
+      // person pages.
+      if (id === "accounts.inactive" && run.id === runs.runs[0]?.id)
         for (const row of detail.rows) {
           const principal = row.cells.person?.principal;
           if (row.personId && principal) accounts.push({ id: row.personId, principal });

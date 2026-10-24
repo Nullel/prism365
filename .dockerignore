@@ -30,6 +30,7 @@
 !packages/storage/migrations/002-modules.sql
 !packages/storage/migrations/003-attention.sql
 !packages/storage/migrations/004-audit-runs.sql
+!packages/storage/migrations/005-audit-trends.sql
 !packages/storage/migrations/006-handoffs.sql
 # Backups in other formats.
 **/*.[Bb][Aa][Cc][Kk][Uu][Pp]

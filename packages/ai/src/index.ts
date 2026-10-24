@@ -1,13 +1,13 @@
 import {
   type AiAccessGrant,
-  aiAccessGrantSchema,
   type AiAnalysisRequest,
-  aiAnalysisRequestSchema,
   type AiDataset,
   type AiEvidenceRecord,
-  aiEvidenceRecordSchema,
   type AiProviderDeployment,
   type AiProviderResult,
+  aiAccessGrantSchema,
+  aiAnalysisRequestSchema,
+  aiEvidenceRecordSchema,
   aiProviderResultSchema,
 } from "@prism365/contracts";
 import { containsUnsupportedWorkforceClaim } from "@prism365/policy";

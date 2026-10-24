@@ -7,21 +7,31 @@ import {
   type AuditRow,
   type AuditRun,
   type AuditRunDetail,
+  type AuditScheduleFrequency,
+  type AuditScheduleLimit,
+  type AuditScheduleSettings,
   type AuditSettings,
   type AuditSummaryItem,
+  type AuditTrend,
+  type AuditTrendDifference,
+  type AuditTrendPoint,
+  type AuditTrendTile,
   auditCatalogSchema,
   auditFacetOptions,
   auditRunDetailSchema,
   auditRunListSchema,
+  auditScheduleSettingsSchema,
   auditSettingsSchema,
   auditStartSchema,
+  auditTrendSchema,
   MAX_AUDIT_SCOPE_DOMAINS,
+  nextScheduledRun,
   type PrismSession,
   queryAuditRows,
 } from "@prism365/contracts";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { AccountName, day, number, post, readJson, when } from "./common.tsx";
 import { CopyButton, useCopy } from "./CopyButton.tsx";
+import { AccountName, day, number, post, readJson, when } from "./common.tsx";
 import { downloadHandoff } from "./Handoffs.tsx";
 import { ArrowUpRightIcon, CheckIcon, CopyIcon, DownloadIcon } from "./icons.tsx";
 
@@ -318,6 +328,7 @@ export function AuditCatalogList({
   onOpen,
   onRun,
   scope,
+  schedule = null,
 }: {
   catalog: AuditCatalog;
   busy: string | null;
@@ -325,6 +336,8 @@ export function AuditCatalogList({
   onRun: (auditId: string) => void;
   // The audit scope section, shown above the audits when the page has loaded it.
   scope?: ReactNode;
+  // How often each audit runs on its own, when the page has loaded it.
+  schedule?: Readonly<Record<string, AuditScheduleFrequency>> | null;
 }) {
   const demo = catalog.mode === "demo";
   const categories = [...new Set(catalog.audits.map((entry) => entry.definition.category))];
@@ -347,6 +360,7 @@ export function AuditCatalogList({
                 const { definition } = entry;
                 const running = Boolean(entry.runningId) || busy === definition.id;
                 const access = accessText(entry);
+                const tag = scheduleTag(schedule?.[definition.id]);
                 return (
                   <li className="audit-item" key={definition.id}>
                     <div className="audit-item__body">
@@ -358,6 +372,7 @@ export function AuditCatalogList({
                         >
                           {definition.title}
                         </button>
+                        {tag ? <span className="person-tag audit-item__tag">{tag}</span> : null}
                       </h3>
                       <p>{definition.description}</p>
                       <p
@@ -902,14 +917,406 @@ export function ResultTable({
 }
 
 export function runLabel(run: AuditRun): string {
-  const status = run.status === "running" ? "running" : run.status === "failed" ? "failed" : null;
-  return `${when(run.startedAt)}${status ? ` (${status})` : ""}`;
+  const notes = [
+    run.status === "running" ? "running" : run.status === "failed" ? "failed" : null,
+    run.trigger === "schedule" ? "scheduled" : null,
+  ].filter(Boolean);
+  return `${when(run.startedAt)}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`;
+}
+
+// Schedules (docs/audits.md, section 15): an audit can run on its own, daily or weekly, while
+// collection is on, with the collecting administrator's sign-in.
+
+const frequencies = ["off", "daily", "weekly"] as const;
+const frequencyLabels: Record<AuditScheduleFrequency, string> = {
+  off: "Off",
+  daily: "Daily",
+  weekly: "Weekly",
+};
+
+// The catalog's tag for a scheduled audit; null for one that only runs by hand.
+export function scheduleTag(frequency: AuditScheduleFrequency | undefined): string | null {
+  return frequency && frequency !== "off" ? frequencyLabels[frequency] : null;
+}
+
+// Said when a scheduled run reads less than a manual run with every permission would: it reads
+// only with what the administrator who scheduled it had granted then. null when it reads it all.
+export function scheduleLimitNote(limit: AuditScheduleLimit | null): string | null {
+  if (!limit || limit.without.length === 0) return null;
+  const without = titles(limit.without);
+  return limit.by
+    ? `Runs with the permissions ${limit.by} had when scheduling, so it does not read with ${without}.`
+    : `Runs with its required permissions only, so it does not read with ${without}: it was scheduled before Prism365 kept the permissions of whoever scheduled it.`;
+}
+
+// Saves one audit's schedule. Only that audit is sent: the server leaves the others as they
+// are, so another page changing another audit is never undone by a stale copy here.
+export function saveAuditSchedule(
+  session: PrismSession,
+  auditId: string,
+  frequency: AuditScheduleFrequency,
+): Promise<AuditScheduleSettings> {
+  return readJson(
+    "/api/v1/settings/audit-schedule",
+    auditScheduleSettingsSchema.parse,
+    post(session, { audits: { [auditId]: frequency } }),
+  );
+}
+
+// Said when a scheduled audit's newest run is dated in the future (the clock was turned back):
+// the schedule counts from that start, so nothing runs until a full period after it. null when
+// the next run is not held back that way.
+export function futureRunNote(
+  frequency: AuditScheduleFrequency,
+  lastStart: string | null,
+  now = Date.now(),
+): string | null {
+  if (lastStart === null || Date.parse(lastStart) <= now) return null;
+  const next = nextScheduledRun(frequency, lastStart);
+  return next ? `Next run waits for ${when(next)}: the last run is dated in the future.` : null;
+}
+
+export function AuditScheduleControl({
+  frequency,
+  collecting,
+  saving,
+  error,
+  lastStart = null,
+  limit = null,
+  disabled = false,
+  onChange,
+}: {
+  frequency: AuditScheduleFrequency;
+  collecting: boolean;
+  saving: boolean;
+  error: string;
+  // When the audit's newest run of any kind started, which the schedule counts from.
+  lastStart?: string | null;
+  // Set when a scheduled run reads less than a fully granted manual run would.
+  limit?: AuditScheduleLimit | null;
+  disabled?: boolean;
+  onChange: (frequency: AuditScheduleFrequency) => void;
+}) {
+  const labelId = useId();
+  const held = futureRunNote(frequency, lastStart);
+  const limited = frequency === "off" ? null : scheduleLimitNote(limit);
+  return (
+    <section className="audit-schedule" aria-labelledby={labelId}>
+      <div className="audit-schedule__row">
+        <span className="audit-filter__label" id={labelId}>
+          Run automatically
+        </span>
+        <fieldset className="signin-range" aria-labelledby={labelId} disabled={disabled || saving}>
+          {frequencies.map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={value === frequency ? "is-active" : undefined}
+              aria-pressed={value === frequency}
+              onClick={() => {
+                if (value !== frequency) onChange(value);
+              }}
+            >
+              {frequencyLabels[value]}
+            </button>
+          ))}
+        </fieldset>
+        <span className="muted-label" aria-live="polite">
+          {saving ? "Saving…" : ""}
+        </span>
+      </div>
+      <p className="muted-label">
+        Runs while collection is on, with the collecting administrator's sign-in. You can schedule
+        an audit only if you could run it yourself, and it never reads more than you could.
+      </p>
+      {limited ? <p className="muted-label">{limited}</p> : null}
+      {!collecting && frequency !== "off" ? (
+        <p className="audit-schedule__off">
+          Collection is off, so this audit will not run on its own until someone starts it.
+        </p>
+      ) : null}
+      {held ? <p className="audit-schedule__off">{held}</p> : null}
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+// Trends (docs/audits.md, section 14): each tile's value over the audit's successful runs. A
+// point that does not compare with the newest run is drawn hollow and says why.
+
+const differenceText: Record<AuditTrendDifference, string> = {
+  version: "another version of the audit",
+  scope: "another audit scope",
+  incomplete: "partial result",
+};
+
+// A point's value for one tile; null when that run had no such tile. Own keys only, so a tile
+// id such as "constructor" never reads something inherited.
+export function trendValue(point: AuditTrendPoint, tileId: string): number | null {
+  if (!Object.hasOwn(point.tiles, tileId)) return null;
+  const value = point.tiles[tileId];
+  return typeof value === "number" ? value : null;
+}
+
+// The tile shown first: the first critical or warning tile of the newest run, else the first.
+export function defaultTrendTile(tiles: readonly AuditTrendTile[]): string | null {
+  return (
+    (tiles.find((tile) => tile.tone === "critical" || tile.tone === "warning") ?? tiles[0])?.id ??
+    null
+  );
+}
+
+// Why one point does not compare with the newest run, as a sentence; empty when it does.
+export function trendNote(point: AuditTrendPoint): string {
+  const text = point.notComparable.map((difference) => differenceText[difference]).join(", ");
+  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}.` : "";
+}
+
+// What the hollow points among these are, counted by reason; null when there are none.
+export function trendHollowNote(points: readonly AuditTrendPoint[]): string | null {
+  const count = (difference: AuditTrendDifference) =>
+    points.filter((point) => point.notComparable.includes(difference)).length;
+  const version = count("version");
+  const scope = count("scope");
+  const incomplete = count("incomplete");
+  const parts = [
+    version > 0 ? `${number.format(version)} by another version of the audit` : null,
+    scope > 0 ? `${number.format(scope)} with another audit scope` : null,
+    incomplete > 0 ? plural(incomplete, "partial result", "partial results") : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0
+    ? `Hollow points do not compare directly with the latest run: ${titles(parts)}.`
+    : null;
+}
+
+const CHART_WIDTH = 600;
+const CHART_HEIGHT = 160;
+const CHART_PAD = 10;
+const round = (value: number) => Math.round(value * 10) / 10;
+
+// Where each point sits in the chart: along time, or evenly when every run finished at the same
+// moment, and from zero up to the highest value. A run without the tile leaves a gap.
+export function trendGeometry(points: readonly AuditTrendPoint[], tileId: string) {
+  const values = points.map((point) => trendValue(point, tileId));
+  const times = points.map((point) => Date.parse(point.finishedAt));
+  const first = times[0] ?? 0;
+  const span = (times.at(-1) ?? first) - first;
+  const max = Math.max(1, ...values.filter((value): value is number => value !== null));
+  const inner = CHART_WIDTH - 2 * CHART_PAD;
+  const x = (index: number) =>
+    round(
+      CHART_PAD +
+        (span > 0
+          ? (((times[index] ?? first) - first) / span) * inner
+          : points.length > 1
+            ? (index / (points.length - 1)) * inner
+            : inner / 2),
+    );
+  const y = (value: number) =>
+    round(CHART_PAD + (1 - value / max) * (CHART_HEIGHT - 2 * CHART_PAD));
+  const dots = points.flatMap((point, index) => {
+    const value = values[index];
+    return value === null || value === undefined
+      ? []
+      : [{ point, value, x: x(index), y: y(value) }];
+  });
+  const segments: string[] = [];
+  let current: string[] = [];
+  points.forEach((_point, index) => {
+    const value = values[index];
+    if (value === null || value === undefined) {
+      if (current.length > 1) segments.push(current.join(" "));
+      current = [];
+      return;
+    }
+    current.push(`${x(index)},${y(value)}`);
+  });
+  if (current.length > 1) segments.push(current.join(" "));
+  return { dots, segments, max, baseline: y(0), top: y(max) };
+}
+
+export function AuditTrendView({
+  trend,
+  tileId,
+  showTable,
+  onTile,
+  onToggleTable,
+}: {
+  trend: AuditTrend;
+  tileId: string;
+  showTable: boolean;
+  onTile: (tileId: string) => void;
+  onToggleTable: () => void;
+}) {
+  const headingId = useId();
+  const selectId = useId();
+  const titleId = useId();
+  const descId = useId();
+  const tile = trend.tiles.find((item) => item.id === tileId) ?? trend.tiles[0];
+  if (trend.points.length < 2 || !tile) return null;
+  const geometry = trendGeometry(trend.points, tile.id);
+  const first = geometry.dots[0];
+  const last = geometry.dots.at(-1);
+  const hollow = trendHollowNote(geometry.dots.map((dot) => dot.point));
+  const summary =
+    first && last
+      ? `${tile.label}: ${number.format(last.value)} on ${day(last.point.finishedAt)}, against ${number.format(first.value)} on ${day(first.point.finishedAt)}.`
+      : `No run in this range has ${tile.label.toLowerCase()}.`;
+  return (
+    <section className="panel audit-trend" aria-labelledby={headingId}>
+      <div className="audit-trend__head">
+        <h3 id={headingId}>Trend</h3>
+        <div className="audit-filters">
+          <label className="audit-filter" htmlFor={selectId}>
+            <span className="audit-filter__label">Show</span>
+            <select id={selectId} value={tile.id} onChange={(event) => onTile(event.target.value)}>
+              {trend.tiles.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="button button--secondary"
+            type="button"
+            aria-pressed={showTable}
+            onClick={onToggleTable}
+          >
+            Show as table
+          </button>
+        </div>
+      </div>
+      <p className="audit-trend__summary">{summary}</p>
+      {showTable ? (
+        <div className="audit-scroll">
+          <table className="audit-trend__table">
+            <caption className="visually-hidden">{tile.label}, run by run</caption>
+            <thead>
+              <tr>
+                <th scope="col">Finished</th>
+                <th scope="col" className="audit-numeric">
+                  {tile.label}
+                </th>
+                <th scope="col">Started by</th>
+                <th scope="col">Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trend.points.map((point) => {
+                const value = trendValue(point, tile.id);
+                return (
+                  <tr key={point.runId}>
+                    <th scope="row">
+                      <time dateTime={point.finishedAt}>{when(point.finishedAt)}</time>
+                    </th>
+                    <td className="audit-numeric">
+                      {value === null ? (
+                        <span className="audit-empty">None</span>
+                      ) : (
+                        number.format(value)
+                      )}
+                    </td>
+                    <td>{point.trigger === "schedule" ? "Schedule" : "An administrator"}</td>
+                    <td>{trendNote(point)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <>
+          <svg
+            className="audit-trend__chart"
+            viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+            role="img"
+            aria-labelledby={`${titleId} ${descId}`}
+          >
+            <title
+              id={titleId}
+            >{`${tile.label} over the last ${number.format(trend.days)} days`}</title>
+            <desc id={descId}>
+              {`${plural(geometry.dots.length, "run", "runs")} with this value. ${summary}${hollow ? ` ${hollow}` : ""}`}
+            </desc>
+            <line
+              className="audit-trend__grid"
+              x1={CHART_PAD}
+              x2={CHART_WIDTH - CHART_PAD}
+              y1={geometry.top}
+              y2={geometry.top}
+            />
+            <line
+              className="audit-trend__grid"
+              x1={CHART_PAD}
+              x2={CHART_WIDTH - CHART_PAD}
+              y1={geometry.baseline}
+              y2={geometry.baseline}
+            />
+            {geometry.segments.map((points) => (
+              <polyline key={points} className="audit-trend__line" points={points} />
+            ))}
+            {geometry.dots.map((dot) => {
+              const note = trendNote(dot.point);
+              return (
+                <circle
+                  key={dot.point.runId}
+                  className={`audit-trend__point${note ? " audit-trend__point--hollow" : ""}`}
+                  cx={dot.x}
+                  cy={dot.y}
+                  r={4}
+                >
+                  <title>{`${when(dot.point.finishedAt)}: ${number.format(dot.value)}${note ? `. ${note}` : ""}`}</title>
+                </circle>
+              );
+            })}
+          </svg>
+          <div className="audit-trend__axis" aria-hidden="true">
+            <span>{first ? day(first.point.finishedAt) : ""}</span>
+            <span>{`0 to ${number.format(geometry.max)}`}</span>
+            <span>{last ? day(last.point.finishedAt) : ""}</span>
+          </div>
+        </>
+      )}
+      {hollow ? <p className="muted-label">{hollow}</p> : null}
+      {trend.truncated ? (
+        <p className="muted-label">
+          This range holds more runs than the chart shows; the oldest are left out.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+export function AuditTrendPanel({ trend }: { trend: AuditTrend }) {
+  const [tileId, setTileId] = useState<string | null>(null);
+  const [showTable, setShowTable] = useState(false);
+  const chosen =
+    tileId && trend.tiles.some((tile) => tile.id === tileId)
+      ? tileId
+      : defaultTrendTile(trend.tiles);
+  if (!chosen) return null;
+  return (
+    <AuditTrendView
+      trend={trend}
+      tileId={chosen}
+      showTable={showTable}
+      onTile={setTileId}
+      onToggleTable={() => setShowTable((current) => !current)}
+    />
+  );
 }
 
 function AuditDetail({
   session,
   entry,
   scope,
+  schedule,
+  onSchedule,
   onBack,
   onOpenPerson,
   onChanged,
@@ -919,6 +1326,14 @@ function AuditDetail({
   // The saved audit scope: domains the account audits are limited to, empty for all of them.
   // null when the saved scope could not be loaded.
   scope: readonly string[] | null;
+  // How often this audit runs on its own, and whether collection is on; null when the saved
+  // schedule could not be loaded.
+  schedule: {
+    frequency: AuditScheduleFrequency;
+    collecting: boolean;
+    limit: AuditScheduleLimit | null;
+  } | null;
+  onSchedule: (frequency: AuditScheduleFrequency) => Promise<void>;
   onBack: () => void;
   onOpenPerson: (userId: string) => void;
   onChanged: () => void;
@@ -926,9 +1341,14 @@ function AuditDetail({
   const { definition } = entry;
   const historyId = useId();
   const [history, setHistory] = useState<AuditRun[] | null>(null);
+  const [trend, setTrend] = useState<AuditTrend | null>(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleError, setScheduleError] = useState("");
   const [runId, setRunId] = useState<string | null>(entry.runningId ?? entry.lastRun?.id ?? null);
   const [run, setRun] = useState<AuditRunDetail | null>(null);
   const [error, setError] = useState("");
+  // A plain note about the last Run, such as having joined a scheduled run.
+  const [notice, setNotice] = useState("");
   const [starting, setStarting] = useState(false);
   const demo = session.mode === "demo";
   // The parent's refresh, read through a ref so a new callback never restarts the polling.
@@ -949,9 +1369,25 @@ function AuditDetail({
     }
   }, [definition.id, demo]);
 
+  // The trend is a side panel: if it cannot be loaded, the page works without it.
+  const loadTrend = useCallback(async () => {
+    if (demo) return;
+    try {
+      setTrend(
+        await readJson(
+          `/api/v1/audits/${encodeURIComponent(definition.id)}/trend?days=365`,
+          auditTrendSchema.parse,
+        ),
+      );
+    } catch {
+      // Keep what was loaded, if anything.
+    }
+  }, [definition.id, demo]);
+
   useEffect(() => {
     void loadHistory();
-  }, [loadHistory]);
+    void loadTrend();
+  }, [loadHistory, loadTrend]);
 
   useEffect(() => {
     if (!runId) {
@@ -978,6 +1414,7 @@ function AuditDetail({
         } else if (polled) {
           // The run this page watched has just finished.
           void loadHistory();
+          void loadTrend();
           changed.current();
         }
       } catch (problem) {
@@ -996,11 +1433,12 @@ function AuditDetail({
       stopped = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [runId, loadHistory]);
+  }, [runId, loadHistory, loadTrend]);
 
   async function start() {
     setStarting(true);
     setError("");
+    setNotice("");
     try {
       const started = await readJson(
         `/api/v1/audits/${encodeURIComponent(definition.id)}/runs`,
@@ -1009,6 +1447,7 @@ function AuditDetail({
       );
       setRunId(started.run.id);
       setRun({ ...started.run, rows: [] });
+      setNotice(started.message ?? "");
       void loadHistory();
       changed.current();
     } catch (problem) {
@@ -1018,9 +1457,24 @@ function AuditDetail({
     }
   }
 
+  async function changeSchedule(frequency: AuditScheduleFrequency) {
+    setScheduleSaving(true);
+    setScheduleError("");
+    try {
+      await onSchedule(frequency);
+    } catch (problem) {
+      setScheduleError(
+        problem instanceof Error ? problem.message : "The schedule could not be saved.",
+      );
+    } finally {
+      setScheduleSaving(false);
+    }
+  }
+
   const running = run?.status === "running" || starting;
   const access = accessText(entry);
   const took = run ? duration(run) : null;
+  const scheduled = run?.trigger === "schedule";
 
   return (
     <div className="audit-detail">
@@ -1050,7 +1504,24 @@ function AuditDetail({
         </div>
       </header>
 
+      {schedule && !demo ? (
+        <AuditScheduleControl
+          frequency={schedule.frequency}
+          collecting={schedule.collecting}
+          saving={scheduleSaving}
+          error={scheduleError}
+          lastStart={history?.[0]?.startedAt ?? entry.lastRun?.startedAt ?? null}
+          limit={schedule.limit}
+          onChange={(frequency) => void changeSchedule(frequency)}
+        />
+      ) : null}
+
       {access ? <p className="audit-note">{access}</p> : null}
+      {notice ? (
+        <p className="audit-note" role="status">
+          {notice}
+        </p>
+      ) : null}
       {demo ? (
         <p className="audit-note">Connect a tenant to run this audit. Demo mode has no results.</p>
       ) : null}
@@ -1073,13 +1544,18 @@ function AuditDetail({
             ) : (
               <>
                 Ran {when(run.startedAt)}
-                {run.startedBy.name ? ` by ${run.startedBy.name}` : ""}
+                {run.startedBy.name
+                  ? scheduled
+                    ? ` with ${run.startedBy.name}'s sign-in`
+                    : ` by ${run.startedBy.name}`
+                  : ""}
                 {took ? `, took ${took}` : ""}.{" "}
                 {run.complete ? null : (
                   <strong className="audit-partial">Partial result: see the notes below.</strong>
                 )}
               </>
             )}
+            {scheduled ? <span className="person-tag">Scheduled</span> : null}
             <RunScopeTags definition={definition} run={run} saved={scope} />
           </p>
           {history && history.length > 1 ? (
@@ -1120,6 +1596,8 @@ function AuditDetail({
         <ResultTable key={run.id} definition={definition} run={run} onOpenPerson={onOpenPerson} />
       ) : null}
 
+      {trend ? <AuditTrendPanel trend={trend} /> : null}
+
       <section className="panel audit-about" aria-label="About this audit">
         <h3>About this audit</h3>
         <ul>
@@ -1155,7 +1633,10 @@ export function Audits({
 }) {
   const [catalog, setCatalog] = useState<AuditCatalog | null>(null);
   const [settings, setSettings] = useState<AuditSettings | null>(null);
+  const [schedule, setSchedule] = useState<AuditScheduleSettings | null>(null);
   const [error, setError] = useState("");
+  // A plain note about the last Run, such as having joined a scheduled run.
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const live = session.mode === "live";
 
@@ -1179,11 +1660,25 @@ export function Audits({
     }
   }, [live]);
 
+  // Which audits run on their own. Where the server cannot answer, the control and the tags stay
+  // hidden.
+  const loadSchedule = useCallback(async () => {
+    if (!live) return;
+    try {
+      setSchedule(
+        await readJson("/api/v1/settings/audit-schedule", auditScheduleSettingsSchema.parse),
+      );
+    } catch {
+      // Keep what was loaded, if anything.
+    }
+  }, [live]);
+
   useEffect(() => {
     if (live && !session.authenticated) return;
     void refresh();
     void loadSettings();
-  }, [live, session.authenticated, refresh, loadSettings]);
+    void loadSchedule();
+  }, [live, session.authenticated, refresh, loadSettings, loadSchedule]);
 
   // While any audit runs, keep the catalog's status lines current.
   const anyRunning = Boolean(catalog?.audits.some((entry) => entry.runningId));
@@ -1203,18 +1698,24 @@ export function Audits({
   async function run(auditId: string) {
     setBusy(auditId);
     setError("");
+    setNotice("");
     try {
-      await readJson(
+      const started = await readJson(
         `/api/v1/audits/${encodeURIComponent(auditId)}/runs`,
         auditStartSchema.parse,
         post(session),
       );
+      setNotice(started.message ?? "");
       await refresh();
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : "The audit could not be started.");
     } finally {
       setBusy(null);
     }
+  }
+
+  async function saveSchedule(auditId: string, frequency: AuditScheduleFrequency) {
+    setSchedule(await saveAuditSchedule(session, auditId, frequency));
   }
 
   async function saveScope(domains: string[]) {
@@ -1237,6 +1738,16 @@ export function Audits({
         session={session}
         entry={entry}
         scope={settings ? settings.scope.domains : null}
+        schedule={
+          schedule
+            ? {
+                frequency: schedule.audits[entry.definition.id] ?? "off",
+                collecting: schedule.collecting,
+                limit: schedule.limits[entry.definition.id] ?? null,
+              }
+            : null
+        }
+        onSchedule={(frequency) => saveSchedule(entry.definition.id, frequency)}
         onBack={() => {
           onSelect(null);
           void refresh();
@@ -1252,12 +1763,18 @@ export function Audits({
           {error}
         </p>
       ) : null}
+      {notice ? (
+        <p className="audit-note" role="status">
+          {notice}
+        </p>
+      ) : null}
       {catalog ? (
         <AuditCatalogList
           catalog={catalog}
           busy={busy}
           onOpen={onSelect}
           onRun={(id) => void run(id)}
+          schedule={schedule?.audits ?? null}
           scope={
             settings ? (
               <AuditScopeSection

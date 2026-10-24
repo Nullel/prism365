@@ -7,6 +7,11 @@ import {
 } from "@prism365/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
+  assertSynthetic,
+  buildSyntheticTenant,
+  createSyntheticGraph,
+} from "../../../scripts/demo/tenant.ts";
+import {
   attentionCounts,
   createDemoState,
   type DemoState,
@@ -21,11 +26,6 @@ import {
   unavailableBody,
   wholeDaysSince,
 } from "../src/demo/replay.ts";
-import {
-  assertSynthetic,
-  buildSyntheticTenant,
-  createSyntheticGraph,
-} from "../../../scripts/demo/tenant.ts";
 
 // Invented data only: a tiny recording shaped like the real one.
 const recordedAt = "2026-10-20T10:00:00.000Z";

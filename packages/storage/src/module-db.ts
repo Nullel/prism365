@@ -163,6 +163,7 @@ export async function loadCoreMigrations(): Promise<Migration[]> {
     "002-modules.sql",
     "003-attention.sql",
     "004-audit-runs.sql",
+    "005-audit-trends.sql",
     "006-handoffs.sql",
   ];
   return Promise.all(

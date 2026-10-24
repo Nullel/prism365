@@ -1,4 +1,4 @@
-import { sessionSchema, type PrismSession } from "@prism365/contracts";
+import { type PrismSession, sessionSchema } from "@prism365/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
