@@ -35,7 +35,7 @@ jobs:
       TEST_DATABASE_ADMIN_URL: postgresql://postgres:prism365_ci_synthetic_password_12345@127.0.0.1:5432/prism365_ci
     steps:
       - name: Check out source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
