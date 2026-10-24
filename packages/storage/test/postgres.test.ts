@@ -2,8 +2,15 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PostgresModuleDatabase, PostgresStateStore, runPostgresMigrations } from "../src/index.ts";
+import {
+  PostgresModuleDatabase,
+  PostgresStateStore,
+  runPostgresMigrations,
+  type SqlClient,
+} from "../src/index.ts";
+import { migrationsBeforeTrends, trendMigrationSuite } from "./audit-trend-migration-suite.ts";
 import { isolationSuite, probeScope } from "./module-isolation-suite.ts";
+import { holdPostgresSuiteLock } from "./postgres-suite-lock.ts";
 
 // This public password belongs only to the disposable CI database; it is not a secret.
 const syntheticPassword = "Prism365_Synthetic_Database_Test_Only_12345";
@@ -14,6 +21,15 @@ const actor = randomUUID();
 const suffix = randomBytes(8).toString("hex");
 const databaseName = `prism365_test_${suffix}`;
 const ownerRole = `prism365_test_owner_${suffix}`;
+
+// Taken before any suite in this file and released after the last: see postgres-suite-lock.ts.
+let releaseSuiteLock: (() => Promise<void>) | undefined;
+beforeAll(async () => {
+  if (adminUrl) releaseSuiteLock = await holdPostgresSuiteLock(adminUrl);
+}, 180_000);
+afterAll(async () => {
+  await releaseSuiteLock?.();
+});
 
 function identifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
@@ -70,6 +86,8 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
       );
     }
     bootstrap = new Pool({ connectionString: parsed.toString(), connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
     const role = await bootstrap.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname='prism365_app'",
     );
@@ -90,6 +108,8 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
     parsed.pathname = `/${databaseName}`;
     fixtureAdminUrl = parsed.toString();
     administrator = new Pool({ connectionString: fixtureAdminUrl, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    administrator.on("error", () => {});
     const migration = await readFile(
       new URL("../migrations/001-state.sql", import.meta.url),
       "utf8",
@@ -99,6 +119,8 @@ describe.skipIf(!adminUrl)("PostgreSQL encrypted state and enforced tenant isola
     parsed.password = syntheticPassword;
     const appUrl = parsed.toString();
     restricted = new Pool({ connectionString: appUrl, max: 3, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    restricted.on("error", () => {});
     store = new PostgresStateStore({ connectionString: appUrl, encryptionKey });
     await store.verifyRole();
     parsed.username = ownerRole;
@@ -329,6 +351,8 @@ isolationSuite(
       connectionString: parsed.toString(),
       connectionTimeoutMillis: 5_000,
     });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
     const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
     const createdAppRole = existing.rowCount === 0;
     await bootstrap.query(`CREATE DATABASE ${identifier(moduleDatabase)}`);
@@ -343,6 +367,8 @@ isolationSuite(
       `CREATE ROLE ${identifier(memberRole)} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${syntheticPassword}' IN ROLE prism365_app`,
     );
     const owner = new Pool({ connectionString: moduleAdminUrl, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    owner.on("error", () => {});
     parsed.username = memberRole;
     parsed.password = syntheticPassword;
     const database = new PostgresModuleDatabase({ connectionString: parsed.toString() });
@@ -378,4 +404,166 @@ describe.skipIf(!adminUrl)("PostgreSQL module runtime role", () => {
       await privileged.close();
     }
   });
+});
+
+// Migration 005 (audit trends) on real PostgreSQL, starting from a database migrated up to 004
+// that already holds audit runs. Last in this file, so it never races the suites above for the
+// shared prism365_app role.
+trendMigrationSuite(
+  "PostgreSQL",
+  async () => {
+    const parsed = new URL(adminUrl ?? "");
+    if (!["localhost", "127.0.0.1"].includes(parsed.hostname) || parsed.pathname !== "/prism365_ci")
+      throw new Error("TEST_DATABASE_ADMIN_URL must point to a disposable prism365_ci database.");
+    const trendDatabase = `prism365_trends_${randomBytes(8).toString("hex")}`;
+    const bootstrap = new Pool({
+      connectionString: parsed.toString(),
+      connectionTimeoutMillis: 5_000,
+    });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
+    const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
+    const createdAppRole = existing.rowCount === 0;
+    if (createdAppRole)
+      await bootstrap.query(
+        `CREATE ROLE prism365_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${syntheticPassword}'`,
+      );
+    await bootstrap.query(`CREATE DATABASE ${identifier(trendDatabase)}`);
+    parsed.pathname = `/${trendDatabase}`;
+    const trendAdminUrl = parsed.toString();
+    const owner = new Pool({ connectionString: trendAdminUrl, connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    owner.on("error", () => {});
+    for (const migration of await migrationsBeforeTrends()) await owner.query(migration.sql);
+    return {
+      owner: async (sql: string, params?: unknown[]) => {
+        // A migration file is several statements, which pg answers with one result each.
+        const result = (await owner.query(sql, params)) as unknown;
+        const last = (Array.isArray(result) ? result.at(-1) : result) as
+          | { rows?: Record<string, unknown>[] }
+          | undefined;
+        return last?.rows ?? [];
+      },
+      migrateAll: () =>
+        runPostgresMigrations({
+          adminUrl: trendAdminUrl,
+          appPassword: syntheticPassword,
+          scopes: [],
+        }),
+      close: async () => {
+        await owner.end();
+        try {
+          await bootstrap.query(`DROP DATABASE ${identifier(trendDatabase)} WITH (FORCE)`);
+          if (createdAppRole) await bootstrap.query("DROP ROLE prism365_app");
+        } finally {
+          await bootstrap.end();
+        }
+      },
+    };
+  },
+  Boolean(adminUrl),
+);
+
+// Two saves of the audit schedule at the same moment, on real PostgreSQL, where transactions do
+// run side by side (PGlite runs one at a time). Each save locks the setting's row, so the second
+// waits for the first and adds to it instead of overwriting it. The schedule code lives in
+// @prism365/audits, which depends on this package, so it is loaded by path at run time and typed
+// here by the little it needs.
+interface ScheduleCode {
+  builtInAudits: readonly unknown[];
+  writeAuditSchedule(
+    sql: SqlClient,
+    tenantId: string,
+    schedule: { audits: Record<string, string> },
+    actorId: string,
+    audits: readonly unknown[],
+  ): Promise<unknown>;
+  readStoredAuditSchedule(
+    sql: SqlClient,
+    tenantId: string,
+  ): Promise<{ audits: Record<string, string> }>;
+}
+const scheduleCode = "../../audits/src/index.ts";
+
+describe.skipIf(!adminUrl)("PostgreSQL: audit schedule saves at the same moment", () => {
+  const suffix = randomBytes(8).toString("hex");
+  const scheduleDatabase = `prism365_schedule_${suffix}`;
+  const memberRole = `prism365_schedule_member_${suffix}`;
+  const tenant = randomUUID();
+  let bootstrap: Pool;
+  let database: PostgresModuleDatabase;
+  let createdAppRole = false;
+  let schedule: ScheduleCode;
+
+  beforeAll(async () => {
+    schedule = (await import(/* @vite-ignore */ scheduleCode)) as ScheduleCode;
+    const parsed = new URL(adminUrl ?? "");
+    if (!["localhost", "127.0.0.1"].includes(parsed.hostname) || parsed.pathname !== "/prism365_ci")
+      throw new Error("TEST_DATABASE_ADMIN_URL must point to a disposable prism365_ci database.");
+    bootstrap = new Pool({ connectionString: parsed.toString(), connectionTimeoutMillis: 5_000 });
+    // Dropping a test database WITH (FORCE) terminates idle connections; expected here.
+    bootstrap.on("error", () => {});
+    const existing = await bootstrap.query("SELECT 1 FROM pg_roles WHERE rolname='prism365_app'");
+    createdAppRole = existing.rowCount === 0;
+    await bootstrap.query(`CREATE DATABASE ${identifier(scheduleDatabase)}`);
+    parsed.pathname = `/${scheduleDatabase}`;
+    await runPostgresMigrations({
+      adminUrl: parsed.toString(),
+      appPassword: syntheticPassword,
+      scopes: [],
+    });
+    await bootstrap.query(
+      `CREATE ROLE ${identifier(memberRole)} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${syntheticPassword}' IN ROLE prism365_app`,
+    );
+    parsed.username = memberRole;
+    parsed.password = syntheticPassword;
+    database = new PostgresModuleDatabase({ connectionString: parsed.toString() });
+    await database.verify();
+  }, 60_000);
+
+  afterAll(async () => {
+    await database?.close();
+    if (!bootstrap) return;
+    try {
+      await bootstrap.query(`DROP DATABASE IF EXISTS ${identifier(scheduleDatabase)} WITH (FORCE)`);
+      await bootstrap.query(`DROP ROLE IF EXISTS ${identifier(memberRole)}`);
+      if (createdAppRole) await bootstrap.query("DROP ROLE IF EXISTS prism365_app");
+    } finally {
+      await bootstrap.end();
+    }
+  }, 30_000);
+
+  it("keeps both of two saves of different audits", async () => {
+    const { builtInAudits, readStoredAuditSchedule, writeAuditSchedule } = schedule;
+    // Each save pauses after reading the setting, so without the row lock both would read the
+    // same old value and the second write would erase the first.
+    const slow = (sql: SqlClient): SqlClient => ({
+      async query<T extends object>(text: string, params?: readonly unknown[]) {
+        const result = await sql.query<T>(text, params);
+        if (text.includes("FROM prism365_preference"))
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        return result;
+      },
+    });
+    const save = (audits: Record<string, "daily" | "weekly">) =>
+      database.tenant(tenant, (sql) =>
+        writeAuditSchedule(slow(sql), tenant, { audits }, actor, builtInAudits),
+      );
+    // First when no setting exists yet, then again once it does.
+    await Promise.all([
+      save({ "accounts.inactive": "daily" }),
+      save({ "guests.review": "weekly" }),
+    ]);
+    await Promise.all([
+      save({ "licenses.reclaim": "daily" }),
+      save({ "mfa.registration": "weekly" }),
+    ]);
+    const stored = await database.tenant(tenant, (sql) => readStoredAuditSchedule(sql, tenant));
+    expect(stored.audits).toMatchObject({
+      "accounts.inactive": "daily",
+      "guests.review": "weekly",
+      "licenses.reclaim": "daily",
+      "mfa.registration": "weekly",
+    });
+  }, 30_000);
 });

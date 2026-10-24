@@ -8,6 +8,106 @@ const context = {
 } as const;
 const userContext = { feature: "directory.users.read", permission: "User.Read.All" } as const;
 
+describe("read packs added for the change feed and the consent-batch audits", () => {
+  const client = () =>
+    new GraphHttpClient({
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: async () => Response.json({ value: [] }),
+    });
+  const allowed = async (path: string, feature: string, permission: string) =>
+    client()
+      .request(path, { feature, permission } as never)
+      .then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof Error && /does not belong/.test(error.message)) return false;
+          throw error;
+        },
+      );
+
+  it("keeps the directory audit log out of the sign-in pack", async () => {
+    expect(
+      await allowed("auditLogs/directoryAudits", "audit.directory.read", "AuditLog.Read.All"),
+    ).toBe(true);
+    expect(
+      await allowed("auditLogs/directoryAudits", "audit.signins.read", "AuditLog.Read.All"),
+    ).toBe(false);
+    expect(await allowed("auditLogs/signIns", "audit.directory.read", "AuditLog.Read.All")).toBe(
+      false,
+    );
+  });
+
+  it("lets the application packs read applications, their app role assignments and grants only", async () => {
+    const apps = ["directory.applications.read", "Application.Read.All"] as const;
+    expect(await allowed("servicePrincipals", ...apps)).toBe(true);
+    expect(await allowed("servicePrincipals/sp-1/appRoleAssignments", ...apps)).toBe(true);
+    expect(await allowed("servicePrincipals/sp-1/appRoleAssignedTo", ...apps)).toBe(false);
+    expect(await allowed("servicePrincipals/sp-1/owners", ...apps)).toBe(false);
+    expect(await allowed("applications", ...apps)).toBe(false);
+    const grants = ["directory.permission-grants.read", "Directory.Read.All"] as const;
+    expect(await allowed("oauth2PermissionGrants", ...grants)).toBe(true);
+    expect(await allowed("users", ...grants)).toBe(false);
+  });
+
+  it("reads Conditional Access policies and named locations only", async () => {
+    const pack = ["identity.conditional-access.read", "Policy.Read.All"] as const;
+    expect(await allowed("identity/conditionalAccess/policies", ...pack)).toBe(true);
+    expect(await allowed("identity/conditionalAccess/namedLocations", ...pack)).toBe(true);
+    expect(
+      await allowed("identity/conditionalAccess/authenticationStrength/policies", ...pack),
+    ).toBe(false);
+  });
+
+  it("refuses $expand in any spelling, so navigations a pack leaves out stay unreachable", async () => {
+    const apps = ["directory.applications.read", "Application.Read.All"] as const;
+    const refused = async (path: string) =>
+      client()
+        .request(path, { feature: apps[0], permission: apps[1] })
+        .then(
+          () => false,
+          (error: unknown) => error instanceof Error && /\$expand/.test(error.message),
+        );
+    expect(await refused("servicePrincipals/sp-1?$expand=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?%24expand=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?$EXPAND=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?expand=owners")).toBe(true);
+    expect(await refused("servicePrincipals/sp-1?$select=id")).toBe(false);
+  });
+
+  it("keeps sibling navigations, deeper paths and encoded separators out of the new packs", async () => {
+    const apps = ["directory.applications.read", "Application.Read.All"] as const;
+    for (const path of [
+      "servicePrincipals/sp-1/oauth2PermissionGrants",
+      "servicePrincipals/sp-1/memberOf",
+      "servicePrincipals/sp-1/transitiveMemberOf",
+      "servicePrincipals/sp-1/appRoleAssignments/extra",
+      "servicePrincipals/x%2Fowners",
+    ])
+      expect(await allowed(path, ...apps)).toBe(false);
+    const audit = ["audit.directory.read", "AuditLog.Read.All"] as const;
+    expect(await allowed("auditLogs/provisioning", ...audit)).toBe(false);
+    expect(await allowed("auditLogs/directoryAudits/a/b", ...audit)).toBe(false);
+    const grants = ["directory.permission-grants.read", "Directory.Read.All"] as const;
+    expect(await allowed("oauth2PermissionGrants/grant-1", ...grants)).toBe(false);
+    expect(await allowed("x/oauth2PermissionGrants", ...grants)).toBe(false);
+    const ca = ["identity.conditional-access.read", "Policy.Read.All"] as const;
+    expect(await allowed("identity/conditionalAccess/policies/p-1/extra", ...ca)).toBe(false);
+    const usage = ["reports.usage.read", "Reports.Read.All"] as const;
+    expect(await allowed("reports/getM365AppUserDetail(period='D90')/extra", ...usage)).toBe(false);
+    expect(await allowed("reports/getM365AppUserCounts(period='D90')", ...usage)).toBe(false);
+  });
+
+  it("allows the usage reports by period only; report.test.ts covers the full list", async () => {
+    const pack = ["reports.usage.read", "Reports.Read.All"] as const;
+    expect(await allowed("reports/getM365AppUserDetail(period='D90')", ...pack)).toBe(true);
+    expect(await allowed("reports/getOffice365ActiveUserDetail(period='D90')", ...pack)).toBe(true);
+    expect(await allowed("reports/getM365AppUserDetail(period='D365')", ...pack)).toBe(false);
+    expect(await allowed("reports/getOffice365ActiveUserDetail(date=2026-10-01)", ...pack)).toBe(
+      false,
+    );
+  });
+});
+
 describe("GraphHttpClient", () => {
   it("blocks mutations by default", async () => {
     const client = new GraphHttpClient({

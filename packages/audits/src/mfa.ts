@@ -149,6 +149,8 @@ function preferred(row: z.output<typeof registrationSchema>): string | null {
 export const mfaRegistrationAudit: Audit = {
   definition: {
     id: "mfa.registration",
+    // Accounts an action tool could act on (docs/handoff.md).
+    handoff: true,
     version: 3,
     title: "MFA registration",
     description:

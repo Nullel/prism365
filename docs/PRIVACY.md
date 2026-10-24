@@ -66,14 +66,59 @@ The "Check Have I Been Pwned" button on a person page opens haveibeenpwned.com w
 address in the link, so the administrator's browser, not Prism365, sends it to HIBP, only when
 the button is pressed. The address also lands in that browser's history.
 
+## Directory changes
+
+The directory change feed (`docs/modules/directory-changes.md`) keeps every Microsoft Entra
+directory audit event it collects. Each stored event holds:
+
+- the event id, when it happened, the activity, its category, the operation type, the result
+  and Microsoft's result reason, the service that logged it and the correlation id;
+- who made the change: whether it was a user, an application or not stated, with the directory
+  id, the display name, and the sign-in name or application ID, never the IP address;
+- the accounts and objects it was made to (id, display name, type and sign-in name, at most 50),
+  each with its changed properties before and after (at most 50, each value cut to 400
+  characters);
+- Microsoft's additional details (at most 20), without the ones that describe the client the
+  change came from: User-Agent, client IP address, browser and device information are left out;
+- a folded copy (lower case, accents removed) of the activity and the names above, up to 8,000
+  characters, for the search;
+- which accounts and objects the event involves, as actor or target, for a person's page.
+
+Microsoft keeps these events 7 or 30 days; keeping them longer is the reason the feature exists.
+The scheduler's daily retention deletes them after 10 years by default, or after
+`DIRECTORY_CHANGES_RETENTION_DAYS` (365 to 3650). A route to delete them sooner does not exist
+yet and is required before a stable release, as for findings. Opening the feed or a person's
+changes writes an access-ledger entry (`changes.viewed`, `person.changes.viewed`) that names the
+dataset and the range in days, not a person, a search text or a value.
+
 ## Audit results
 
 Each audit run stores the rows it found in `prism365_audit_run`: account names, sign-in names,
 last sign-in dates, account state, license names and, for the MFA audit, registered method types
-(never the phone numbers or keys themselves). The newest 10 successful and 5 failed runs per
+(never the phone numbers or keys themselves). The Account activity audit adds, for each account,
+the dates and counts of its recent use of mail, Teams, OneDrive and SharePoint, its mailbox and
+OneDrive sizes, and the names of its groups and directory roles. It never stores message or file
+content, and the counts are not a measure of anyone's work. The newest 10 successful and 5 failed runs per
 audit are kept and older ones deleted. Starting a run, opening a result and exporting it each write an access-ledger
 entry that names the audit and the run, not an account. A downloaded CSV is outside Prism365's
 retention and should be handled like the directory export it is.
+
+## Handoffs and receipts
+
+A handoff (`docs/handoff.md`) is a file an administrator exports from an audit for another tool to
+act on: account ids, names, sign-in names, the reasons and the columns the page showed. Prism365
+keeps only a record of each export (the audit, view, count, when and by whom), never its
+accounts; the downloaded file is outside Prism365's retention and should be handled like the CSV
+export. A receipt is that tool's report of what it did, imported as it was sent: account ids or
+sign-in names, the actions, their outcomes, the operator's name as the tool gives it, and free
+text. Receipts are shown as the tool's claims, never checked against the tenant.
+
+Handoff records and receipts are kept 3 years by default, configurable with
+`HANDOFF_RETENTION_DAYS` from 30 to 3650 days, measured by the database's clock. Older ones are
+deleted, receipt items included, a batch at a time after each new handoff or receipt is stored;
+a handoff stays while a kept receipt answers it.
+Exporting, importing and reading them each write an access-ledger entry with ids and counts, not
+names or the tool's text.
 
 ## Retention defaults
 

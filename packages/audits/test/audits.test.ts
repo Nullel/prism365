@@ -7,15 +7,16 @@ import {
   type AuditContext,
   activityOf,
   auditDefinition,
+  auditReadScope,
   builtInAudits,
   type DirectoryUser,
+  domainCounts,
   guestAccountsAudit,
   guestDomain,
   inactiveAccountsAudit,
   licenseCapacityAudit,
   licenseReclaimAudit,
   mfaRegistrationAudit,
-  domainCounts,
   principalDomain,
   scopeNote,
   strongestMethod,
@@ -204,6 +205,34 @@ const registrations = [
   { userPrincipalName: "broken@example.invalid" },
 ];
 
+// One policy and one risky user, so the generic definition checks see a row from each audit.
+const policies = [
+  {
+    id: "p-block-legacy",
+    displayName: "Block legacy authentication",
+    state: "enabled",
+    conditions: {
+      users: { includeUsers: ["All"], excludeUsers: [] },
+      applications: { includeApplications: ["All"] },
+      clientAppTypes: ["exchangeActiveSync", "other"],
+    },
+    grantControls: { operator: "OR", builtInControls: ["block"] },
+  },
+];
+const riskyUsers = [
+  {
+    id: "u-stale",
+    isDeleted: false,
+    isProcessing: false,
+    riskLastUpdatedDateTime: daysAgo(3),
+    riskLevel: "high",
+    riskState: "atRisk",
+    riskDetail: "none",
+    userDisplayName: "Sam Stale",
+    userPrincipalName: "sam@example.invalid",
+  },
+];
+
 type Route = (url: URL) => Response | undefined;
 
 function context(
@@ -246,6 +275,10 @@ const tenant: Route = (url) => {
   if (url.pathname === "/v1.0/subscribedSkus") return Response.json({ value: skus });
   if (url.pathname === "/v1.0/reports/authenticationMethods/userRegistrationDetails")
     return Response.json({ value: registrations });
+  if (url.pathname === "/v1.0/identity/conditionalAccess/policies")
+    return Response.json({ value: policies });
+  if (url.pathname === "/v1.0/identityProtection/riskyUsers")
+    return Response.json({ value: riskyUsers });
   return undefined;
 };
 
@@ -258,9 +291,18 @@ const row = (rows: { key: string }[], key: string) => {
   };
 };
 
+// Audits that read endpoints the shared tenant above does not serve. Each is held to the same
+// checks, against its own synthetic tenant, in its own test file.
+const ownTenant = new Set([
+  "devices.managed",
+  "apps.consents",
+  "usage.m365-apps",
+  "accounts.activity",
+]);
+
 describe("audit definitions", () => {
   it("publish valid tables whose views, sort and rows agree", async () => {
-    for (const audit of builtInAudits) {
+    for (const audit of builtInAudits.filter((item) => !ownTenant.has(item.definition.id))) {
       const definition = auditDefinition(audit);
       const keys = new Set(definition.columns.map((column) => column.key));
       expect(keys.has(definition.defaultSort.column), definition.id).toBe(true);
@@ -1035,5 +1077,27 @@ describe("what the audit scope leaves out", () => {
     expect(inactive.rows).toEqual([]);
     expect(inactive.domains?.map((item) => item.domain)).toContain("example.invalid");
     expect(inactive.notes.join(" ")).toContain(`${users.length} accounts in other domains`);
+  });
+});
+
+describe("what a run may read", () => {
+  it("opens only enabled optional packs, and only the permissions enabled packs carry", () => {
+    // LicenseAssignment.Read.All is granted for the enabled per-user licence pack, but the
+    // inactive audit's optional tenant licence pack is off: the shared permission must not open it.
+    const off = auditReadScope(
+      inactiveAccountsAudit,
+      ["directory.users.read", "audit.signins.read", "user.licenses.read"],
+      ["User.Read.All", "AuditLog.Read.All", "LicenseAssignment.Read.All"],
+    );
+    expect(off.packs).not.toContain("tenant.licenses.read");
+    expect(off.granted).not.toContain("LicenseAssignment.Read.All");
+    expect(off.granted).toEqual(["User.Read.All", "AuditLog.Read.All"]);
+    const on = auditReadScope(
+      inactiveAccountsAudit,
+      ["directory.users.read", "audit.signins.read", "tenant.licenses.read"],
+      ["User.Read.All", "AuditLog.Read.All", "LicenseAssignment.Read.All"],
+    );
+    expect(on.packs).toContain("tenant.licenses.read");
+    expect(on.granted).toContain("LicenseAssignment.Read.All");
   });
 });

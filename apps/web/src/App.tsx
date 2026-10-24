@@ -1,16 +1,22 @@
 import {
-  automationPreviewSchema,
-  automationWorkflowListSchema,
-  dashboardSummarySchema,
-  sessionSchema,
   type AutomationLifecycle,
   type AutomationPreview,
   type AutomationWorkflowList,
+  automationPreviewSchema,
+  automationWorkflowListSchema,
   type DashboardSummary,
+  dashboardSummarySchema,
   type Metric,
   type PrismSession,
+  sessionSchema,
 } from "@prism365/contracts";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Notifications } from "./Attention.tsx";
+import { Audits } from "./Audits.tsx";
+import { DirectoryChanges } from "./Changes.tsx";
+import { DemoBanner } from "./demo/DemoBanner.tsx";
+import { localDemoDashboard } from "./demo.ts";
+import { Handoffs } from "./Handoffs.tsx";
 import {
   ActivityIcon,
   ArrowUpRightIcon,
@@ -20,28 +26,30 @@ import {
   GridIcon,
   LockIcon,
   SearchIcon,
+  SettingsIcon,
   ShieldIcon,
   SparkleIcon,
   UsersIcon,
 } from "./icons.tsx";
-import { Notifications } from "./Attention.tsx";
-import { Audits } from "./Audits.tsx";
-import { localDemoDashboard } from "./demo.ts";
-import { DemoBanner } from "./demo/DemoBanner.tsx";
-import { TenantConnection } from "./TenantConnection.tsx";
-import { UserIntelligence } from "./UserIntelligence.tsx";
-import { ScriptPackages } from "./ScriptPackages.tsx";
 import { LiveOverview } from "./LiveOverview.tsx";
 import { People } from "./People.tsx";
+import { ScriptPackages } from "./ScriptPackages.tsx";
+import { SetupChecklist } from "./Setup.tsx";
 import { SigninAudit } from "./SigninAudit.tsx";
+import { TenantConnection } from "./TenantConnection.tsx";
+import { UserIntelligence } from "./UserIntelligence.tsx";
+import { ThisWeek } from "./Week.tsx";
 
 export type WorkspaceView =
   | "overview"
+  | "week"
   | "notifications"
   | "people"
   | "audits"
   | "signins"
+  | "changes"
   | "users"
+  | "handoffs"
   | "lifecycle"
   | "access";
 
@@ -66,13 +74,15 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [
       { label: "Audits", icon: ChecklistIcon, view: "audits" },
       { label: "Sign-in audit", icon: ShieldIcon, view: "signins" },
+      { label: "Directory changes", icon: ActivityIcon, view: "changes" },
     ],
   },
   {
     label: "Tools",
     items: [
       { label: "Live lookup", icon: SearchIcon, view: "users" },
-      { label: "Lifecycle automation", icon: ActivityIcon, view: "lifecycle" },
+      { label: "Handoffs", icon: ArrowUpRightIcon, view: "handoffs" },
+      { label: "Lifecycle automation", icon: SettingsIcon, view: "lifecycle" },
     ],
   },
 ];
@@ -80,6 +90,11 @@ const accessItem: NavItem = { label: "Microsoft access", icon: LockIcon, view: "
 
 const pageCopy: Record<WorkspaceView, { title: string; description: string }> = {
   overview: { title: "Overview", description: "What needs attention across the tenant right now." },
+  week: {
+    title: "This week",
+    description:
+      "What changed in the last seven days: new findings, accounts gone quiet, licence and MFA drift, directory changes and Microsoft deadlines.",
+  },
   notifications: {
     title: "Notifications",
     description:
@@ -98,6 +113,16 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
     title: "Sign-in audit",
     description:
       "Collected sign-ins, each account's usual places, and the sign-ins that break them.",
+  },
+  changes: {
+    title: "Directory changes",
+    description:
+      "Who changed which account, group, role, app or policy, kept for as long as Prism365 runs.",
+  },
+  handoffs: {
+    title: "Handoffs",
+    description:
+      "Lists from audits, packaged for the tool that acts on them, and the receipts it sends back.",
   },
   users: {
     title: "Live lookup",
@@ -540,7 +565,9 @@ const workspaceViews: readonly WorkspaceView[] = [
   "people",
   "audits",
   "signins",
+  "changes",
   "users",
+  "handoffs",
   "lifecycle",
   "access",
 ];
@@ -877,6 +904,24 @@ export function App() {
                   onOpenPerson={openPerson}
                 />
               ) : null}
+              {view === "week" ? (
+                <ThisWeek
+                  key={`${session.mode}-${session.authenticated}`}
+                  session={session}
+                  onNavigate={navigate}
+                  onOpenPerson={openPerson}
+                />
+              ) : null}
+              {view === "changes" ? (
+                <DirectoryChanges
+                  key={`${session.mode}-${session.authenticated}`}
+                  session={session}
+                  onOpenPerson={openPerson}
+                />
+              ) : null}
+              {view === "handoffs" ? (
+                <Handoffs key={`${session.mode}-${session.authenticated}`} session={session} />
+              ) : null}
               {view === "users" ? (
                 <UserIntelligence
                   key={`${session.mode}-${session.authenticated}`}
@@ -885,6 +930,12 @@ export function App() {
               ) : null}
               {view === "lifecycle" && demo ? <LifecycleAutomation /> : null}
               {view === "lifecycle" ? <ScriptPackages session={session} /> : null}
+              {view === "access" ? (
+                <SetupChecklist
+                  key={`${session.mode}-${session.authenticated}`}
+                  session={session}
+                />
+              ) : null}
               {view === "access" ? (
                 <section className="panel access-note" aria-label="Write access">
                   <ShieldIcon />

@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import staticFiles from "@fastify/static";
 import {
   AiAnalysisBroker,
-  LocalOllamaProvider,
   type AiEvidenceQuery,
   type AiProvider,
+  LocalOllamaProvider,
 } from "@prism365/ai";
 import {
   type Audit,
   auditDefinition,
+  auditReadScope,
   builtInAudits,
   findAudit,
   getRun,
@@ -19,13 +20,20 @@ import {
 } from "@prism365/audits";
 import {
   createAutomationPreview,
-  listAutomationWorkflows,
   inspectAutomationPackage,
+  listAutomationWorkflows,
   summarizeAutomationPackage,
 } from "@prism365/automation";
 import {
-  aiAccessGrantSchema,
+  type AiEvidenceRecord,
   type AuditAvailability,
+  aiAccessGrantSchema,
+  attentionItemSchema,
+  attentionListSchema,
+  attentionMuteRequestSchema,
+  attentionPreferencesSchema,
+  attentionReviewRequestSchema,
+  attentionSettingsSchema,
   auditCatalogSchema,
   auditCsv,
   auditIdSchema,
@@ -34,37 +42,32 @@ import {
   auditScopeSchema,
   auditSettingsSchema,
   auditStartSchema,
-  queryAuditRows,
-  attentionItemSchema,
-  attentionListSchema,
-  attentionMuteRequestSchema,
-  attentionPreferencesSchema,
-  attentionReviewRequestSchema,
-  attentionSettingsSchema,
-  serviceHealthStatusSchema,
-  type SystemAlert,
-  automationPackageSummarySchema,
   automationPackageListSchema,
-  investigationEmailSchema,
+  automationPackageSummarySchema,
   automationPreviewRequestSchema,
   capabilitySummarySchema,
-  type AiEvidenceRecord,
-  type UserInvestigation,
   collectionStatusSchema,
   findingListSchema,
   findingStateRequestSchema,
   findingStateSchema,
+  investigationEmailSchema,
   moduleListSchema,
   personIdSchema,
   personListSchema,
   personLookupSchema,
   personRecordSchema,
   personSigninPageSchema,
+  queryAuditRows,
+  type SystemAlert,
+  scopeFileSuffix,
+  serviceHealthStatusSchema,
   sessionSchema,
   signinSummarySchema,
+  type UserInvestigation,
 } from "@prism365/contracts";
 import {
   createDemoUserInvestigation,
+  type GraphFeatureId,
   GraphHttpClient,
   investigateUser,
   lookupPersonId,
@@ -74,6 +77,11 @@ import {
   UserInvestigationError,
 } from "@prism365/graph";
 import {
+  HEALTH_MODULE,
+  MESSAGES_MODULE,
+  serviceHealthStatus,
+} from "@prism365/module-service-health";
+import {
   listPeople,
   personHistory,
   personSignins,
@@ -81,14 +89,9 @@ import {
   summarizeSignins,
 } from "@prism365/module-signins-audit";
 import {
-  HEALTH_MODULE,
-  MESSAGES_MODULE,
-  serviceHealthStatus,
-} from "@prism365/module-service-health";
-import {
   attentionCounts,
-  clearCollectionIntent,
   type CollectionIntent,
+  clearCollectionIntent,
   latestRuns,
   listAttention,
   listFindings,
@@ -96,6 +99,7 @@ import {
   modulePermissions,
   readAttentionPreferences,
   readCollectionIntent,
+  scopeGraph,
   setAttentionMuted,
   setAttentionReview,
   setFindingState,
@@ -105,7 +109,15 @@ import {
 import { MemoryStateStore, type SqlClient, type StateStore } from "@prism365/storage";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { type AppConfig, type SupportedReadFeature, supportedReadFeatures } from "./config.ts";
+import { auditExportParamsSchema, auditExportQuery } from "./audit-export.ts";
+import { AuditScheduler, type AuditSchedulerOptions } from "./audit-schedule.ts";
+import { AuditRunner, auditUnavailableMessage } from "./audits.ts";
+import {
+  type AppConfig,
+  DEFAULT_HANDOFF_RETENTION_DAYS,
+  type SupportedReadFeature,
+  supportedReadFeatures,
+} from "./config.ts";
 import { demoDashboard } from "./demo-data.ts";
 import {
   digest,
@@ -114,8 +126,13 @@ import {
   type IdentitySession,
   LoginRejectedError,
 } from "./identity.ts";
-import { AuditRunner } from "./audits.ts";
 import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
+import { registerAuditInsightRoutes } from "./routes/audit-insights.ts";
+import { registerChangeRoutes } from "./routes/changes.ts";
+import { RouteBoundaryError, type RouteContext } from "./routes/context.ts";
+import { registerDigestRoutes } from "./routes/digest.ts";
+import { registerHandoffRoutes } from "./routes/handoffs.ts";
+import { registerSetupRoutes } from "./routes/setup.ts";
 
 export interface AppOptions {
   config?: AppConfig;
@@ -127,6 +144,11 @@ export interface AppOptions {
   modules?: ModuleRuntime;
   // Defaults to a runner on the module database. Tests pass one with a short time limit.
   audits?: AuditRunner;
+  // Timing for scheduled audits. Tests pass their own clock and timers.
+  auditSchedule?: Pick<
+    AuditSchedulerOptions,
+    "now" | "intervalMilliseconds" | "startDelayMilliseconds" | "timers" | "log"
+  >;
 }
 
 function readCookie(request: FastifyRequest, name: string) {
@@ -312,6 +334,10 @@ export function createApp(options: AppOptions = {}) {
     )
       return;
     const session = await sessionFor(request);
+    // The setup checklist also answers without a session, so an installation that cannot sign
+    // anyone in yet can still say what is missing. It then tells no more than /v1/session; a
+    // signed-in request goes through every check below like any other.
+    if (!session && pathname === "/v1/setup/status") return;
     if (!session)
       return reply.status(401).send({
         error: "authentication_required",
@@ -567,6 +593,17 @@ export function createApp(options: AppOptions = {}) {
       }
       // An explicit start retries a session Microsoft refused before.
       refusedSessions.delete(digest(handle));
+      // Start again from the session already collecting keeps that binding: rebinding would
+      // count as collection passing to someone else and stop the scheduled run it is reading
+      // with. A binding Microsoft refused is replaced, so the start retries it.
+      const current = collecting;
+      if (
+        current &&
+        current.sessionKey === digest(handle) &&
+        !current.refused &&
+        modules.scheduler.status().state === "collecting"
+      )
+        return;
       bindCollection(handle, session);
     });
     void modules.scheduler.tick().catch(() => {});
@@ -1134,18 +1171,21 @@ export function createApp(options: AppOptions = {}) {
   // delegated session of whoever started it, and its rows are kept for history and export.
   const packPermission = (id: string) =>
     permissionPacks.find((pack) => pack.id === id)?.permission ?? null;
-  const auditAvailability = (audit: Audit, session: IdentitySession): AuditAvailability => {
-    const enabled = new Set(enabledPermissions());
-    const granted = new Set(session.scopes.filter((scope) => enabled.has(scope)));
-    const { permissions } = auditDefinition(audit);
-    const notEnabled = permissions.filter((permission) => !enabled.has(permission));
-    if (notEnabled.length > 0)
+  // An audit is available when every pack it requires is enabled (the pack itself, not just a
+  // permission another enabled pack happens to share) and the scopes granted their permissions.
+  // The scopes are a session's, or the collecting credential's for a scheduled run.
+  const auditAvailabilityFor = (audit: Audit, scopes: readonly string[]): AuditAvailability => {
+    const enabledPacks = new Set<string>(config.enabledFeatures);
+    const notEnabledPacks = audit.packs.filter((pack) => !enabledPacks.has(pack));
+    if (notEnabledPacks.length > 0)
       return {
         state: "not_enabled",
-        missing: notEnabled,
+        missing: [...new Set(notEnabledPacks.map((pack) => packPermission(pack) ?? pack))],
         grantFeature: null,
-        enable: audit.packs.filter((pack) => notEnabled.includes(packPermission(pack) ?? "")),
+        enable: notEnabledPacks,
       };
+    const { permissions } = auditDefinition(audit);
+    const granted = new Set(auditReadScope(audit, config.enabledFeatures, scopes).granted);
     const missing = permissions.filter((permission) => !granted.has(permission));
     if (missing.length > 0)
       return {
@@ -1156,21 +1196,51 @@ export function createApp(options: AppOptions = {}) {
       };
     return { state: "available", missing: [], grantFeature: null, enable: [] };
   };
+  const auditAvailability = (audit: Audit, session: IdentitySession) =>
+    auditAvailabilityFor(audit, session.scopes);
   // Audits read whole directories, so they get the background reader's budgets.
-  const auditGraph = (session: IdentitySession, handle: string) => {
-    if (!identity) throw new Error("Live mode is not configured.");
-    const permitted = new Set(enabledPermissions());
-    const scopes = session.scopes.filter((scope) => permitted.has(scope));
-    const client = new GraphHttpClient({
+  const auditGraphClient = (getAccessToken: () => Promise<string>) =>
+    new GraphHttpClient({
       requestTimeoutMilliseconds: 60_000,
       maxResponseBytes: 8_388_608,
       maxRetries: 3,
       maxRetryWaitMilliseconds: 30_000,
-      getAccessToken: () => identity.accessToken(handle, scopes),
+      getAccessToken,
       ...(options.graphFetch ? { fetchImplementation: options.graphFetch } : {}),
     });
+  const auditGraph = (session: IdentitySession, handle: string) => {
+    if (!identity) throw new Error("Live mode is not configured.");
+    const permitted = new Set(enabledPermissions());
+    const scopes = session.scopes.filter((scope) => permitted.has(scope));
+    const client = auditGraphClient(() => identity.accessToken(handle, scopes));
     return { client, scopes };
   };
+  // Scheduled audits (docs/audits.md, section 15): due audits run one at a time on the sign-in
+  // collection uses, read from the live credential here, so none runs while collection is off.
+  const auditSchedule =
+    audits && modules
+      ? new AuditScheduler({
+          runner: audits,
+          database: modules.database,
+          audits: builtInAudits,
+          credential: () => collecting,
+          enabledPacks: config.enabledFeatures,
+          availability: auditAvailabilityFor,
+          graphClient: auditGraphClient,
+          ledger: (tenantId, actorId, event) => store.appendAudit(tenantId, actorId, event),
+          ...options.auditSchedule,
+        })
+      : null;
+  if (auditSchedule && modules) {
+    auditSchedule.start();
+    // Once shortly after collection starts, so a due audit does not wait a whole tick. When
+    // collection stops or passes to another administrator, a scheduled run reading on the old
+    // sign-in stops at once.
+    modules.scheduler.subscribe((event) => {
+      if (event.type === "collection.bound") auditSchedule.soon();
+      if (event.type === "collection.unbound") auditSchedule.collectionEnded();
+    });
+  }
   const auditsUnavailable = {
     error: "audits_unavailable",
     message: "Audits need live mode with module storage, and a signed-in administrator.",
@@ -1222,27 +1292,26 @@ export function createApp(options: AppOptions = {}) {
     if (availability.state !== "available")
       return reply.status(403).send({
         error: availability.state === "not_enabled" ? "feature_not_enabled" : "missing_consent",
-        message:
-          availability.state === "not_enabled"
-            ? `This installation has not enabled ${availability.enable.join(", ") || availability.missing.join(", ")}. Add it to ENABLED_READ_FEATURES and restart.`
-            : `Your session has not granted ${availability.missing.join(", ")}. Grant access and run it again.`,
+        message: auditUnavailableMessage(availability),
         availability,
       });
     const id = audit.definition.id;
     const { client, scopes } = auditGraph(session, handle);
+    const read = auditReadScope(audit, config.enabledFeatures, scopes);
     const definition = auditDefinition(audit);
     // The ledger names what this run will read: required permissions, and optional ones the
-    // session granted (license names, sign-in dates).
+    // session granted for an enabled pack (license names, sign-in dates).
     const datasets = [
       ...definition.permissions,
-      ...definition.optionalPermissions.filter((permission) => scopes.includes(permission)),
+      ...definition.optionalPermissions.filter((permission) => read.granted.includes(permission)),
     ];
     const result = await audits.start({
       tenantId: session.tenantId,
       actor: { id: session.actorId, name: session.displayName ?? null },
       audit,
       client,
-      granted: scopes,
+      packs: read.packs,
+      granted: read.granted,
       beforeRead: (started) =>
         store.appendAudit(session.tenantId, session.actorId, {
           type: "audit.run.started",
@@ -1264,9 +1333,15 @@ export function createApp(options: AppOptions = {}) {
     }
     if (!run)
       return reply.status(409).send({ error: "run_unavailable", message: "Reload the page." });
+    // A Run that joined a scheduled run in progress shares its end, and a scheduled run stops
+    // when collection stops: the administrator is told, so a stopped result is no surprise.
+    const message =
+      !result.started && run.trigger === "schedule"
+        ? "This audit was already running on its schedule, so your Run joined that run. It stops if collection stops; run it again then."
+        : null;
     return reply
       .status(result.started ? 202 : 200)
-      .send(auditStartSchema.parse({ run, started: result.started }));
+      .send(auditStartSchema.parse({ run, started: result.started, message }));
   });
 
   app.get("/v1/audits/:auditId/runs", async (request, reply) => {
@@ -1321,7 +1396,7 @@ export function createApp(options: AppOptions = {}) {
     if (!session) return reply.status(401).send({ error: "authentication_required" });
     if (!audits || !modules) return reply.status(409).send(auditsUnavailable);
     const params = runParams.safeParse(request.params);
-    const query = z.record(z.string().max(60), z.string().max(200)).safeParse(request.query ?? {});
+    const query = auditExportParamsSchema.safeParse(request.query ?? {});
     if (!params.success || !query.success)
       return reply.status(400).send({ error: "invalid_request", message: "Check the filters." });
     const run = await loadRun(session, params.data.runId);
@@ -1331,19 +1406,8 @@ export function createApp(options: AppOptions = {}) {
         .status(404)
         .send({ error: "run_not_found", message: "That run has no results." });
     const definition = auditDefinition(audit);
-    // Export what the page shows: ?view=, ?search=, ?sort=&direction=, and f.<column>= filters.
-    const { view, search, sort, direction } = query.data;
-    const facets = Object.fromEntries(
-      Object.entries(query.data)
-        .filter(([key]) => key.startsWith("f."))
-        .map(([key, value]) => [key.slice(2), value]),
-    );
-    const rows = queryAuditRows(definition, run.rows, {
-      view: view ?? null,
-      facets,
-      search: search ?? "",
-      sort: sort ? { column: sort, direction: direction === "asc" ? "asc" : "desc" } : null,
-    });
+    // Export what the page shows. The handoff export parses the same way (audit-export.ts).
+    const rows = queryAuditRows(definition, run.rows, auditExportQuery(query.data));
     await store.appendAudit(session.tenantId, session.actorId, {
       type: "audit.run.exported",
       auditId: run.auditId,
@@ -1358,7 +1422,7 @@ export function createApp(options: AppOptions = {}) {
         "Content-Disposition",
         // A limited result says so in its name, so a file passed on is never mistaken for the
         // whole tenant.
-        `attachment; filename="prism365-${run.auditId}-${day}${run.scope && run.scope.length > 0 ? `-limited-to-${run.scope.length}-domain${run.scope.length === 1 ? "" : "s"}` : ""}.csv"`,
+        `attachment; filename="prism365-${run.auditId}-${day}${scopeFileSuffix(run.scope)}.csv"`,
       )
       .send(auditCsv(definition, rows));
   });
@@ -1396,6 +1460,64 @@ export function createApp(options: AppOptions = {}) {
     });
     return auditSettingsSchema.parse(settings);
   });
+
+  // Features with their own route files (routes/). Each checks the session itself, and gets
+  // nothing that could act as anyone else: see routes/context.ts.
+  const routeGraph = (
+    session: IdentitySession,
+    handle: string,
+    packs: readonly GraphFeatureId[],
+  ) => {
+    const enabled = new Set<string>(config.enabledFeatures);
+    const off = packs.filter((pack) => !enabled.has(pack));
+    if (off.length > 0) throw new RouteBoundaryError(`Read packs not enabled: ${off.join(", ")}.`);
+    const { client, scopes } = auditGraph(session, handle);
+    const carried = new Set<string | null>(packs.map((pack) => packPermission(pack)));
+    return {
+      graph: scopeGraph(client, packs),
+      granted: scopes.filter((scope) => carried.has(scope)),
+    };
+  };
+  const credential = config.identity?.credential ?? null;
+  const routes: RouteContext = {
+    settings: {
+      mode: config.mode,
+      origin: config.origin,
+      production: config.production,
+      configured: Boolean(config.identity),
+      missingConfiguration: [...config.missingConfiguration],
+      enabledFeatures: [...config.enabledFeatures],
+      credentialKind: !credential
+        ? null
+        : "clientCertificate" in credential
+          ? "certificate"
+          : "secret",
+      certificate: config.certificate ? { ...config.certificate } : null,
+      durableStorage: Boolean(config.databaseUrl || config.moduleDataDir),
+      durableSessions: store.durable,
+      handoffRetentionDays: config.handoffRetentionDays ?? DEFAULT_HANDOFF_RETENTION_DAYS,
+    },
+    store,
+    modules: modules
+      ? {
+          registry: modules.registry,
+          database: modules.database,
+          status: () => modules.scheduler.status(),
+        }
+      : null,
+    audits,
+    sessionFor,
+    sessionHandle: (request) => readCookie(request, cookieName),
+    enabledPermissions,
+    sessionGraph: routeGraph,
+    auditAvailability,
+    collectingAdmin: () => (collecting ? { actorId: collecting.actorId } : null),
+  };
+  registerChangeRoutes(app, routes);
+  registerAuditInsightRoutes(app, routes);
+  registerDigestRoutes(app, routes);
+  registerSetupRoutes(app, routes);
+  registerHandoffRoutes(app, routes);
 
   app.get("/v1/dashboard/summary", async (_request, reply) => {
     if (config.mode === "demo") return demoDashboard;
@@ -1677,8 +1799,12 @@ export function createApp(options: AppOptions = {}) {
   });
 
   app.addHook("onClose", async () => {
+    // No scheduled audit starts from here on.
+    auditSchedule?.stop();
     // Audits first: an interrupted run is recorded before the database closes.
     await audits?.close();
+    // A scheduled pass waiting on a run sees it stopped and returns.
+    await auditSchedule?.settled();
     if (options.modules) {
       await options.modules.scheduler.stop();
       await options.modules.database.close();

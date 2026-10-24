@@ -1,3 +1,12 @@
+import { mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
+import { GraphHttpClient } from "@prism365/graph";
+import { createDirectoryChangesModule } from "@prism365/module-directory-changes";
+import {
+  createMessageCenterModule,
+  createServiceHealthModule,
+} from "@prism365/module-service-health";
+import { createSigninsAuditModule } from "@prism365/module-signins-audit";
 import {
   type CollectionCredential,
   CredentialUnavailableError,
@@ -5,19 +14,11 @@ import {
   ModuleScheduler,
   type SchedulerEvent,
 } from "@prism365/modules";
-import { GraphHttpClient } from "@prism365/graph";
-import {
-  createMessageCenterModule,
-  createServiceHealthModule,
-} from "@prism365/module-service-health";
-import { createSigninsAuditModule } from "@prism365/module-signins-audit";
 import {
   type ModuleDatabase,
   PGliteModuleDatabase,
   PostgresModuleDatabase,
 } from "@prism365/storage";
-import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { AppConfig } from "./config.ts";
 import { digest, type IdentityService, type IdentitySession } from "./identity.ts";
 
@@ -36,7 +37,8 @@ export function createModuleRegistry(config?: AppConfig): ModuleRegistry {
   return new ModuleRegistry()
     .register(createSigninsAuditModule(config?.signinsAudit))
     .register(createServiceHealthModule())
-    .register(createMessageCenterModule());
+    .register(createMessageCenterModule())
+    .register(createDirectoryChangesModule(config?.directoryChanges));
 }
 
 // Collects with the signed-in operator's delegated session. The session handle stays in process
@@ -46,6 +48,8 @@ export class DelegatedSessionCredential implements CollectionCredential {
   readonly kind = "delegated" as const;
   readonly tenantId: string;
   readonly actorId: string;
+  // The administrator's name when the session knows it, for runs started on their sign-in.
+  readonly displayName: string | null;
   readonly sessionKey: string;
   readonly #identity: IdentityService;
   readonly #handle: string;
@@ -62,6 +66,7 @@ export class DelegatedSessionCredential implements CollectionCredential {
     this.#permitted = permitted;
     this.tenantId = session.tenantId;
     this.actorId = session.actorId;
+    this.displayName = session.displayName;
     this.sessionKey = digest(handle);
   }
 
@@ -123,7 +128,15 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
       // verified, so starting before `npm run db:migrate` finished would refuse every query on
       // them until a restart; refusing to start makes the container retry instead.
       if (tenantId)
-        for (const table of ["prism365_attention", "prism365_preference", "prism365_audit_run"]) {
+        for (const table of [
+          "prism365_attention",
+          "prism365_preference",
+          "prism365_audit_run",
+          "prism365_audit_trend",
+          "prism365_handoff",
+          "prism365_receipt",
+          "prism365_receipt_item",
+        ]) {
           const exists = await postgres.tenant(tenantId, (sql) =>
             sql.query<{ present: boolean }>("SELECT to_regclass($1) IS NOT NULL AS present", [
               `public.${table}`,
@@ -160,6 +173,7 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
     });
   }
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     // Background reads tolerate slower Graph queries and longer throttling waits than the

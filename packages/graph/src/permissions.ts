@@ -20,6 +20,8 @@ interface PermissionPackDefinition {
   roleNotes: string;
   licenseNotes: string;
   documentationUrl: `https://${string}`;
+  // Other Microsoft pages for the pack's endpoints, when it reads more than one kind of resource.
+  relatedDocumentationUrls?: readonly `https://${string}`[];
   documentationLastVerified: `${number}-${number}-${number}`;
 }
 
@@ -64,14 +66,20 @@ export const permissionPacks = [
     mode: "either",
     phase: "mvp",
     defaultEnabled: false,
-    purpose: "Read selected directory user fields for account inventory and hygiene.",
+    purpose:
+      "Read selected directory user fields for account inventory and hygiene, a user's manager, and a user's direct memberships (groups, directory roles and administrative units).",
     deniedBehavior: "User inventory is hidden; other reports remain available.",
     clouds: allGraphClouds,
     prerequisites: [],
-    roleNotes: "Delegated access is also limited by the signed-in user's privileges.",
+    roleNotes:
+      "Delegated access is also limited by the signed-in user's privileges. User.Read.All is Microsoft's documented least privilege for reading another user's memberships.",
     licenseNotes: "Endpoint-specific Microsoft Entra licensing rules still apply.",
     documentationUrl: "https://learn.microsoft.com/en-us/graph/api/user-list?view=graph-rest-1.0",
-    documentationLastVerified: "2026-10-13",
+    relatedDocumentationUrls: [
+      "https://learn.microsoft.com/en-us/graph/api/user-list-manager?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/user-list-memberof?view=graph-rest-1.0",
+    ],
+    documentationLastVerified: "2026-10-23",
   },
   {
     id: "user.licenses.read",
@@ -154,13 +162,13 @@ export const permissionPacks = [
   },
   {
     id: "audit.signins.read",
-    label: "Sign-in and directory audits",
+    label: "Sign-in logs",
     source: "microsoftGraph",
     permission: "AuditLog.Read.All",
     mode: "either",
     phase: "mvp",
     defaultEnabled: false,
-    purpose: "Summarize sign-ins and directory changes for security operations.",
+    purpose: "Collect sign-ins for the sign-in audit and the People view.",
     deniedBehavior: "Audit and sign-in reports are unavailable.",
     clouds: allGraphClouds,
     prerequisites: [],
@@ -169,6 +177,27 @@ export const permissionPacks = [
     licenseNotes: "Retention and sign-in fields vary with the tenant's Entra licensing.",
     documentationUrl: "https://learn.microsoft.com/en-us/graph/api/signin-list?view=graph-rest-1.0",
     documentationLastVerified: "2026-10-13",
+  },
+  {
+    id: "audit.directory.read",
+    label: "Directory audit log",
+    source: "microsoftGraph",
+    permission: "AuditLog.Read.All",
+    mode: "either",
+    phase: "mvp",
+    defaultEnabled: false,
+    purpose:
+      "Collect the directory audit log (who changed which user, group, role, app or policy) for the change feed.",
+    deniedBehavior: "The directory change feed is unavailable; other features are unaffected.",
+    clouds: allGraphClouds,
+    prerequisites: [],
+    roleNotes:
+      "Delegated callers need a role such as Reports Reader, Security Reader or Global Reader.",
+    licenseNotes:
+      "Microsoft keeps directory audits 7 days without Entra ID P1 or P2 and 30 days with it.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/directoryaudit-list?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-23",
   },
   {
     id: "reports.authentication-methods.read",
@@ -316,6 +345,46 @@ export const permissionPacks = [
     documentationUrl:
       "https://learn.microsoft.com/en-us/graph/api/intune-devices-manageddevice-list?view=graph-rest-1.0",
     documentationLastVerified: "2026-10-13",
+  },
+  {
+    id: "directory.applications.read",
+    label: "Enterprise applications",
+    source: "microsoftGraph",
+    permission: "Application.Read.All",
+    mode: "either",
+    phase: "experimental",
+    defaultEnabled: false,
+    purpose:
+      "Read enterprise applications and the application permissions granted to them, for the app consents audit.",
+    deniedBehavior: "The app consents audit cannot run; other audits are unaffected.",
+    clouds: allGraphClouds,
+    prerequisites: [],
+    roleNotes:
+      "Delegated callers need a role that can read applications, such as Global Reader or Cloud Application Administrator.",
+    licenseNotes: "No additional license is required.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/serviceprincipal-list?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-23",
+  },
+  {
+    id: "directory.permission-grants.read",
+    label: "Delegated permission grants",
+    source: "microsoftGraph",
+    permission: "Directory.Read.All",
+    mode: "either",
+    phase: "experimental",
+    defaultEnabled: false,
+    purpose:
+      "Read which delegated permissions users and administrators consented to for each application.",
+    deniedBehavior: "The app consents audit lists application permissions only.",
+    clouds: allGraphClouds,
+    prerequisites: ["directory.applications.read"],
+    roleNotes:
+      "Microsoft documents Directory.Read.All as the least-privileged permission for listing grants. Delegated callers need a role such as Global Reader.",
+    licenseNotes: "No additional license is required.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/oauth2permissiongrant-list?view=graph-rest-1.0",
+    documentationLastVerified: "2026-10-23",
   },
   {
     id: "purview.entra.read",

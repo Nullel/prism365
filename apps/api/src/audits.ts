@@ -7,17 +7,26 @@ import {
   insertRun,
   interruptRuns,
   pruneRuns,
-  readAuditScope,
   type RunOutcome,
+  readAuditScope,
 } from "@prism365/audits";
-import { auditRowSchema, auditSummaryItemSchema, type AuditRun } from "@prism365/contracts";
+import {
+  type AuditAvailability,
+  type AuditRun,
+  type AuditRunTrigger,
+  auditRowSchema,
+  auditSummaryItemSchema,
+} from "@prism365/contracts";
 import {
   GraphBoundaryError,
+  type GraphFeatureId,
   type GraphHttpClient,
+  GraphReportDownloadError,
+  GraphReportHostError,
   GraphRequestError,
   GraphRetryDeferredError,
 } from "@prism365/graph";
-import { scopeGraph } from "@prism365/modules";
+import { CredentialUnavailableError, scopeGraph } from "@prism365/modules";
 import type { ModuleDatabase } from "@prism365/storage";
 import { z } from "zod";
 
@@ -52,13 +61,30 @@ function cleaned(value: unknown): unknown {
   return value;
 }
 
+// Why a run was stopped before it finished: its time limit, the process stopping, or (for a
+// scheduled run only) collection stopping or passing to another administrator.
+type StopReason = "timeout" | "shutdown" | "collection";
+
 class AuditStoppedError extends Error {
-  readonly reason: "timeout" | "shutdown";
-  constructor(reason: "timeout" | "shutdown") {
-    super(reason === "timeout" ? "The audit exceeded its time limit." : "Prism365 is stopping.");
+  readonly reason: StopReason;
+  constructor(reason: StopReason) {
+    super(
+      reason === "timeout"
+        ? "The audit exceeded its time limit."
+        : reason === "collection"
+          ? "Collection stopped."
+          : "Prism365 is stopping.",
+    );
     this.name = "AuditStoppedError";
     this.reason = reason;
   }
+}
+
+// What the Run route says, and the schedule route says, when an audit cannot run on a session.
+export function auditUnavailableMessage(availability: AuditAvailability): string {
+  return availability.state === "not_enabled"
+    ? `This installation has not enabled ${availability.enable.join(", ") || availability.missing.join(", ")}. Add it to ENABLED_READ_FEATURES and restart.`
+    : `Your session has not granted ${availability.missing.join(", ")}. Grant access and run it again.`;
 }
 
 // What the administrator is told. Fixed text per category: provider messages and tenant values
@@ -75,12 +101,38 @@ export function describeAuditFailure(
           code: "timeout",
           message: `The audit took longer than ${Math.round(timeoutMilliseconds / 60_000)} minutes and was stopped.`,
         }
-      : {
-          code: "interrupted",
-          message: "Prism365 stopped while this audit was running. Run it again.",
-        };
+      : error.reason === "collection"
+        ? {
+            code: "collection_stopped",
+            message: "Collection stopped while this scheduled run was reading.",
+          }
+        : {
+            code: "interrupted",
+            message: "Prism365 stopped while this audit was running. Run it again.",
+          };
   const reference = (requestId: string | undefined) =>
     requestId ? ` Microsoft request ID: ${requestId}.` : "";
+  // A usage report's download link (ADR-0010). The host is printable ASCII of at most 253
+  // characters, never the link's path or query, which carry its token.
+  if (error instanceof GraphReportHostError)
+    return {
+      code: "report_host",
+      message:
+        error.host === null
+          ? "Microsoft sent a report download link Prism365 could not read."
+          : error.knownHost
+            ? `Microsoft sent a report download link on ${error.host} that Prism365 does not accept: ${error.problem}.`
+            : `Microsoft sent the report from a host Prism365 does not recognise: ${error.host}.`,
+    };
+  // The short-lived link failed. Not a sign-in or role problem, whatever the status says.
+  if (
+    error instanceof GraphReportDownloadError ||
+    (error instanceof GraphBoundaryError && error.reason === "download")
+  )
+    return {
+      code: "report_download",
+      message: "Microsoft's report download link failed. Run the audit again.",
+    };
   if (error instanceof GraphRetryDeferredError)
     return {
       code: "throttled",
@@ -118,6 +170,13 @@ export function describeAuditFailure(
       message: `Microsoft's answer could not be read safely (${error.reason}). Try again; if it repeats, the server log has the category.`,
     };
   }
+  // A scheduled run's sign-in ended (signed out, expired, or refused by Microsoft): the same
+  // category a manual run gets when its session ends.
+  if (error instanceof CredentialUnavailableError)
+    return {
+      code: "session",
+      message: "The Microsoft session ended. Sign in again and rerun the audit.",
+    };
   const name = error instanceof Error ? error.name : "";
   if (name === "InteractionRequiredAuthError")
     return {
@@ -130,6 +189,17 @@ export function describeAuditFailure(
       message: "The audit produced a result Prism365 could not store. This is a bug in the audit.",
     };
   return { code: "failed", message: "The audit failed. The server log has the category." };
+}
+
+// The server log line for a failed run, or null when the page already says all there is. It holds
+// fixed codes and error class names, and for a refused report link its host, so an operator can
+// report a host Microsoft moved to; never a provider message or the link itself.
+export function auditFailureLogLine(auditId: string, code: string, error: unknown): string | null {
+  if (error instanceof GraphReportHostError)
+    return `Prism365 audit ${auditId} failed (report_host, ${error.host === null ? "no host" : `host ${error.host}`}).`;
+  if (code === "failed" || code === "invalid_result")
+    return `Prism365 audit ${auditId} failed (${error instanceof Error ? error.name : typeof error}).`;
+  return null;
 }
 
 interface Running {
@@ -181,21 +251,27 @@ export class AuditRunner {
     return recovery;
   }
 
-  // Starts a run, or returns the one already running for this audit.
+  // Starts a run, or returns the one already running for this audit. `done` resolves once the
+  // run (this one or the one joined) has been recorded, however it ended.
   async start(input: {
     tenantId: string;
     actor: { id: string; name: string | null };
     audit: Audit;
     client: GraphHttpClient;
+    // The packs this run may read and the permissions they carry, from auditReadScope: the
+    // audit's own packs plus only the optional packs the operator enabled.
+    packs: readonly GraphFeatureId[];
     granted: readonly string[];
+    // An administrator's request unless the audit's schedule started it.
+    trigger?: AuditRunTrigger;
     // Runs once, only for a run this call started, after it is stored and before anything is
     // read: the access-ledger entry. If it fails, the run is closed as failed and reads nothing.
     beforeRead?: (run: AuditRun) => Promise<void>;
-  }): Promise<{ runId: string; started: boolean; run: AuditRun | null }> {
+  }): Promise<{ runId: string; started: boolean; run: AuditRun | null; done: Promise<void> }> {
     if (this.#closed) throw new AuditStoppedError("shutdown");
     const key = `${input.tenantId}:${input.audit.definition.id}`;
     const existing = this.#running.get(key);
-    if (existing) return { runId: existing.runId, started: false, run: null };
+    if (existing) return { runId: existing.runId, started: false, run: null, done: existing.done };
     const runId = randomUUID();
     const controller = new AbortController();
     let release: () => void = () => {};
@@ -226,6 +302,7 @@ export class AuditRunner {
           startedAt: this.#now(),
           startedBy: input.actor,
           scope: saved?.domains ?? null,
+          trigger: input.trigger ?? "manual",
         });
       });
     } catch (error) {
@@ -253,7 +330,7 @@ export class AuditRunner {
         if (!stored) this.#recovered.delete(input.tenantId);
         release();
       });
-    return { runId, started: true, run };
+    return { runId, started: true, run, done: entry.done };
   }
 
   // Records how a run ended and prunes old runs. false when storage refused.
@@ -278,6 +355,7 @@ export class AuditRunner {
       tenantId: string;
       audit: Audit;
       client: GraphHttpClient;
+      packs: readonly GraphFeatureId[];
       granted: readonly string[];
       scope: ReadonlySet<string> | null;
     },
@@ -301,9 +379,14 @@ export class AuditRunner {
       stopped.catch(() => {});
       timer = setTimeout(() => controller.abort(new AuditStoppedError("timeout")), this.#timeout);
       // The signal also stops paging and the request in flight, so a stopped run stops reading.
+      // Only the packs this run was given, which always include the audit's required ones.
+      const allowed = new Set<string>([...audit.packs, ...audit.optionalPacks]);
+      const packs = input.packs.filter((pack) => allowed.has(pack));
+      if (audit.packs.some((pack) => !packs.includes(pack)))
+        throw new AuditError("not_enabled", "This audit's read packs are not all enabled.");
       const graph = scopeGraph(
         input.client,
-        [...audit.packs, ...audit.optionalPacks],
+        packs,
         () => controller.signal.throwIfAborted(),
         controller.signal,
       );
@@ -313,6 +396,7 @@ export class AuditRunner {
         granted: new Set(input.granted),
         signal: controller.signal,
         scope: input.scope,
+        tenantId,
       });
       work.catch(() => {});
       const result = resultSchema.parse(cleaned(await Promise.race([work, stopped])));
@@ -323,11 +407,10 @@ export class AuditRunner {
         controller.signal.aborted && controller.signal.reason instanceof AuditStoppedError
           ? controller.signal.reason
           : error;
-      outcome = { status: "failed", ...describeAuditFailure(cause, audit, this.#timeout) };
-      if (outcome.code === "failed" || outcome.code === "invalid_result")
-        console.warn(
-          `Prism365 audit ${audit.definition.id} failed (${error instanceof Error ? error.name : typeof error}).`,
-        );
+      const failure = describeAuditFailure(cause, audit, this.#timeout);
+      outcome = { status: "failed", ...failure };
+      const line = auditFailureLogLine(audit.definition.id, failure.code, cause);
+      if (line) console.warn(line);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -344,6 +427,19 @@ export class AuditRunner {
           "The result could not be saved. Run the audit again; if it repeats, the server log has the category.",
       })
     );
+  }
+
+  // Stops one scheduled run because collection stopped or passed to another administrator: the
+  // cancel reaches the request in flight and the run closes as failed. Only the audit scheduler
+  // calls this, with ids of runs it started itself, so a manual run is never stopped this way.
+  // false when the run is no longer in progress.
+  stopRun(runId: string): boolean {
+    for (const entry of this.#running.values())
+      if (entry.runId === runId) {
+        entry.controller.abort(new AuditStoppedError("collection"));
+        return true;
+      }
+    return false;
   }
 
   // Stops every run and waits for each to record that it was interrupted.

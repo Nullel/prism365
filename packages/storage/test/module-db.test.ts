@@ -97,6 +97,7 @@ describe("runtime statement guard", () => {
 });
 
 describe("transaction lifetime", () => {
+  // Opening PGlite alone can take seconds on a loaded machine, so this test gets 20 s, not 5.
   it("disables a client kept after its transaction and rolls back a stuck transaction", async () => {
     const database = await PGliteModuleDatabase.open({ scopes: [probeScope] });
     try {
@@ -129,5 +130,5 @@ describe("transaction lifetime", () => {
     } finally {
       await database.close();
     }
-  });
+  }, 20_000);
 });

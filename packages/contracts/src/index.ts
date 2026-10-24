@@ -3,9 +3,14 @@ import { personHistorySchema } from "./people.ts";
 
 export * from "./attention.ts";
 export * from "./audits.ts";
+export * from "./changes.ts";
+export * from "./digest.ts";
+export * from "./handoff.ts";
+export * from "./insights.ts";
 export * from "./investigation.ts";
 export * from "./licenses.ts";
 export * from "./people.ts";
+export * from "./setup.ts";
 export * from "./text.ts";
 
 export const sessionSchema = z.object({
@@ -131,6 +136,7 @@ export const permissionPackSchema = z.object({
   roleNotes: z.string().min(1),
   licenseNotes: z.string().min(1),
   documentationUrl: z.string().url(),
+  relatedDocumentationUrls: z.array(z.string().url()).optional(),
   documentationLastVerified: z.string().date(),
 });
 export type PermissionPack = z.infer<typeof permissionPackSchema>;

@@ -2635,6 +2635,76 @@ a.button {
   margin: 10px 0 6px;
 }
 
+/* Directory changes ------------------------------------------------------ */
+
+.change-filters {
+  margin: 10px 0 4px;
+}
+.change-day {
+  margin: 0;
+  padding: 14px 0 4px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.change-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.change-list > li {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.change-row__main {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(8rem, 1fr) minmax(10rem, 1.4fr) minmax(8rem, 1.2fr) auto;
+  gap: 4px 12px;
+  align-items: baseline;
+  font-size: var(--text-sm);
+}
+.change-row__main > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.change-row__time {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.change-row__note {
+  display: block;
+  font-size: var(--text-xs);
+}
+.change-row__details {
+  margin: 6px 0 2px;
+  font-size: var(--text-sm);
+}
+.change-row__details summary {
+  color: var(--accent);
+  font-weight: 500;
+  cursor: pointer;
+}
+.change-props {
+  width: 100%;
+  margin-top: 6px;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+.signin-table .change-props th,
+.signin-table .change-props td {
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+@media (max-width: 860px) {
+  .change-row__main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+
 /* Responsive ------------------------------------------------------------ */
 
 @media (max-width: 1080px) {
@@ -3429,6 +3499,127 @@ button.audit-tile:hover {
   color: var(--text-2);
   font-size: var(--text-sm);
 }
+.audit-item__tag {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.audit-schedule {
+  display: grid;
+  gap: 4px;
+}
+.audit-schedule__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.audit-schedule p {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+.audit-schedule .muted-label {
+  color: var(--text-3);
+}
+.audit-schedule__off {
+  color: var(--warning);
+}
+
+.audit-trend {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+}
+.audit-trend__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.audit-trend__head h3 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+.audit-trend__summary {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.audit-trend__chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+  overflow: visible;
+}
+.audit-trend__grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.audit-trend__line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.audit-trend__point {
+  fill: var(--accent);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.audit-trend__point--hollow {
+  fill: var(--surface);
+}
+.audit-trend__axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.audit-trend .muted-label {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.audit-trend__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.audit-trend .audit-trend__table th,
+.audit-trend .audit-trend__table td {
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.audit-trend .audit-trend__table thead th {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 550;
+}
+.audit-trend .audit-trend__table tbody tr + tr > * {
+  border-top: 1px solid var(--border);
+}
+.audit-trend .audit-trend__table tbody th {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.audit-trend .audit-trend__table td {
+  color: var(--text-2);
+}
+.audit-trend .audit-trend__table .audit-numeric {
+  text-align: right;
+}
+
 .audit-about {
   padding: 14px 16px;
 }
@@ -3458,4 +3649,133 @@ button.audit-tile:hover {
   .audit-search {
     max-width: none;
   }
+}
+
+/* Setup checklist (Setup.tsx) on the Microsoft access page. */
+.setup-checklist {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+.setup-checklist__intro,
+.setup-checklist__note {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.setup-checklist__note {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.setup-checklist__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+.setup-check {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.setup-check strong {
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.setup-check p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.setup-check .setup-check__fix {
+  color: var(--text);
+}
+.setup-check a {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 550;
+  text-underline-offset: 3px;
+}
+.setup-state {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  background: var(--surface-sunken);
+  font-size: var(--text-xs);
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+}
+.setup-state--ok {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.setup-state--warn {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.setup-state--fail {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+@media (max-width: 640px) {
+  .setup-check {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+}
+.connection-none {
+  margin: 16px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.connection-more {
+  margin-top: 12px;
+}
+.connection-more summary {
+  width: fit-content;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 550;
+  cursor: pointer;
+}
+
+/* Handoffs -------------------------------------------------------------- */
+
+.handoff-intro,
+.handoff-import {
+  padding: 14px 16px;
+}
+.handoff-intro p {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.handoff-intro p + p {
+  margin-top: 8px;
+}
+.handoff-import .field {
+  margin-bottom: 8px;
+}
+.handoff-result {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.handoff-note {
+  margin-top: 10px;
+}
+.handoff-match {
+  margin-left: 6px;
 }

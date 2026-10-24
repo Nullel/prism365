@@ -1,8 +1,8 @@
+import { resolve } from "node:path";
+import { MemoryStateStore, PostgresStateStore } from "@prism365/storage";
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { type ModuleRuntime, openModuleRuntime } from "./modules.ts";
-import { MemoryStateStore, PostgresStateStore } from "@prism365/storage";
-import { resolve } from "node:path";
 
 // Last resort only: collector-facing promises are already marked handled. A stray rejection is
 // logged without its message (which could carry tenant or provider details) instead of ending

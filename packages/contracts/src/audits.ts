@@ -63,7 +63,7 @@ export const auditDefinitionSchema = z.object({
   category: text,
   // What one row is, for counts: "account", "accounts".
   subject: z.object({ one: text, many: text }),
-  columns: z.array(auditColumnSchema).min(1).max(30),
+  columns: z.array(auditColumnSchema).min(1).max(40),
   views: z.array(auditViewSchema).min(1).max(20),
   defaultView: slug,
   defaultSort: z.object({ column: columnKey, direction: z.enum(["asc", "desc"]) }),
@@ -74,6 +74,10 @@ export const auditDefinitionSchema = z.object({
   requirements: z.array(text).max(10),
   // The audit only covers the account domains the administrator chose (see auditScopeSchema).
   scoped: z.boolean().default(false),
+  // Its rows are accounts an action tool could act on, so its results can be exported as a
+  // handoff (docs/handoff.md). Off unless the audit says so: a person column alone (a device's
+  // owner) does not make a row an account to act on.
+  handoff: z.boolean().default(false),
 });
 export type AuditDefinition = z.infer<typeof auditDefinitionSchema>;
 export type AuditDefinitionInput = z.input<typeof auditDefinitionSchema>;
@@ -114,6 +118,10 @@ export type AuditSummaryItem = z.infer<typeof auditSummaryItemSchema>;
 export const auditRunStatusSchema = z.enum(["running", "succeeded", "failed"]);
 export type AuditRunStatus = z.infer<typeof auditRunStatusSchema>;
 
+// How a run was started: by an administrator, or by the audit's schedule (docs/audits.md).
+export const auditRunTriggerSchema = z.enum(["manual", "schedule"]);
+export type AuditRunTrigger = z.infer<typeof auditRunTriggerSchema>;
+
 export const auditRunSchema = z.object({
   id: z.uuid(),
   auditId: auditIdSchema,
@@ -135,6 +143,8 @@ export const auditRunSchema = z.object({
     .array(z.object({ domain: z.string().max(253), accounts: z.number().int().nonnegative() }))
     .max(1_000)
     .default([]),
+  // Runs stored before schedules existed were all started by hand.
+  trigger: auditRunTriggerSchema.default("manual"),
 });
 export type AuditRun = z.infer<typeof auditRunSchema>;
 
@@ -199,7 +209,13 @@ export const auditSettingsSchema = z.object({
 export type AuditSettings = z.infer<typeof auditSettingsSchema>;
 
 export const auditRunListSchema = z.object({ runs: z.array(auditRunSchema) });
-export const auditStartSchema = z.object({ run: auditRunSchema, started: z.boolean() });
+export const auditStartSchema = z.object({
+  run: auditRunSchema,
+  started: z.boolean(),
+  // Said when a request joined a run already in progress that may end differently than one the
+  // requester started, such as a scheduled run that stops when collection stops.
+  message: text.nullable().default(null),
+});
 
 // Filtering, sorting and export, shared by the page and the CSV route so both show the same rows.
 

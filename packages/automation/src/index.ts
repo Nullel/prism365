@@ -1,14 +1,14 @@
 import {
-  automationManifestSchema,
-  automationPreviewRequestSchema,
-  automationPreviewSchema,
-  automationWorkflowListSchema,
-  automationWorkflowSummarySchema,
   type AutomationCapability,
   type AutomationManifest,
   type AutomationPreview,
   type AutomationPreviewRequest,
   type AutomationWorkflowSummary,
+  automationManifestSchema,
+  automationPreviewRequestSchema,
+  automationPreviewSchema,
+  automationWorkflowListSchema,
+  automationWorkflowSummarySchema,
 } from "@prism365/contracts";
 
 type RegisteredWorkflow = {
@@ -266,10 +266,10 @@ export function createAutomationPreview(
   });
 }
 
-export { permissionByCapability };
-export { inspectAutomationPackage, summarizeAutomationPackage } from "./registry.ts";
 export type {
+  AutomationPackageFile,
   AutomationPackageRecord,
   AutomationPackageSummary,
-  AutomationPackageFile,
 } from "./registry.ts";
+export { inspectAutomationPackage, summarizeAutomationPackage } from "./registry.ts";
+export { permissionByCapability };

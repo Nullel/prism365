@@ -8,6 +8,7 @@ import {
   displayDate,
   inactivityTags,
   licenseNamesNote,
+  licenseSourcesOf,
   licensesOf,
   personCell,
   readLicenseNames,
@@ -30,13 +31,10 @@ import {
 const RECLAIM_AFTER_DAYS = 30;
 
 function assignment(user: DirectoryUser): { label: string; byGroup: boolean } {
-  const states = user.licenseAssignmentStates;
-  if (!states) return { label: "Unknown", byGroup: false };
-  const held = new Set(user.assignedLicenses);
-  const relevant = states.filter((state) => state.skuId && held.has(state.skuId));
-  const byGroup = relevant.some((state) => Boolean(state.assignedByGroup));
-  const direct = relevant.some((state) => !state.assignedByGroup);
-  if (byGroup && direct) return { label: "Directly and by group", byGroup };
+  const sources = licenseSourcesOf(user);
+  if (!sources.known) return { label: "Unknown", byGroup: false };
+  const byGroup = sources.groupIds.length > 0;
+  if (byGroup && sources.direct) return { label: "Directly and by group", byGroup };
   if (byGroup) return { label: "By group", byGroup };
   return { label: "Directly", byGroup };
 }
@@ -45,6 +43,8 @@ function assignment(user: DirectoryUser): { label: string; byGroup: boolean } {
 export const licenseReclaimAudit: Audit = {
   definition: {
     id: "licenses.reclaim",
+    // Accounts an action tool could act on (docs/handoff.md).
+    handoff: true,
     version: 3,
     title: "Licenses to reclaim",
     description:

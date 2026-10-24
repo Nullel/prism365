@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type Audit,
   finishRun,
   getRun,
   guestAccountsAudit,
@@ -122,6 +123,7 @@ beforeAll(async () => {
   const registry = createModuleRegistry(config);
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   const scheduler = new ModuleScheduler({
+    enabledPacks: config.enabledFeatures,
     registry,
     database,
     graphClient: (getAccessToken) => new GraphHttpClient({ getAccessToken }),
@@ -182,7 +184,26 @@ describe("audits API", () => {
       "mfa.registration",
       "guests.review",
       "licenses.capacity",
+      "identity.conditional-access",
+      "identity.risky-users",
+      "devices.managed",
+      "apps.consents",
+      "usage.m365-apps",
+      "accounts.activity",
     ]);
+    // Reads this installation has not enabled are named, so the page says what to add.
+    expect(by("devices.managed")).toMatchObject({
+      state: "not_enabled",
+      enable: ["devices.intune.read"],
+    });
+    expect(by("apps.consents")).toMatchObject({
+      state: "not_enabled",
+      enable: ["directory.applications.read"],
+    });
+    expect(by("usage.m365-apps")).toMatchObject({
+      state: "not_enabled",
+      enable: ["reports.usage.read"],
+    });
     expect(by("accounts.inactive")).toEqual({
       state: "missing_permission",
       missing: ["AuditLog.Read.All"],
@@ -203,6 +224,24 @@ describe("audits API", () => {
     expect(missing.statusCode).toBe(403);
     expect(missing.json()).toMatchObject({ error: "missing_consent" });
     expect((await run("licenses.capacity")).json()).toMatchObject({ error: "feature_not_enabled" });
+  });
+
+  it("does not let a permission another enabled pack carries open an audit whose own pack is off", async () => {
+    // The full session granted AuditLog.Read.All for the enabled sign-in pack; the MFA audit's
+    // own pack (reports.authentication-methods.read) is not enabled here.
+    const catalog = (await get("/v1/audits")).json().audits as {
+      definition: { id: string };
+      availability: { state: string; enable: string[] };
+    }[];
+    expect(
+      catalog.find((entry) => entry.definition.id === "mfa.registration")?.availability,
+    ).toMatchObject({
+      state: "not_enabled",
+      enable: ["reports.authentication-methods.read"],
+    });
+    const refused = await run("mfa.registration");
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ error: "feature_not_enabled" });
   });
 
   it("runs an audit once at a time, then keeps its result", async () => {
@@ -314,6 +353,7 @@ describe("audit runner", () => {
         actor,
         audit: licenseReclaimAudit,
         client: client(),
+        packs: [...licenseReclaimAudit.packs, ...licenseReclaimAudit.optionalPacks],
         granted: ["User.Read.All", "AuditLog.Read.All"],
       });
       await fresh.idle();
@@ -336,6 +376,7 @@ describe("audit runner", () => {
       actor,
       audit: guestAccountsAudit,
       client: client(),
+      packs: [...guestAccountsAudit.packs, ...guestAccountsAudit.optionalPacks],
       granted: ["User.Read.All", "AuditLog.Read.All"],
     });
     await closing.close();
@@ -343,6 +384,29 @@ describe("audit runner", () => {
     gate = null;
     const stopped = await database.tenant(tenantId, (sql) => getRun(sql, tenantId, runId));
     expect(stopped).toMatchObject({ status: "failed", error: { code: "interrupted" } });
+  });
+
+  it("tells an audit which Microsoft tenant the session belongs to", async () => {
+    let seen: string | undefined;
+    const probe: Audit = {
+      ...guestAccountsAudit,
+      definition: { ...guestAccountsAudit.definition, id: "probe.tenant" },
+      async run(context) {
+        seen = context.tenantId;
+        return { rows: [], summary: [], notes: [], complete: true };
+      },
+    };
+    const fresh = new AuditRunner({ database });
+    await fresh.start({
+      tenantId,
+      actor,
+      audit: probe,
+      client: client(),
+      packs: probe.packs,
+      granted: [],
+    });
+    await fresh.idle();
+    expect(seen).toBe(tenantId);
   });
 });
 
@@ -442,6 +506,7 @@ describe("audit review fixes", () => {
         getAccessToken: async () => "synthetic",
         fetchImplementation: endless,
       }),
+      packs: [...guestAccountsAudit.packs, ...guestAccountsAudit.optionalPacks],
       granted: ["User.Read.All"],
     });
     await quick.idle();

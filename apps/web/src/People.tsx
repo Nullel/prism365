@@ -2,20 +2,22 @@ import {
   findingSchema,
   licenseName,
   type PersonDirectory,
-  personDirectorySchema,
   type PersonList,
   type PersonListItem,
+  type PersonRecord,
+  type PersonSignin,
+  type PrismSession,
+  personDirectorySchema,
   personListSchema,
   personLookupSchema,
-  type PersonRecord,
   personRecordSchema,
-  type PersonSignin,
   personSigninPageSchema,
-  type PrismSession,
 } from "@prism365/contracts";
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { AccountName, day, FindingItem, number, place, post, readJson, when } from "./common.tsx";
 import { ShieldIcon } from "./icons.tsx";
+import { PersonChanges } from "./PersonChanges.tsx";
+import { PersonReceipts } from "./PersonReceipts.tsx";
 
 // People: every account that signs in, and one page per account with everything Prism365 knows
 // about it. Stored sign-ins come from the sign-in audit module; the directory, manager, last
@@ -780,6 +782,9 @@ function PersonProfile({
           </section>
         </>
       ) : null}
+
+      <PersonChanges session={session} userId={userId} />
+      <PersonReceipts session={session} userId={userId} principal={upn} />
 
       <section className="panel signin-table person-grid person-history">
         <div className="panel__header">

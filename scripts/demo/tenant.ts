@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { demoGraphExtensions } from "./graph/index.ts";
 
 // A synthetic Microsoft Graph for the portfolio demo.
 //
@@ -2014,6 +2015,12 @@ function issueFilter(filter: string | null) {
   return () => true;
 }
 
+// Microsoft's usage report download host (ADR-0010). Microsoft answers a usage report with 302 Found
+// and a short-lived, pre-authenticated link here; extensions hand a report body to tools.download.
+const REPORT_DOWNLOAD_HOST = "reports.office.com";
+const REPORT_DOWNLOAD_PATH = "/data/download/";
+const PENDING_DOWNLOADS = 32;
+
 export function createSyntheticGraph(options: { now: Date }): typeof fetch {
   const tenant = buildSyntheticTenant(options.now);
   const communications = buildCommunications(options.now.getTime());
@@ -2041,8 +2048,42 @@ export function createSyntheticGraph(options: { now: Date }): typeof fetch {
       };
     });
 
-  return (async (input: RequestInfo | URL) => {
+  // Report bodies waiting to be downloaded, by token. A link works once, like Microsoft's
+  // short-lived ones, and only the newest few are kept.
+  const downloads = new Map<string, string>();
+  let issued = 0;
+  const download = (body: string) => {
+    issued += 1;
+    const token = createHash("sha256")
+      .update(`download:${issued}`)
+      .digest("base64url")
+      .slice(0, 32);
+    downloads.set(token, body);
+    for (const stale of downloads.keys()) {
+      if (downloads.size <= PENDING_DOWNLOADS) break;
+      downloads.delete(stale);
+    }
+    return new Response(null, {
+      status: 302,
+      headers: { Location: `https://${REPORT_DOWNLOAD_HOST}${REPORT_DOWNLOAD_PATH}${token}` },
+    });
+  };
+  const serveDownload = (url: URL, init: RequestInit | undefined) => {
+    // Microsoft's links need no Authorization header. One sent here would mean the client leaked
+    // the Graph token to the download host, so the synthetic host refuses it outright.
+    if (new Headers(init?.headers).has("Authorization")) return new Response(null, { status: 400 });
+    const token = url.pathname.startsWith(REPORT_DOWNLOAD_PATH)
+      ? url.pathname.slice(REPORT_DOWNLOAD_PATH.length)
+      : "";
+    const body = downloads.get(token);
+    if (url.protocol !== "https:" || body === undefined) return new Response(null, { status: 404 });
+    downloads.delete(token);
+    return new Response(body, { headers: { "Content-Type": "application/octet-stream" } });
+  };
+
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
+    if (url.hostname === REPORT_DOWNLOAD_HOST) return serveDownload(url, init);
     if (url.hostname !== "graph.microsoft.com" || !url.pathname.startsWith("/v1.0/"))
       return notFound();
     const path = decodeURIComponent(url.pathname.slice("/v1.0/".length)).replace(/\/$/, "");
@@ -2069,7 +2110,7 @@ export function createSyntheticGraph(options: { now: Date }): typeof fetch {
           : notFound();
       }
       if (rest === "/licenseDetails") return page(url, licenseDetails(user), select);
-      return notFound();
+      // Anything else under a user (their memberships, for one) is a feature's extension to serve.
     }
     if (path === "subscribedSkus") return page(url, tenant.skus, null);
     if (path === "reports/authenticationMethods/userRegistrationDetails")
@@ -2084,6 +2125,10 @@ export function createSyntheticGraph(options: { now: Date }): typeof fetch {
       );
     if (path === "admin/serviceAnnouncement/messages")
       return page(url, communications.messages, null);
+    for (const extension of demoGraphExtensions) {
+      const response = extension({ url, path, select, tenant }, { json, page, notFound, download });
+      if (response) return response;
+    }
     return notFound();
   }) as typeof fetch;
 }

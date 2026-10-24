@@ -32,8 +32,12 @@ stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator'
 
 Checks you run when you need them: inactive accounts by days since the last
 successful sign-in (7, 30, 60, 90, 120, 180 and 365 days, or never), licenses on disabled or
-inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts and
-license capacity. Results are kept, filterable, sortable and exportable as CSV.
+inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts,
+license capacity, Conditional Access policies (legacy authentication, MFA for administrators,
+exclusions), risky users, managed devices, app consents (high-risk and unverified apps),
+Microsoft 365 app usage and account activity (is an account really unused, and does anyone still
+open its files). Results are kept, filterable, sortable and exportable as CSV. Each audit
+runs only when its own read pack is enabled, and says what it needs when it is not.
 
 ![The license capacity audit: products with no seats left, more assigned than owned, or an expired subscription](docs/images/license-capacity.jpg)
 
@@ -49,6 +53,13 @@ says.
 The Graph client refuses every write, and every permission Prism365 asks
 for is tied to one feature.
 
+### Prism365 and action tools
+
+Prism365 sees; a separate tool acts. From an audit's results you export a handoff, the list of
+accounts to act on with the reasons, for your offboarding or lifecycle tool. The receipt that
+tool sends back is imported and shown on each person's page as the tool's report
+([formats](docs/handoff.md)); Prism365 never calls the tool and shares no credentials with it.
+
 ## How it is built
 
 TypeScript throughout: a Fastify API, a React and Vite front end, and zod contracts shared by
@@ -60,7 +71,8 @@ Some of the parts I care most about:
   query is checked on PostgreSQL's own parse tree (libpg-query) against a per-call table
   allowlist and a function allowlist, so quoting or comments cannot sneak a statement past it.
 - The Microsoft Graph boundary allows only the endpoints each permission pack declares, only
-  read methods, no redirects, bounded response sizes and times, and honours `Retry-After`.
+  read methods, bounded response sizes and times, and honours `Retry-After`. It follows no
+  redirect except Microsoft's usage report download, and sends that one no token (ADR-0010).
 - Sign-in collection is built never to lose data silently. Two saved positions follow the log:
   one reads new sign-ins, the other re-reads an hour behind for records Microsoft publishes
   late. Windows shrink when Microsoft is slow or busy, a stopped run is detected and recovered,
@@ -83,13 +95,22 @@ npm install
 npm run demo
 ```
 
-That builds the demo described above and serves it at `http://localhost:4173`. To connect a tenant, follow
-[Setup](docs/SETUP.md): it covers the app registration, the Docker install with PostgreSQL and
-HTTPS, and each feature's permissions.
+That builds the demo described above and serves it at `http://localhost:4173`.
+
+To connect your own tenant, one command registers the Entra app, makes its certificate and
+writes `.env`; it shows its plan and asks before changing anything:
+
+```bash
+npm run setup -- --tenant contoso.onmicrosoft.com
+```
+
+Then open the admin consent link it prints, and start the Docker install with
+`scripts/docker-live.sh init` and `scripts/docker-live.sh up`. [Setup](docs/SETUP.md) covers
+each step, the manual path, and what each feature needs.
 
 ## Documentation
 
-[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Sign-in audit](docs/modules/signins-audit.md),
+[Setup](docs/SETUP.md), [Audits](docs/audits.md), [Handoffs](docs/handoff.md), [Sign-in audit](docs/modules/signins-audit.md),
 [Service health](docs/modules/service-health.md), [Module runtime](docs/MODULES.md),
 [Permissions](docs/PERMISSIONS.md), [Privacy](docs/PRIVACY.md), [Architecture](docs/ARCHITECTURE.md),
 [Roadmap](docs/ROADMAP.md), and the decision records in [docs/decisions](docs/decisions).

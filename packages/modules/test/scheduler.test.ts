@@ -51,6 +51,7 @@ function build(
   options: { timeoutMilliseconds?: number; sinkFails?: boolean; catchUpDelay?: number } = {},
 ) {
   scheduler = new ModuleScheduler({
+    enabledPacks: registry.list().flatMap((module) => [...module.packs]),
     registry,
     database,
     graphClient: graph.factory,
@@ -104,6 +105,30 @@ describe("module scheduler", () => {
     await scheduler.tick();
     expect(calls).toBe(0);
     expect(scheduler.status().state).toBe("stopped");
+  });
+
+  it("never runs a module whose pack is not enabled, even when its permission is granted", async () => {
+    let calls = 0;
+    behavior.run = async () => {
+      calls += 1;
+      return undefined;
+    };
+    // The probe module's permission (User.Read.All) is granted, but its pack is not enabled: a
+    // permission shared with an enabled pack must not switch the module on.
+    scheduler = new ModuleScheduler({
+      enabledPacks: ["tenant.licenses.read"],
+      registry,
+      database,
+      graphClient: graph.factory,
+      now: () => clock,
+      onEvent: (event) => events.push(event),
+    });
+    scheduler.bind(credential());
+    await scheduler.tick();
+    expect(calls).toBe(0);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "module.skipped", missing: ["directory.users.read"] }),
+    );
   });
 
   it("runs each collector on its cadence and records the run", async () => {

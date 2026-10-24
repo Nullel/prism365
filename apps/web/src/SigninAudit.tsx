@@ -1,8 +1,8 @@
 import {
   type Finding,
+  type FindingState,
   findingListSchema,
   findingSchema,
-  type FindingState,
   type ModuleList,
   moduleListSchema,
   type PrismSession,

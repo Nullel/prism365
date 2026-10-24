@@ -1,24 +1,39 @@
 import type { PrismSession } from "@prism365/contracts";
 import { LockIcon, ShieldIcon } from "./icons.tsx";
 
-const featureDescriptions = [
+// Every read pack an installation can enable (ENABLED_READ_FEATURES, apps/api/src/config.ts), in
+// the API's order, with the label and permission of its entry in packages/graph's catalog. A test
+// keeps this list in step with both.
+export const readPacks: readonly { id: string; label: string; scope: string; detail: string }[] = [
   {
     id: "directory.users.read",
-    label: "Directory profiles",
+    label: "User inventory",
     scope: "User.Read.All",
-    detail: "Look up a user’s selected directory fields.",
+    detail: "Selected directory fields for each account, its manager and last sign-in.",
   },
   {
     id: "user.licenses.read",
     label: "User license details",
     scope: "LicenseAssignment.Read.All",
-    detail: "Show the licenses and service plans assigned to a user.",
+    detail: "The licenses and service plans assigned to a user.",
+  },
+  {
+    id: "tenant.licenses.read",
+    label: "Tenant license inventory",
+    scope: "LicenseAssignment.Read.All",
+    detail: "Products and seats the tenant has bought, for the license capacity audit.",
   },
   {
     id: "audit.signins.read",
-    label: "Sign-in evidence",
+    label: "Sign-in logs",
     scope: "AuditLog.Read.All",
-    detail: "Read recent sign-ins, subject to role and license availability.",
+    detail: "Sign-ins for the sign-in audit and the People view, subject to role and license.",
+  },
+  {
+    id: "reports.authentication-methods.read",
+    label: "Authentication method registration",
+    scope: "AuditLog.Read.All",
+    detail: "Which sign-in methods each account has registered, for the MFA audit.",
   },
   {
     id: "service.health.read",
@@ -31,6 +46,54 @@ const featureDescriptions = [
     label: "Message center",
     scope: "ServiceMessage.Read.All",
     detail: "Planned changes, retirements and actions Microsoft asks administrators to take.",
+  },
+  {
+    id: "audit.directory.read",
+    label: "Directory audit log",
+    scope: "AuditLog.Read.All",
+    detail: "Who changed which user, group, role, app or policy, for the change feed.",
+  },
+  {
+    id: "identity.conditional-access.read",
+    label: "Conditional Access policies",
+    scope: "Policy.Read.All",
+    detail: "Conditional Access policy definitions.",
+  },
+  {
+    id: "identity.risk.read",
+    label: "Identity Protection risk",
+    scope: "IdentityRiskyUser.Read.All",
+    detail: "Risky-user detections. Microsoft needs Entra ID P2 for them.",
+  },
+  {
+    id: "devices.intune.read",
+    label: "Intune managed devices",
+    scope: "DeviceManagementManagedDevices.Read.All",
+    detail: "Managed devices and their compliance state.",
+  },
+  {
+    id: "directory.applications.read",
+    label: "Enterprise applications",
+    scope: "Application.Read.All",
+    detail: "Enterprise applications and the application permissions granted to them.",
+  },
+  {
+    id: "directory.permission-grants.read",
+    label: "Delegated permission grants",
+    scope: "Directory.Read.All",
+    detail: "Which delegated permissions users and administrators consented to, per application.",
+  },
+  {
+    id: "reports.usage.read",
+    label: "Microsoft 365 usage reports",
+    scope: "Reports.Read.All",
+    detail: "Per-user Microsoft 365 apps usage.",
+  },
+  {
+    id: "reports.settings.read",
+    label: "Usage-report privacy setting",
+    scope: "ReportSettings.Read.All",
+    detail: "Whether the tenant conceals names in usage reports.",
   },
 ];
 
@@ -81,6 +144,21 @@ export function TenantConnection({
     );
   }
 
+  // The enabled packs first, in the API's order, including any this page has no description for.
+  const known = new Set(readPacks.map((pack) => pack.id));
+  const enabledPacks = [
+    ...readPacks.filter((pack) => session.enabledFeatures.includes(pack.id)),
+    ...session.enabledFeatures
+      .filter((id) => !known.has(id))
+      .map((id) => ({
+        id,
+        label: id,
+        scope: "",
+        detail: "A read pack this page does not describe yet.",
+      })),
+  ];
+  const otherPacks = readPacks.filter((pack) => !session.enabledFeatures.includes(pack.id));
+
   return (
     <section className="tenant-connection" aria-labelledby="connection-title">
       <div className="tenant-connection__header">
@@ -125,7 +203,8 @@ export function TenantConnection({
           <strong>Complete installation setup</strong>
           <p>
             The operator must configure a work or school tenant, its application registration, and
-            the exact return address before Microsoft sign-in can start.
+            the exact return address before Microsoft sign-in can start. On the server,{" "}
+            <code>npm run setup</code> does all of it (docs/SETUP.md).
           </p>
           <ul>
             {session.missingConfiguration.map((item) => (
@@ -138,31 +217,56 @@ export function TenantConnection({
           </p>
         </div>
       ) : null}
-      <div className="connection-features">
-        {featureDescriptions.map((feature) => {
-          const enabled = session.enabledFeatures.includes(feature.id);
-          return (
-            <article key={feature.id}>
-              <strong>{feature.label}</strong>
-              <p>{feature.detail}</p>
-              <code>{feature.scope}</code>
-              <span className="source-label">
-                {enabled ? "Enabled in this installation" : "Not enabled in this installation"}
-              </span>
-              {enabled && session.configured && session.authenticated ? (
-                <a href={`/api/v1/auth/login?feature=${encodeURIComponent(feature.id)}`}>
-                  Review Microsoft access
-                </a>
-              ) : null}
-            </article>
-          );
-        })}
-      </div>
+      {enabledPacks.length > 0 ? (
+        <div className="connection-features">
+          {enabledPacks.map((pack) => (
+            <PackCard key={pack.id} pack={pack} enabled session={session} />
+          ))}
+        </div>
+      ) : (
+        <p className="connection-none">No read packs are enabled in this installation.</p>
+      )}
+      {otherPacks.length > 0 ? (
+        <details className="connection-more">
+          <summary>Read packs this installation has not enabled ({otherPacks.length})</summary>
+          <div className="connection-features">
+            {otherPacks.map((pack) => (
+              <PackCard key={pack.id} pack={pack} enabled={false} session={session} />
+            ))}
+          </div>
+        </details>
+      ) : null}
       <p className="connection-footnote">
         Microsoft access also depends on administrator roles, licenses, and service availability.
         Each source reports its own access result. This connection grants no administration write
         actions.
       </p>
     </section>
+  );
+}
+
+function PackCard({
+  pack,
+  enabled,
+  session,
+}: {
+  pack: (typeof readPacks)[number];
+  enabled: boolean;
+  session: PrismSession;
+}) {
+  return (
+    <article>
+      <strong>{pack.label}</strong>
+      <p>{pack.detail}</p>
+      {pack.scope ? <code>{pack.scope}</code> : null}
+      <span className="source-label">
+        {enabled ? "Enabled in this installation" : "Not enabled in this installation"}
+      </span>
+      {enabled && session.configured && session.authenticated ? (
+        <a href={`/api/v1/auth/login?feature=${encodeURIComponent(pack.id)}`}>
+          Review Microsoft access
+        </a>
+      ) : null}
+    </article>
   );
 }

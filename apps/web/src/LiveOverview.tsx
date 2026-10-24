@@ -4,15 +4,15 @@ import {
   type ModuleList,
   moduleListSchema,
   type PersonList,
-  personListSchema,
   type PrismSession,
+  personListSchema,
   type SigninSummary,
   signinSummarySchema,
 } from "@prism365/contracts";
 import { useCallback, useEffect, useState } from "react";
 import type { WorkspaceView } from "./App.tsx";
-import { number, readJson, when } from "./common.tsx";
 import { AdminAttention } from "./Attention.tsx";
+import { number, readJson, when } from "./common.tsx";
 import { ServiceHealthPanel, useServiceHealth } from "./ServiceHealth.tsx";
 import { runLine } from "./SigninAudit.tsx";
 

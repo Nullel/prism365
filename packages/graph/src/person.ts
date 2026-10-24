@@ -1,5 +1,8 @@
-import { type PersonDirectory, personDirectorySchema } from "@prism365/contracts";
-import { investigationLicenseSchema } from "@prism365/contracts";
+import {
+  investigationLicenseSchema,
+  type PersonDirectory,
+  personDirectorySchema,
+} from "@prism365/contracts";
 import { z } from "zod";
 import { type GraphHttpClient, GraphRequestError } from "./client.ts";
 
@@ -107,6 +110,12 @@ const providerActivity = z.object({
 
 export type PersonKey = { userId: string } | { userPrincipalName: string };
 
+// Microsoft does not allow "/", "\" or "?" in a user principal name, and the Graph client refuses a
+// user path that encodes them, so a name holding one is answered as not found without a request.
+export function principalNameCanExist(name: string): boolean {
+  return !/[/\\?]/.test(name);
+}
+
 function userPath(key: PersonKey): string {
   if ("userId" in key) return `users/${encodeURIComponent(key.userId)}`;
   // The OData key form also handles principal names that start with '$'.
@@ -131,6 +140,12 @@ export async function readPersonDirectory(options: {
       ...empty,
     });
 
+  if ("userPrincipalName" in options.key && !principalNameCanExist(options.key.userPrincipalName))
+    return personDirectorySchema.parse({
+      state: "notFound",
+      message: "This account is not in the directory any more. Its stored sign-ins remain.",
+      ...empty,
+    });
   let profile: z.infer<typeof providerProfile>;
   try {
     profile = await options.client.request(
@@ -230,6 +245,7 @@ export async function lookupPersonId(options: {
   userPrincipalName: string;
   client: GraphHttpClient;
 }): Promise<string | null> {
+  if (!principalNameCanExist(options.userPrincipalName)) return null;
   try {
     const user = await options.client.request(
       `${userPath({ userPrincipalName: options.userPrincipalName })}?$select=id`,

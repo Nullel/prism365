@@ -1,8 +1,8 @@
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AccountName } from "../src/common.tsx";
 import { CopyButton, copyText } from "../src/CopyButton.tsx";
+import { AccountName } from "../src/common.tsx";
 
 afterEach(() => {
   vi.unstubAllGlobals();
