@@ -369,13 +369,20 @@ describe("scheduled audits in the catalog and history", () => {
       }),
     );
 
-  it("tags an audit that runs on its own", () => {
+  it("labels an audit by how often it runs on its own", () => {
     expect(render({ "accounts.inactive": "daily" })).toContain(
-      '<span class="person-tag audit-item__tag">Daily</span>',
+      '<span class="person-tag">Daily</span>',
     );
-    expect(render({ "accounts.inactive": "weekly" })).toContain(">Weekly</span>");
-    expect(render({ "accounts.inactive": "off" })).not.toContain("audit-item__tag");
-    expect(render(null)).not.toContain("audit-item__tag");
+    expect(render({ "accounts.inactive": "weekly" })).toContain(
+      '<span class="person-tag">Weekly</span>',
+    );
+    expect(render({ "accounts.inactive": "off" })).toContain(
+      '<span class="person-muted">Off</span>',
+    );
+    expect(render({ "accounts.inactive": "off" })).not.toContain("person-tag");
+    // Before the schedule has loaded, nothing is claimed.
+    expect(render(null)).not.toContain(">Off<");
+    expect(render(null)).not.toContain("person-tag");
     expect(scheduleTag(undefined)).toBeNull();
   });
 

@@ -84,7 +84,10 @@ const navGroups: { label: string; items: NavItem[] }[] = [
 ];
 
 const pageCopy: Record<WorkspaceView, { title: string; description: string }> = {
-  overview: { title: "Overview", description: "What needs attention across the tenant right now." },
+  overview: {
+    title: "Overview",
+    description: "Whether anything needs you right now, across findings, audits and Microsoft.",
+  },
   week: {
     title: "This week",
     description:
@@ -101,8 +104,7 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
   },
   audits: {
     title: "Audits",
-    description:
-      "Checks you run against the tenant when you need them, or on a schedule: accounts, licenses, sign-in security, roles, devices, apps, groups and mailboxes.",
+    description: "Every check you can run against the tenant, with the result of its latest run.",
   },
   signins: {
     title: "Sign-in audit",
