@@ -20,6 +20,7 @@ import {
   startHistory,
 } from "../src/Changes.tsx";
 import { PersonChangeList, PersonChanges } from "../src/PersonChanges.tsx";
+import { at, expectSkeleton, relativeCell, severityDot } from "./markup.ts";
 
 // Synthetic people, apps and changes only.
 
@@ -209,7 +210,9 @@ describe("directory changes page", () => {
       createElement(DirectoryChanges, { session: session(), onOpenPerson: () => {} }),
     );
     expect(html).toContain("Flagged changes");
-    expect(html).toContain("Loading…");
+    expect(html).toContain("Loading changes");
+    expect(html).toContain("skeleton__row");
+    expect(html).not.toContain("Loading…");
   });
 
   it("puts flagged changes first, then the feed by day, with expandable values", () => {
@@ -388,5 +391,82 @@ describe("the page's address", () => {
     const { parseRoute, routeHash } = await import("../src/App.tsx");
     expect(parseRoute("#/changes")).toEqual({ view: "changes", person: null, audit: null });
     expect(routeHash({ view: "changes", person: null, audit: null })).toBe("#/changes");
+  });
+});
+
+describe("the page speaks the shared visual language", () => {
+  const NOW = "2026-10-22T18:00:00.000Z";
+  const succeeded = {
+    status: "succeeded",
+    credentialKind: "delegated",
+    startedAt: "2026-10-22T17:55:00.000Z",
+    finishedAt: "2026-10-22T17:55:20.000Z",
+    fetched: 40,
+    inserted: 3,
+    findings: 0,
+    skipped: 0,
+    errorCategory: null,
+  };
+  const html = at(NOW, () => view({ modules: modules(succeeded) }));
+
+  it("shows when each change happened as words, with the exact moment on hover", () => {
+    expect(html).toMatch(relativeCell("2026-10-22T15:30:00.000Z", "2 h ago"));
+    expect(html).toMatch(relativeCell("2026-10-22T09:05:00.000Z", "8 h ago"));
+    expect(html).toMatch(relativeCell("2026-10-20T12:00:00.000Z", "2 days ago"));
+    // The person page lists the same rows, in the same words.
+    const person = at(NOW, () =>
+      renderToStaticMarkup(
+        createElement(PersonChangeList, {
+          page: {
+            items: [
+              {
+                ...change("p-1", "2026-10-22T15:30:00.000Z"),
+                involvement: { actor: true, target: false },
+              },
+            ],
+            next: null,
+          },
+          error: "",
+          busy: false,
+          onMore: () => {},
+        }),
+      ),
+    );
+    expect(person).toMatch(relativeCell("2026-10-22T15:30:00.000Z", "2 h ago"));
+  });
+
+  it("says when the last run started and when collection last read, in words", () => {
+    expect(html).toMatch(
+      /Last run <time dateTime="2026-10-22T17:55:00.000Z"[^>]*>5 min ago<\/time>:/,
+    );
+    expect(html).toMatch(
+      /Last collected <time dateTime="2026-10-22T16:00:00.000Z"[^>]*>2 h ago<\/time>\./,
+    );
+    // Where a span is the fact, both ends stay dates.
+    expect(html).toContain("History kept since");
+  });
+
+  it("marks a flagged change's severity with the shared dot, and its dates in words", () => {
+    expect(html).toContain(severityDot("critical", "Critical"));
+    expect(html).not.toContain("finding-severity");
+    expect(html).toMatch(
+      /Last seen <time dateTime="2026-10-22T09:06:00.000Z"[^>]*>8 h ago<\/time>/,
+    );
+    expect(html).toMatch(
+      /First seen <time dateTime="2026-10-22T09:06:00.000Z"[^>]*>8 h ago<\/time>/,
+    );
+  });
+
+  it("draws still skeleton rows while the feed loads, and one plain empty line when nothing is flagged", () => {
+    expectSkeleton(view({ feed: null, items: [] }), "Loading changes");
+    expectSkeleton(
+      renderToStaticMarkup(
+        createElement(PersonChangeList, { page: null, error: "", busy: false, onMore: () => {} }),
+      ),
+      "Loading changes",
+    );
+    const none = view({ findings: [] });
+    expect(none).toContain('<p class="empty-data">Nothing flagged.');
+    expect(none).not.toContain("signin-findings__empty");
   });
 });

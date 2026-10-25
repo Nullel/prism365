@@ -11,7 +11,16 @@ import {
 import { type ReactNode, useEffect, useState } from "react";
 import type { WorkspaceView } from "./App.tsx";
 import { categoryLabel } from "./Changes.tsx";
-import { AccountName, day, number, readJson, when } from "./common.tsx";
+import {
+  AccountName,
+  day,
+  number,
+  RelativeTime,
+  readJson,
+  SeverityDot,
+  SkeletonRows,
+  when,
+} from "./common.tsx";
 
 // This week: what Prism365 stored in the last 1, 7, 14 or 30 days, one panel per kind of thing,
 // each item a link to where it can be looked at. The page reads what collection and the audits
@@ -55,11 +64,16 @@ function open(links: WeekLinks, target: WeekTarget) {
   else links.onNavigate(target.view);
 }
 
-export function coverageText(coverage: ChangeCoverage): string | null {
+export function coverageText(coverage: ChangeCoverage): ReactNode {
   if (coverage.phase === "none" || coverage.from === null) return null;
   if (coverage.phase === "history")
     return `Loading the last 30 days, oldest first. History has reached ${when(coverage.through)}.`;
-  return `History kept since ${day(coverage.from)}. Last collected ${when(coverage.lastCollected)}.`;
+  return (
+    <>
+      History kept since {day(coverage.from)}. Last collected{" "}
+      <RelativeTime value={coverage.lastCollected} />.
+    </>
+  );
 }
 
 const differenceWords: Record<DigestDifference, string> = {
@@ -126,10 +140,6 @@ function Panel({
   );
 }
 
-function Severity({ value }: { value: string }) {
-  return <span className={`finding-severity finding-severity--${value}`}>{value}</span>;
-}
-
 function FindingList({
   findings,
   view,
@@ -143,13 +153,13 @@ function FindingList({
     <ul className="week-list">
       {findings.map((finding) => (
         <li key={finding.id}>
-          <Severity value={finding.severity} />
+          <SeverityDot severity={finding.severity} />
           <div>
             <Link links={links} target={findingTarget(finding, view)}>
               {finding.title}
             </Link>
             <span className="week-sub">
-              {finding.subjectLabel}, first seen {when(finding.firstSeen)}
+              {finding.subjectLabel}, first seen <RelativeTime value={finding.firstSeen} />
             </span>
           </div>
         </li>
@@ -190,9 +200,7 @@ function SignIns({ digest, links }: { digest: Digest; links: WeekLinks }) {
             <ul className="week-counts" aria-label="Opened by severity">
               {opened.map((severity) => (
                 <li key={severity}>
-                  <span className={`finding-severity finding-severity--${severity}`}>
-                    {number.format(section.opened[severity])} {severity}
-                  </span>
+                  <SeverityDot severity={severity} count={section.opened[severity]} />
                 </li>
               ))}
             </ul>
@@ -294,8 +302,8 @@ function Quiet({ digest, links }: { digest: Digest; links: WeekLinks }) {
       ) : null}
       {section.earlier ? (
         <p className="week-sub">
-          Compared with the result from {when(section.earlier.at)}. The audit opens on its 30+ days
-          view.
+          Compared with the result from <RelativeTime value={section.earlier.at} />. The audit opens
+          on its 30+ days view.
         </p>
       ) : null}
     </Panel>
@@ -325,7 +333,7 @@ function Drift({ digest, links }: { digest: Digest; links: WeekLinks }) {
                   {audit.title}
                 </Link>
                 <span className="week-sub">
-                  Compared with the result from {when(audit.from.at)}
+                  Compared with the result from <RelativeTime value={audit.from.at} />
                 </span>
               </div>
               {differenceText(audit.differences) ? (
@@ -399,19 +407,15 @@ function Microsoft({ digest, links }: { digest: Digest; links: WeekLinks }) {
             <ul className="week-list">
               {incidents.open.map((incident) => (
                 <li key={incident.id}>
-                  <Severity value={incident.severity} />
+                  <SeverityDot severity={incident.severity} />
                   <div>
                     <Link links={links} target={notifications}>
                       {incident.title}
                     </Link>
                     <span className="week-sub">
-                      {[
-                        incident.status,
-                        incident.services.join(", "),
-                        `first seen ${when(incident.firstSeen)}`,
-                      ]
-                        .filter(Boolean)
-                        .join(", ")}
+                      {[incident.status, incident.services.join(", ")].filter(Boolean).join(", ")}
+                      {incident.status || incident.services.length > 0 ? ", " : ""}first seen{" "}
+                      <RelativeTime value={incident.firstSeen} />
                     </span>
                   </div>
                 </li>
@@ -453,9 +457,13 @@ function Collection({ digest, links }: { digest: Digest; links: WeekLinks }) {
                 <div>
                   <strong className="overview-list__title">{item.moduleTitle}</strong>
                   <span className="week-sub">
-                    {item.lastSuccess
-                      ? `Last success ${when(item.lastSuccess)}`
-                      : "No success in the last 30 days of run history"}
+                    {item.lastSuccess ? (
+                      <>
+                        Last success <RelativeTime value={item.lastSuccess} />
+                      </>
+                    ) : (
+                      "No success in the last 30 days of run history"
+                    )}
                   </span>
                 </div>
                 {item.lastRun && item.lastRun.status !== "succeeded" ? (
@@ -496,9 +504,14 @@ function Collection({ digest, links }: { digest: Digest; links: WeekLinks }) {
                       </Link>
                       <span className="week-sub">
                         {audit.frequency === "daily" ? "Daily" : "Weekly"}.{" "}
-                        {audit.lastRun
-                          ? `Last ran ${when(audit.lastRun.at)}, ${audit.lastRun.status}.`
-                          : "Has not run yet."}
+                        {audit.lastRun ? (
+                          <>
+                            Last ran <RelativeTime value={audit.lastRun.at} />,{" "}
+                            {audit.lastRun.status}.
+                          </>
+                        ) : (
+                          "Has not run yet."
+                        )}
                       </span>
                     </div>
                   </li>
@@ -559,9 +572,9 @@ export function WeekView(props: WeekViewProps) {
       {digest === null ? (
         // After an error there is nothing coming, so the error is all the page says.
         props.error ? null : (
-          <p className="empty-data" aria-live="polite">
-            Loading…
-          </p>
+          <div aria-live="polite">
+            <SkeletonRows rows={6} label="Loading this week" />
+          </div>
         )
       ) : (
         <>

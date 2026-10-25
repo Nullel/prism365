@@ -10,6 +10,7 @@ import { Alerts } from "./Alerts.tsx";
 import { Notifications } from "./Attention.tsx";
 import { Audits } from "./Audits.tsx";
 import { DirectoryChanges } from "./Changes.tsx";
+import { SeverityDot } from "./common.tsx";
 import { DemoBanner } from "./demo/DemoBanner.tsx";
 import { localDemoDashboard } from "./demo.ts";
 import { Handoffs } from "./Handoffs.tsx";
@@ -85,15 +86,15 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
   },
 ];
 
-const pageCopy: Record<WorkspaceView, { title: string; description: string }> = {
+// One short sentence under each page title: what the page is for, nothing about how it works.
+export const pageCopy: Record<WorkspaceView, { title: string; description: string }> = {
   overview: {
     title: "Overview",
     description: "Whether anything needs you right now, across findings, audits and Microsoft.",
   },
   week: {
     title: "This week",
-    description:
-      "What changed in the last day, week or month: new findings, directory changes, accounts that went quiet, audit numbers that moved and Microsoft deadlines.",
+    description: "What changed in the last day, week or month.",
   },
   notifications: {
     title: "Microsoft updates",
@@ -102,11 +103,11 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
   },
   people: {
     title: "People",
-    description: "Everyone who signs in: where from, on which device, and anything flagged.",
+    description: "Everyone who signs in, and anything flagged about them.",
   },
   audits: {
     title: "Audits",
-    description: "Every check you can run against the tenant, with the result of its latest run.",
+    description: "Every check you can run against the tenant, and its latest result.",
   },
   signins: {
     title: "Sign-in audit",
@@ -115,18 +116,15 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
   },
   changes: {
     title: "Directory changes",
-    description:
-      "Who changed which account, group, role, app or policy, kept for as long as Prism365 runs.",
+    description: "Who changed which account, group, role, app or policy.",
   },
   handoffs: {
     title: "Handoffs",
-    description:
-      "Lists from audits, packaged for the tool that acts on them, and the receipts it sends back.",
+    description: "Audit lists packaged for the action tool, and the receipts it sends back.",
   },
   alerts: {
     title: "Alerts",
-    description:
-      "Where Prism365 sends word of findings, audit numbers and collection problems, so you hear about them without opening it.",
+    description: "Where Prism365 sends word of findings, audit numbers and collection problems.",
   },
   access: {
     title: "Microsoft access",
@@ -722,8 +720,9 @@ export function App() {
                   </div>
                   <SignInChart data={dashboard.signInTrend} />
                   <div className="panel__footer">
-                    <span>
-                      {dashboard.timeWindow} · generated {generatedTime}
+                    <span className="meta-line">
+                      <span>{dashboard.timeWindow}</span>
+                      <span>generated {generatedTime}</span>
                     </span>
                     <span>
                       Counts are operational signals, not measures of employee performance.
@@ -737,7 +736,7 @@ export function App() {
                     <SparkleIcon />
                   </div>
                   <span className="eyebrow">Evidence note</span>
-                  <h2>A quieter window—with one pattern worth reviewing.</h2>
+                  <h2>A quieter window, with one pattern worth reviewing.</h2>
                   <p>
                     Synthetic elevated sign-ins decreased across the selected period. Two
                     legacy-client events remain open.
@@ -745,8 +744,10 @@ export function App() {
                   <div className="insight-card__evidence">
                     <span>Observed fact</span>
                     <strong>7 elevated events on Sunday</strong>
-                    <small>
-                      Demo sign-in events · selected window · coverage may be incomplete
+                    <small className="meta-line">
+                      <span>Demo sign-in events</span>
+                      <span>selected window</span>
+                      <span>coverage may be incomplete</span>
                     </small>
                   </div>
                   <button className="text-button" type="button" disabled>
@@ -773,9 +774,7 @@ export function App() {
                         <div>
                           <div className="activity-row__title">
                             <strong>{activity.title}</strong>
-                            <span className={`severity severity--${activity.severity}`}>
-                              {activity.severity}
-                            </span>
+                            <SeverityDot severity={activity.severity} />
                           </div>
                           <p>{activity.detail}</p>
                           <small>{activity.evidence}</small>

@@ -2,7 +2,16 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { day, RelativeTime, relativeTime, SeverityDot, SkeletonRows } from "../src/common.tsx";
+import type { Finding } from "@prism365/contracts";
+import {
+  day,
+  FindingItem,
+  RelativeTime,
+  relativeTime,
+  SeverityDot,
+  SkeletonRows,
+} from "../src/common.tsx";
+import { at, relativeCell, severityDot } from "./markup.ts";
 
 const NOW = Date.parse("2026-10-24T12:00:00Z");
 const MINUTE = 60_000;
@@ -96,6 +105,75 @@ describe("SkeletonRows", () => {
   });
 });
 
+const finding: Finding = {
+  id: "66666666-6666-4666-8666-666666666666",
+  module: "signins.audit",
+  ruleId: "signins.unfamiliar_signin",
+  ruleVersion: 1,
+  purpose: "security",
+  severity: "high",
+  score: 80,
+  subject: { kind: "person", id: "44444444-4444-4444-8444-444444444444", label: "Rowan Ellis" },
+  title: "A sign-in from a new place",
+  summary: "Rowan Ellis signed in from a place not seen before.",
+  evidence: [
+    {
+      source: "Microsoft Entra sign-in log",
+      ref: "e-1",
+      observedAt: "2026-10-22T09:05:00.000Z",
+      fields: { country: "Norway" },
+    },
+  ],
+  limitations: ["Synthetic."],
+  windowStart: "2026-10-22T09:05:00.000Z",
+  windowEnd: "2026-10-22T09:05:00.000Z",
+  state: "open",
+  occurrences: 1234,
+  firstSeen: "2026-10-20T09:06:00.000Z",
+  lastSeen: "2026-10-22T09:06:00.000Z",
+  stateChangedAt: null,
+};
+
+describe("FindingItem", () => {
+  const draw = (value: Finding = finding) =>
+    at("2026-10-22T12:00:00.000Z", () =>
+      renderToStaticMarkup(
+        createElement(FindingItem, {
+          finding: value,
+          busy: false,
+          onState: () => {},
+          onOpenPerson: () => {},
+        }),
+      ),
+    );
+
+  it("marks severity with the shared dot and name, on every page that lists findings", () => {
+    const html = draw();
+    expect(html).toContain(severityDot("high", "High"));
+    expect(draw({ ...finding, severity: "critical" })).toContain(
+      severityDot("critical", "Critical"),
+    );
+    expect(html).not.toContain("finding-severity");
+  });
+
+  it("says when it was last and first seen in words, in separate facts with no punctuation joining them", () => {
+    const meta = draw().match(/<p class="finding__meta meta-line">(.*?)<\/p>/)?.[1] ?? "";
+    expect(meta).toMatch(/^<span>Last seen /);
+    expect(meta).toMatch(relativeCell("2026-10-22T09:06:00.000Z", "2 h ago"));
+    expect(meta).toMatch(relativeCell("2026-10-20T09:06:00.000Z", "2 days ago"));
+    expect(meta).toContain("<span>First seen ");
+    expect(meta).toContain(`<span>${(1234).toLocaleString()} occurrences</span>`);
+    expect(meta.match(/<span>/g)).toHaveLength(3);
+    expect(meta).not.toMatch(/[\u00b7\u2014]/);
+  });
+
+  it("keeps the evidence inside a finding at its exact moment", () => {
+    const evidence = draw().match(/<dl class="finding-evidence">(.*?)<\/dl>/)?.[1] ?? "";
+    expect(evidence).toContain("<dt>Observed</dt>");
+    expect(evidence).not.toContain("<time");
+  });
+});
+
 // The stylesheet is plain CSS, so the rules the contract states are checked as text: they are
 // easy to lose in an edit and nothing else would notice.
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
@@ -115,14 +193,18 @@ describe("stylesheet", () => {
     expect(rule(":root")).toContain("--sev-low: var(--info);");
   });
 
-  it("uses tabular figures on tile values, details, rows and table cells", () => {
-    for (const selector of [
-      ".overview-tile__value",
-      ".overview-tile__detail",
-      ".sev",
-      ".catalog-table table",
-    ])
-      expect(rule(selector), selector).toContain("font-variant-numeric: tabular-nums;");
+  // Every table cell and metric value on every page gets its figures from this one rule. A page
+  // that wants them adds nothing, and a second declaration would be a per-page copy.
+  it("sets tabular figures once, on the root, and nowhere else", () => {
+    expect(rule(":root")).toContain("font-variant-numeric: tabular-nums;");
+    expect(css.match(/font-variant-numeric/g)).toHaveLength(1);
+  });
+
+  it("separates short facts with one shared hairline, the person header's included", () => {
+    expect(rule(".meta-line")).toContain("display: flex;");
+    const divider = parseRules(css).find((item) => item.selectors.includes(".meta-line > * + *"));
+    expect(divider?.selectors).toContain(".person-header__role > span + span");
+    expect(divider?.body).toContain("border-left: 1px solid var(--border-strong);");
   });
 
   it("keeps loading bars still", () => {

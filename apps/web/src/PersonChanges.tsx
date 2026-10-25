@@ -6,7 +6,7 @@ import {
 } from "@prism365/contracts";
 import { useCallback, useEffect, useState } from "react";
 import { ChangeRow, startHistory } from "./Changes.tsx";
-import { readJson } from "./common.tsx";
+import { readJson, SkeletonRows } from "./common.tsx";
 
 // Directory changes made to or by one person, newest first, on their page. Read from what
 // collection stored; opening the panel writes its own access-ledger entry on the server.
@@ -39,7 +39,7 @@ export function PersonChangeList({
       {error ? (
         <p className="empty-data">{error}</p>
       ) : !page ? (
-        <p className="empty-data">Loading changes…</p>
+        <SkeletonRows rows={4} label="Loading changes" />
       ) : page.items.length === 0 ? (
         <p className="empty-data">
           No directory change involving this person has been collected. {startHistory}
@@ -51,7 +51,6 @@ export function PersonChangeList({
               <ChangeRow
                 key={change.id}
                 change={change}
-                showDate
                 note={<span className="person-muted change-row__note">{involvement(change)}</span>}
               />
             ))}

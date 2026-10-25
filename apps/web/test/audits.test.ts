@@ -22,14 +22,25 @@ import {
   headlineTile,
   lowerFirst,
   ResultTable,
+  RunLine,
   RunScopeTags,
   rowEmails,
   runResult,
+  runLabel,
   runResultParts,
   scopeLimit,
   scopeSummary,
 } from "../src/Audits.tsx";
-import { findAll, hostTree, nestedInteractive, plainClick, textOf } from "./markup.ts";
+import { when } from "../src/common.tsx";
+import {
+  at,
+  findAll,
+  hostTree,
+  nestedInteractive,
+  plainClick,
+  relativeCell,
+  textOf,
+} from "./markup.ts";
 
 const definition = auditDefinitionSchema.parse({
   id: "accounts.inactive",
@@ -928,5 +939,47 @@ describe("audit result table copy buttons", () => {
     expect(html).not.toContain("Copy emails");
     // An email-valued cell still gets its own button.
     expect(html).toContain('aria-label="Copy ops@example.invalid"');
+  });
+});
+
+describe("the audit result header", () => {
+  const NOW = "2026-10-22T12:00:00.000Z";
+  const header = (overrides: Partial<AuditRun> = {}) =>
+    at(NOW, () =>
+      renderToStaticMarkup(
+        createElement(RunLine, {
+          run: {
+            ...run,
+            startedAt: "2026-10-22T11:55:00.000Z",
+            finishedAt: "2026-10-22T11:55:04.000Z",
+            rows: [],
+            ...overrides,
+          } as AuditRunDetail,
+          definition,
+          scope: null,
+        }),
+      ),
+    );
+
+  it("says when it ran in words, with the exact moment on hover, who ran it and for how long", () => {
+    const html = header();
+    expect(html).toMatch(relativeCell("2026-10-22T11:55:00.000Z", "5 min ago"));
+    expect(html).toContain("Ran <time");
+    expect(html).toContain("</time> by Synthetic admin, took 4 s.");
+  });
+
+  it("says the same for a read that is still going, or that failed", () => {
+    const running = header({ status: "running", finishedAt: null });
+    expect(running).toContain("Reading Microsoft, started <time");
+    expect(running).toMatch(relativeCell("2026-10-22T11:55:00.000Z", "5 min ago"));
+    const failed = header({ status: "failed" });
+    expect(failed).toContain("Run failed <time");
+    expect(failed).toMatch(relativeCell("2026-10-22T11:55:00.000Z", "5 min ago"));
+  });
+
+  it("keeps the audit run picker at the exact time, because it tells runs apart", () => {
+    const label = runLabel({ ...run, trigger: "manual" });
+    expect(label).toBe(when(run.startedAt));
+    expect(label).not.toMatch(/ago|just now|yesterday/);
   });
 });

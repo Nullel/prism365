@@ -13,7 +13,7 @@ import {
   receiptItemPageSchema,
 } from "@prism365/contracts";
 import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
-import { number, post, readJson, when } from "./common.tsx";
+import { number, post, RelativeTime, readJson, SkeletonRows, when } from "./common.tsx";
 
 // Handoffs: lists Prism365 exported from audits for the tool that acts on them, and the receipts
 // that tool sent back. Prism365 never calls the tool. A receipt is shown as the tool reported it,
@@ -106,10 +106,15 @@ export function HandoffLimits({ handoff }: { handoff: HandoffRecord }) {
 }
 
 // The handoff a receipt answers, by its audit and when it was exported.
-export function answers(receipt: ReceiptSummary, handoffs: readonly HandoffRecord[]): string {
+export function answers(receipt: ReceiptSummary, handoffs: readonly HandoffRecord[]): ReactNode {
   if (!receipt.handoff) return "No handoff";
   const known = handoffs.find((handoff) => handoff.id === receipt.handoff?.id);
-  return `${known?.auditTitle ?? receipt.handoff.auditId}, exported ${when(receipt.handoff.generatedAt)}`;
+  return (
+    <>
+      {known?.auditTitle ?? receipt.handoff.auditId}, exported{" "}
+      <RelativeTime value={receipt.handoff.generatedAt} />
+    </>
+  );
 }
 
 function HandoffTable({ handoffs }: { handoffs: readonly HandoffRecord[] }) {
@@ -137,7 +142,7 @@ function HandoffTable({ handoffs }: { handoffs: readonly HandoffRecord[] }) {
         {handoffs.map((handoff) => (
           <tr key={handoff.id}>
             <th scope="row" className="nowrap">
-              {when(handoff.generatedAt)}
+              <RelativeTime value={handoff.generatedAt} />
             </th>
             <td className="person-text">
               {handoff.auditTitle}
@@ -193,7 +198,7 @@ function ReceiptTable({
               {receipt.tool.name} <span className="muted-label">{receipt.tool.version}</span>
             </th>
             <td className="nowrap">
-              {when(receipt.performedAt)}
+              <RelativeTime value={receipt.performedAt} />
               <span className="muted-label"> by {receipt.performedBy}</span>
             </td>
             <td className="num">{number.format(receipt.done)}</td>
@@ -318,7 +323,7 @@ function ReceiptDetail({ id }: { id: string }) {
         {error}
       </p>
     );
-  if (!page) return <p className="empty-data">Loading the receipt…</p>;
+  if (!page) return <SkeletonRows rows={4} label="Loading the receipt" />;
   const next = page.next;
   return (
     <ReceiptItemsTable
@@ -408,7 +413,7 @@ export function HandoffsView({
         {list ? (
           <HandoffTable handoffs={list.handoffs} />
         ) : error ? null : (
-          <p className="empty-data">Loading handoffs…</p>
+          <SkeletonRows rows={3} label="Loading handoffs" />
         )}
       </section>
 
@@ -417,7 +422,7 @@ export function HandoffsView({
         {list ? (
           <ReceiptTable list={list} selected={selected} onSelect={onSelect} />
         ) : error ? null : (
-          <p className="empty-data">Loading receipts…</p>
+          <SkeletonRows rows={3} label="Loading receipts" />
         )}
       </section>
 

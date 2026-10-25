@@ -333,8 +333,9 @@ export function AiInvestigation({
           <article className="ai-answer">
             <div className="ai-answer__meta">
               <span>AI-generated interpretation</span>
-              <span>
-                {analysis.evidenceCount} evidence records · {analysis.answer.model}
+              <span className="meta-line">
+                <span>{analysis.evidenceCount} evidence records</span>
+                <span>{analysis.answer.model}</span>
               </span>
             </div>
             <p className="ai-answer__summary">{analysis.answer.summary}</p>

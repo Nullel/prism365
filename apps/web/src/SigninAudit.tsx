@@ -9,10 +9,20 @@ import {
   type SigninSummary,
   signinSummarySchema,
 } from "@prism365/contracts";
-import { useCallback, useEffect, useId, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 import { CanaryPanel } from "./Canary.tsx";
-import { countryName, FindingItem, number, post, readJson, stateLabels, when } from "./common.tsx";
-import { ActivityIcon, ShieldIcon } from "./icons.tsx";
+import {
+  countryName,
+  FindingItem,
+  number,
+  post,
+  RelativeTime,
+  readJson,
+  SkeletonRows,
+  stateLabels,
+  when,
+} from "./common.tsx";
+import { ActivityIcon } from "./icons.tsx";
 
 const MODULE = "signins.audit";
 
@@ -57,26 +67,53 @@ const stopCopy: Record<string, string> = {
 
 type ModuleRunView = NonNullable<ModuleList["modules"][number]["collectors"][number]["lastRun"]>;
 
-export function runLine(run: ModuleRunView | null, collecting = true): string {
+export function runLine(run: ModuleRunView | null, collecting = true): ReactNode {
   if (!run) return "No collection has run yet. The first run loads up to 30 days of history.";
+  const started = <RelativeTime value={run.startedAt} />;
   // Counts are saved when a run ends, so a run in progress has none to show yet.
   if (run.status === "running")
     // A run still marked running while nothing collects was cut off by a restart; the next
     // start marks it abandoned and carries on from its saved place.
-    return collecting
-      ? `Reading sign-ins now (started ${when(run.startedAt)}).`
-      : `The run started ${when(run.startedAt)} was cut short. Start collecting to continue where it left off.`;
+    return collecting ? (
+      <>Reading sign-ins now (started {started}).</>
+    ) : (
+      <>The run started {started} was cut short. Start collecting to continue where it left off.</>
+    );
   if (run.status === "failed")
-    return `Last run ${when(run.startedAt)} failed. ${categoryCopy[run.errorCategory ?? ""] ?? categoryCopy[(run.errorCategory ?? "").split(".")[0] ?? ""] ?? "Check the server log."}`;
+    return (
+      <>
+        Last run {started} failed.{" "}
+        {categoryCopy[run.errorCategory ?? ""] ??
+          categoryCopy[(run.errorCategory ?? "").split(".")[0] ?? ""] ??
+          "Check the server log."}
+      </>
+    );
   if (run.status === "abandoned")
-    return `The run started ${when(run.startedAt)} was cut short by a restart. Collection continues where it left off.`;
+    return (
+      <>
+        The run started {started} was cut short by a restart. Collection continues where it left
+        off.
+      </>
+    );
   const note =
     run.skipped > 0
       ? `, ${number.format(run.skipped)} unreadable and left out`
       : run.status === "partial"
         ? ", but some sign-ins in a busy stretch could not be read (see findings)"
         : "";
-  return `Last run ${when(run.startedAt)}: ${number.format(run.fetched)} records read, ${number.format(run.inserted)} new${note}.`;
+  return (
+    <>
+      Last run {started}: {number.format(run.fetched)} records read, {number.format(run.inserted)}{" "}
+      new{note}.
+    </>
+  );
+}
+
+// What an empty findings list says, once the first read has answered.
+export function findingsEmptyText(filter: FindingState): string {
+  return filter === "open"
+    ? "Nothing open. New findings appear here as collection runs."
+    : `No ${stateLabels[filter].toLowerCase()} findings. Findings you ${filter === "resolved" ? "resolve" : "acknowledge"} are listed here.`;
 }
 
 export function SigninAudit({
@@ -89,7 +126,8 @@ export function SigninAudit({
   const titleId = useId();
   const [modules, setModules] = useState<ModuleList | null>(null);
   const [summary, setSummary] = useState<SigninSummary | null>(null);
-  const [findings, setFindings] = useState<Finding[]>([]);
+  // null until the first read answers, so the page never says "Nothing open" before it knows.
+  const [findings, setFindings] = useState<Finding[] | null>(null);
   const [filter, setFilter] = useState<FindingState>("open");
   const [days, setDays] = useState(7);
   const [error, setError] = useState("");
@@ -331,7 +369,9 @@ export function SigninAudit({
             <section className="panel signin-table">
               <h3>By country</h3>
               {summary.countries.length === 0 ? (
-                <p className="empty-data">No sign-ins in this range yet.</p>
+                <p className="empty-data">
+                  No sign-ins in this range yet. They appear here as collection reads them.
+                </p>
               ) : (
                 <table>
                   <caption className="visually-hidden">
@@ -368,7 +408,10 @@ export function SigninAudit({
             <section className="panel signin-table">
               <h3>Networks with failed attempts</h3>
               {summary.failingNetworks.length === 0 ? (
-                <p className="empty-data">No failed password attempts in this range.</p>
+                <p className="empty-data">
+                  No failed password attempts in this range. Networks that fail repeatedly appear
+                  here.
+                </p>
               ) : (
                 <table>
                   <caption className="visually-hidden">
@@ -397,9 +440,15 @@ export function SigninAudit({
             </section>
           </div>
           <p className="signin-coverage">
-            {summary.coverage.events > 0
-              ? `${number.format(summary.coverage.events)} sign-ins stored, from ${when(summary.coverage.firstEvent)} to ${when(summary.coverage.lastEvent)}. Last collected ${when(summary.coverage.lastCollected)}.`
-              : "No sign-ins stored yet."}
+            {summary.coverage.events > 0 ? (
+              <>
+                {number.format(summary.coverage.events)} sign-ins stored, from{" "}
+                {when(summary.coverage.firstEvent)} to {when(summary.coverage.lastEvent)}. Last
+                collected <RelativeTime value={summary.coverage.lastCollected} />.
+              </>
+            ) : (
+              "No sign-ins stored yet."
+            )}
           </p>
         </>
       ) : null}
@@ -418,22 +467,23 @@ export function SigninAudit({
                 type="button"
                 aria-pressed={filter === state}
                 className={filter === state ? "is-active" : ""}
-                onClick={() => setFilter(state)}
+                onClick={() => {
+                  if (state === filter) return;
+                  setFindings(null);
+                  setFilter(state);
+                }}
               >
                 {stateLabels[state]}
               </button>
             ))}
           </fieldset>
         </div>
-        {findings.length === 0 ? (
-          <div className="signin-findings__empty">
-            <ShieldIcon />
-            <p>
-              {filter === "open"
-                ? "Nothing open. New findings appear here as collection runs."
-                : `No ${stateLabels[filter].toLowerCase()} findings.`}
-            </p>
-          </div>
+        {findings === null ? (
+          error ? null : (
+            <SkeletonRows rows={3} label="Loading findings" />
+          )
+        ) : findings.length === 0 ? (
+          <p className="empty-data">{findingsEmptyText(filter)}</p>
         ) : (
           <ul className="finding-list">
             {findings.map((finding) => (
