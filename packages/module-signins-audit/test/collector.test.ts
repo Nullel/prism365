@@ -556,7 +556,7 @@ describe("sign-in audit collector", () => {
     // Each run has a real time budget, so on a slow machine the last round can leave part of its
     // window for the next run. Moving forward means the backlog clears, not that every run
     // finishes inside its budget: a few more runs with no new sign-ins must collect the rest.
-    for (let round = 0; round < 20 && (await count()) < added; round += 1) await poll();
+    for (let round = 0; round < 20 && ((await count()) ?? 0) < added; round += 1) await poll();
     expect(await count()).toBe(added);
   }, 60_000);
 
