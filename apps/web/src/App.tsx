@@ -1,16 +1,11 @@
 import {
-  type AutomationLifecycle,
-  type AutomationPreview,
-  type AutomationWorkflowList,
-  automationPreviewSchema,
-  automationWorkflowListSchema,
   type DashboardSummary,
   dashboardSummarySchema,
   type Metric,
   type PrismSession,
   sessionSchema,
 } from "@prism365/contracts";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Alerts } from "./Alerts.tsx";
 import { Notifications } from "./Attention.tsx";
 import { Audits } from "./Audits.tsx";
@@ -23,23 +18,19 @@ import {
   ArrowUpRightIcon,
   BellIcon,
   ChecklistIcon,
-  ChevronIcon,
   GridIcon,
   LockIcon,
   ReportIcon,
-  SearchIcon,
-  SettingsIcon,
+  SendIcon,
   ShieldIcon,
   SparkleIcon,
   UsersIcon,
 } from "./icons.tsx";
 import { LiveOverview } from "./LiveOverview.tsx";
 import { People } from "./People.tsx";
-import { ScriptPackages } from "./ScriptPackages.tsx";
 import { SetupChecklist } from "./Setup.tsx";
 import { SigninAudit } from "./SigninAudit.tsx";
 import { TenantConnection } from "./TenantConnection.tsx";
-import { UserIntelligence } from "./UserIntelligence.tsx";
 import { ThisWeek } from "./Week.tsx";
 
 export type WorkspaceView =
@@ -50,9 +41,7 @@ export type WorkspaceView =
   | "audits"
   | "signins"
   | "changes"
-  | "users"
   | "handoffs"
-  | "lifecycle"
   | "alerts"
   | "access";
 
@@ -63,38 +52,36 @@ interface NavItem {
 }
 
 // One navigation, in the sidebar. Only views that work are listed.
+// One entry per page. Looking someone up in Microsoft is the People search (a full work email
+// opens anyone in the directory), and acting on accounts belongs to the tool a handoff feeds, so
+// neither has its own entry.
 const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: "",
     items: [
       { label: "Overview", icon: GridIcon, view: "overview" },
       { label: "This week", icon: ReportIcon, view: "week" },
-      { label: "Notifications", icon: BellIcon, view: "notifications" },
       { label: "People", icon: UsersIcon, view: "people" },
+      { label: "Microsoft updates", icon: BellIcon, view: "notifications" },
     ],
   },
   {
-    label: "Audit",
+    label: "Monitor",
     items: [
       { label: "Audits", icon: ChecklistIcon, view: "audits" },
-      { label: "Sign-in audit", icon: ShieldIcon, view: "signins" },
+      { label: "Sign-ins", icon: ShieldIcon, view: "signins" },
       { label: "Directory changes", icon: ActivityIcon, view: "changes" },
-    ],
-  },
-  {
-    label: "Tools",
-    items: [
-      { label: "Live lookup", icon: SearchIcon, view: "users" },
       { label: "Handoffs", icon: ArrowUpRightIcon, view: "handoffs" },
-      { label: "Lifecycle automation", icon: SettingsIcon, view: "lifecycle" },
     ],
   },
   {
     label: "Settings",
-    items: [{ label: "Alerts", icon: BellIcon, view: "alerts" }],
+    items: [
+      { label: "Alerts", icon: SendIcon, view: "alerts" },
+      { label: "Microsoft access", icon: LockIcon, view: "access" },
+    ],
   },
 ];
-const accessItem: NavItem = { label: "Microsoft access", icon: LockIcon, view: "access" };
 
 const pageCopy: Record<WorkspaceView, { title: string; description: string }> = {
   overview: { title: "Overview", description: "What needs attention across the tenant right now." },
@@ -104,7 +91,7 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
       "What changed in the last day, week or month: new findings, directory changes, accounts that went quiet, audit numbers that moved and Microsoft deadlines.",
   },
   notifications: {
-    title: "Notifications",
+    title: "Microsoft updates",
     description:
       "New Microsoft incidents, Message center deadlines, and what changed since you looked.",
   },
@@ -132,14 +119,6 @@ const pageCopy: Record<WorkspaceView, { title: string; description: string }> = 
     description:
       "Lists from audits, packaged for the tool that acts on them, and the receipts it sends back.",
   },
-  users: {
-    title: "Live lookup",
-    description: "Look one account up directly in Microsoft, without stored history.",
-  },
-  lifecycle: {
-    title: "Lifecycle automation",
-    description: "Review onboarding and offboarding runbooks before anything changes.",
-  },
   alerts: {
     title: "Alerts",
     description:
@@ -163,32 +142,6 @@ async function loadDashboard(signal: AbortSignal): Promise<DashboardSummary> {
     throw new Error(`Dashboard request failed with HTTP ${response.status}.`);
   }
   return dashboardSummarySchema.parse(await response.json());
-}
-
-async function loadAutomationWorkflows(signal: AbortSignal): Promise<AutomationWorkflowList> {
-  const response = await fetch("/api/v1/automation/workflows", { signal });
-  if (!response.ok) {
-    throw new Error(`Automation catalog request failed with HTTP ${response.status}.`);
-  }
-  return automationWorkflowListSchema.parse(await response.json());
-}
-
-async function createLifecyclePreview(
-  workflowId: string,
-  targetEmail: string,
-  signal: AbortSignal,
-): Promise<AutomationPreview> {
-  const response = await fetch("/api/v1/automation/previews", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workflowId, targetEmail }),
-    signal,
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(body?.message ?? `Preview request failed with HTTP ${response.status}.`);
-  }
-  return automationPreviewSchema.parse(await response.json());
 }
 
 function Trend({ metric }: { metric: Metric }) {
@@ -287,268 +240,6 @@ function SignInChart({ data }: { data: DashboardSummary["signInTrend"] }) {
   );
 }
 
-function LifecycleAutomation() {
-  const emailId = useId();
-  const workflowId = useId();
-  const [catalog, setCatalog] = useState<AutomationWorkflowList | null>(null);
-  const [lifecycle, setLifecycle] = useState<AutomationLifecycle>("offboarding");
-  const [selectedWorkflow, setSelectedWorkflow] = useState("");
-  const [targetEmail, setTargetEmail] = useState("alex.rivera@example.invalid");
-  const [preview, setPreview] = useState<AutomationPreview | null>(null);
-  const [state, setState] = useState<"loading" | "ready" | "previewing" | "error">("loading");
-  const [error, setError] = useState("");
-  const previewRequest = useRef(0);
-  const pendingPreview = useRef<AbortController | null>(null);
-
-  useEffect(() => () => pendingPreview.current?.abort(), []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    loadAutomationWorkflows(controller.signal)
-      .then((result) => {
-        setCatalog(result);
-        const firstOffboarding = result.items.find((item) => item.lifecycle === "offboarding");
-        setSelectedWorkflow(firstOffboarding?.id ?? result.items[0]?.id ?? "");
-        setState("ready");
-      })
-      .catch((loadError: unknown) => {
-        if (loadError instanceof DOMException && loadError.name === "AbortError") return;
-        setError("Start the local Prism365 API to load the reviewed runbook library.");
-        setState("error");
-      });
-    return () => controller.abort();
-  }, []);
-
-  const visibleWorkflows =
-    catalog?.items.filter((workflow) => workflow.lifecycle === lifecycle) ?? [];
-
-  function chooseLifecycle(nextLifecycle: AutomationLifecycle) {
-    setLifecycle(nextLifecycle);
-    setSelectedWorkflow(
-      catalog?.items.find((workflow) => workflow.lifecycle === nextLifecycle)?.id ?? "",
-    );
-    invalidatePreview();
-  }
-
-  function invalidatePreview() {
-    previewRequest.current += 1;
-    pendingPreview.current?.abort();
-    setPreview(null);
-    setError("");
-    if (catalog) setState("ready");
-  }
-
-  async function handlePreview(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkflow) {
-      setError("No reviewed runbook is available for this workflow.");
-      return;
-    }
-
-    setState("previewing");
-    setError("");
-    setPreview(null);
-    const request = ++previewRequest.current;
-    pendingPreview.current?.abort();
-    const controller = new AbortController();
-    pendingPreview.current = controller;
-    try {
-      const result = await createLifecyclePreview(selectedWorkflow, targetEmail, controller.signal);
-      if (request !== previewRequest.current) return;
-      setPreview(result);
-      setState("ready");
-    } catch (previewError) {
-      if (controller.signal.aborted || request !== previewRequest.current) return;
-      setError(previewError instanceof Error ? previewError.message : "Unable to create preview.");
-      setState("error");
-    }
-  }
-
-  return (
-    <section className="automation" aria-labelledby="automation-title">
-      <div className="automation__header">
-        <div>
-          <h2 id="automation-title">Preview a runbook</h2>
-          <p>
-            Choose a reviewed runbook and inspect every proposed change before Prism365 can ask for
-            approval.
-          </p>
-        </div>
-        <span className="automation__lock">
-          <LockIcon /> Preview only
-        </span>
-      </div>
-
-      <div className="automation__grid">
-        <form className="automation-form" onSubmit={handlePreview}>
-          <fieldset className="automation-toggle">
-            <legend>Choose a lifecycle</legend>
-            <button
-              aria-pressed={lifecycle === "onboarding"}
-              className={lifecycle === "onboarding" ? "is-active" : ""}
-              onClick={() => chooseLifecycle("onboarding")}
-              type="button"
-            >
-              <span>Onboard</span>
-              <small>Create access from an approved profile</small>
-            </button>
-            <button
-              aria-pressed={lifecycle === "offboarding"}
-              className={lifecycle === "offboarding" ? "is-active" : ""}
-              onClick={() => chooseLifecycle("offboarding")}
-              type="button"
-            >
-              <span>Offboard</span>
-              <small>Block access and preserve a recovery path</small>
-            </button>
-          </fieldset>
-
-          <label className="field" htmlFor={emailId}>
-            <span>Work email</span>
-            <input
-              id={emailId}
-              maxLength={254}
-              onChange={(event) => {
-                setTargetEmail(event.target.value);
-                invalidatePreview();
-              }}
-              placeholder="person@company.com"
-              required
-              type="email"
-              value={targetEmail}
-            />
-            <small>Demo input only. No directory lookup occurs.</small>
-          </label>
-
-          <label className="field" htmlFor={workflowId}>
-            <span>Reviewed runbook</span>
-            <select
-              disabled={state === "loading" || visibleWorkflows.length === 0}
-              id={workflowId}
-              onChange={(event) => {
-                setSelectedWorkflow(event.target.value);
-                invalidatePreview();
-              }}
-              value={selectedWorkflow}
-            >
-              {visibleWorkflows.map((workflow) => (
-                <option key={workflow.id} value={workflow.id}>
-                  {workflow.name} · v{workflow.version}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {visibleWorkflows.find((workflow) => workflow.id === selectedWorkflow)?.runtime ===
-          "powershell7" ? (
-            <div className="runbook-note">
-              <span>PowerShell 7 package</span>
-              <p>
-                This synthetic imported package is reviewed and version-locked. Production scripts
-                will run outside the API in an isolated worker.
-              </p>
-            </div>
-          ) : null}
-
-          {error ? (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          ) : null}
-          <button
-            className="button button--primary button--full"
-            disabled={state === "loading" || state === "previewing" || !selectedWorkflow}
-            type="submit"
-          >
-            {state === "previewing" ? "Building preview…" : "Preview every step"}
-            <ChevronIcon />
-          </button>
-          <p className="automation-form__footnote">
-            Import review is scaffolded in the package contract but intentionally locked until the
-            sandbox runner and approval ledger are ready.
-          </p>
-        </form>
-
-        <div className="automation-preview" aria-live="polite">
-          {preview ? (
-            <>
-              <div className="automation-preview__heading">
-                <div>
-                  <span className="eyebrow">Proposed plan</span>
-                  <h3>{preview.workflow.name}</h3>
-                  <p>{preview.targetEmail}</p>
-                </div>
-                <span>{preview.steps.length} steps</span>
-              </div>
-              <ol className="automation-steps">
-                {preview.steps.map((step) => (
-                  <li key={step.id}>
-                    <span className="automation-steps__number">{step.order}</span>
-                    <div>
-                      <strong>{step.label}</strong>
-                      <small>{step.permission}</small>
-                      <details className="step-details">
-                        <summary>Impact and recovery</summary>
-                        <p>{step.description}</p>
-                        <p>{step.recovery}</p>
-                        <p>
-                          {step.reversible
-                            ? "Recovery is possible where provider state permits it."
-                            : "This step cannot be fully reversed."}
-                        </p>
-                      </details>
-                    </div>
-                    <span className={`risk-chip risk-chip--${step.risk}`}>
-                      {step.risk === "readOnly"
-                        ? "Check"
-                        : step.risk === "manualReview"
-                          ? "Review"
-                          : step.risk}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-              <div className="automation-preview__blocked">
-                <ShieldIcon />
-                <p>
-                  <strong>Execution remains locked.</strong>
-                  {preview.blockedReasons.map((reason) => (
-                    <span key={reason}>{reason}</span>
-                  ))}
-                </p>
-              </div>
-              <details className="preview-limitations">
-                <summary>Preview limitations</summary>
-                <ul>
-                  {preview.limitations.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </details>
-            </>
-          ) : (
-            <div className="automation-empty">
-              <span>
-                <UsersIcon />
-              </span>
-              <h3>Your next run, clearly laid out.</h3>
-              <p>
-                Prism365 will keep the fast email-first flow, while showing the exact impact,
-                permissions, approvals, and recovery path before anything changes.
-              </p>
-              <ul>
-                <li>Protected-account checks</li>
-                <li>Typed confirmation and approval</li>
-                <li>Immutable result and recovery record</li>
-              </ul>
-            </div>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 export const signInFailedNotice =
   "Microsoft sign-in did not complete. Check that your account is on this installation's operator list and that the app registration's redirect URI matches this address, then try again.";
 
@@ -580,17 +271,22 @@ const workspaceViews: readonly WorkspaceView[] = [
   "audits",
   "signins",
   "changes",
-  "users",
   "handoffs",
-  "lifecycle",
   "alerts",
   "access",
 ];
 
+// Pages that were folded into others, so old links still land somewhere sensible: Live lookup is
+// the People search, and lifecycle runbooks belong to the tool a handoff feeds.
+const movedViews: Readonly<Record<string, WorkspaceView>> = {
+  users: "people",
+  lifecycle: "handoffs",
+};
+
 export function parseRoute(hash: string): Route | null {
   if (!hash.startsWith("#/")) return null;
   const [name = "", ...rest] = hash.slice(2).split("/");
-  const view = workspaceViews.find((item) => item === name);
+  const view = workspaceViews.find((item) => item === (movedViews[name] ?? name));
   if (!view) return null;
   let detail: string | null = null;
   try {
@@ -824,7 +520,6 @@ export function App() {
         </nav>
 
         <div className="sidebar__bottom">
-          <div className="nav__section">{navButton(accessItem)}</div>
           <div className="account">
             <span className="account__avatar" aria-hidden="true">
               {demo ? "D" : initials(session?.displayName)}
@@ -942,14 +637,6 @@ export function App() {
               {view === "handoffs" ? (
                 <Handoffs key={`${session.mode}-${session.authenticated}`} session={session} />
               ) : null}
-              {view === "users" ? (
-                <UserIntelligence
-                  key={`${session.mode}-${session.authenticated}`}
-                  session={session}
-                />
-              ) : null}
-              {view === "lifecycle" && demo ? <LifecycleAutomation /> : null}
-              {view === "lifecycle" ? <ScriptPackages session={session} /> : null}
               {view === "alerts" ? (
                 <Alerts key={`${session.mode}-${session.authenticated}`} session={session} />
               ) : null}

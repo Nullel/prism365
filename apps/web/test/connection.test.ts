@@ -4,7 +4,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { signInFailedNotice } from "../src/App.tsx";
 import { TenantConnection } from "../src/TenantConnection.tsx";
-import { UserIntelligence } from "../src/UserIntelligence.tsx";
 
 function session(overrides: Partial<PrismSession> = {}): PrismSession {
   return sessionSchema.parse({
@@ -89,12 +88,5 @@ describe("connection interface", () => {
     expect(html).not.toContain("feature=user.licenses.read");
     expect(html).not.toContain("fictional");
     expect(html).toContain("Sign out");
-  });
-
-  it("requires authentication before live investigation input is usable", () => {
-    const html = renderToStaticMarkup(createElement(UserIntelligence, { session: session() }));
-    expect(html).toContain("Complete tenant setup and sign in");
-    expect(html).toContain("disabled");
-    expect(html).not.toContain("alex.rivera");
   });
 });

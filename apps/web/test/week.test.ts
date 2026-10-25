@@ -696,11 +696,28 @@ describe("the page's address and place in the navigation", () => {
     expect(routeHash({ view: "week", person: null, audit: null })).toBe("#/week");
   });
 
-  it("lists This week right after Overview", async () => {
+  it("lists This week right after Overview, and each page once", async () => {
     const { App } = await import("../src/App.tsx");
     const html = renderToStaticMarkup(createElement(App));
     const labels = [...html.matchAll(/<span>([^<]+)<\/span><\/button>/g)].map((match) => match[1]);
-    expect(labels.slice(0, 3)).toEqual(["Overview", "This week", "Notifications"]);
+    expect(labels).toEqual([
+      "Overview",
+      "This week",
+      "People",
+      "Microsoft updates",
+      "Audits",
+      "Sign-ins",
+      "Directory changes",
+      "Handoffs",
+      "Alerts",
+      "Microsoft access",
+    ]);
+  });
+
+  it("sends the folded pages' old links to the page that took them over", async () => {
+    const { parseRoute } = await import("../src/App.tsx");
+    expect(parseRoute("#/users")).toEqual({ view: "people", person: null, audit: null });
+    expect(parseRoute("#/lifecycle")).toEqual({ view: "handoffs", person: null, audit: null });
   });
 });
 
