@@ -8,9 +8,10 @@ import {
 import { useCallback, useEffect, useId, useState } from "react";
 import { day, post, readJson } from "./common.tsx";
 
-// Canary accounts: decoy accounts nobody should ever sign in to. A switch on the person's page
-// marks or unmarks one, and a small panel on the sign-in audit page lists them. Any sign-in
-// attempt by a canary, successful or not, becomes a critical finding in the ordinary findings list.
+// Canary accounts: decoy accounts nobody should ever sign in to. An item in the Actions menu on
+// the person's page marks or unmarks one, and a small panel on the sign-in audit page lists them.
+// Any sign-in attempt by a canary, successful or not, becomes a critical finding in the ordinary
+// findings list.
 
 const PATH = "/api/v1/settings/canaries";
 
@@ -62,42 +63,31 @@ function useCanaries(session: PrismSession) {
   return { loaded, busy, error, change };
 }
 
-export function CanaryToggleView({
+// The one-line explanation of what a canary is. It is the menu item's second line, so the person
+// choosing it reads what it does before they choose.
+export const canaryExplanation =
+  "A decoy account nobody should ever sign in to. Any sign-in attempt on it, successful or not, opens a critical finding.";
+
+// What follows a choice in the Actions menu: the confirmation before an account is marked, and
+// any failure from marking or unmarking. Nothing is drawn when there is neither.
+export function CanaryStepView({
   name,
-  active,
   confirming,
   busy,
   error,
-  onChange,
   onConfirm,
   onCancel,
 }: {
   name: string;
-  active: boolean;
   confirming: boolean;
   busy: boolean;
   error: string;
-  onChange: (on: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  if (!confirming && !error) return null;
   return (
     <div className="canary-toggle">
-      <label className="check-row">
-        <input
-          type="checkbox"
-          checked={active}
-          disabled={busy}
-          onChange={(event) => onChange(event.target.checked)}
-        />
-        <span>
-          <strong>Canary account</strong>
-          <small>
-            A decoy account nobody should ever sign in to. Any sign-in attempt on it, successful or
-            not, opens a critical finding.
-          </small>
-        </span>
-      </label>
       {confirming ? (
         <fieldset className="canary-confirm">
           <legend className="visually-hidden">Confirm canary account</legend>
@@ -134,36 +124,39 @@ export function CanaryToggleView({
   );
 }
 
-export function CanaryToggle({
-  session,
-  userId,
-  name,
-}: {
-  session: PrismSession;
-  userId: string;
-  name: string;
-}) {
+export interface PersonCanary {
+  // False when the list cannot be read (the demo, or an installation without the sign-in
+  // module): the menu leaves the item out rather than showing a broken one.
+  available: boolean;
+  active: boolean;
+  busy: boolean;
+  error: string;
+  confirming: boolean;
+  onMark: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  onUnmark: () => void;
+}
+
+// A person's canary state, shared by the status chip, the menu item and the confirmation step.
+export function usePersonCanary(session: PrismSession, userId: string): PersonCanary {
   const { loaded, busy, error, change } = useCanaries(session);
   const [confirming, setConfirming] = useState(false);
-  if (loaded.state === "unavailable") return null;
-  const active = loaded.state === "ready" && loaded.list.accounts.some((a) => a.userId === userId);
-  return (
-    <CanaryToggleView
-      name={name}
-      active={active}
-      confirming={confirming}
-      busy={busy || loaded.state === "loading"}
-      error={error}
-      // Turning it on waits for a confirmation; turning it off is safe to do at once.
-      onChange={(on) => (on ? setConfirming(true) : void change({ remove: [userId] }))}
-      onConfirm={() =>
-        void change({ add: [userId] }).then((saved) => {
-          if (saved) setConfirming(false);
-        })
-      }
-      onCancel={() => setConfirming(false)}
-    />
-  );
+  return {
+    available: loaded.state !== "unavailable",
+    active: loaded.state === "ready" && loaded.list.accounts.some((a) => a.userId === userId),
+    busy: busy || loaded.state === "loading",
+    error,
+    confirming,
+    // Turning it on waits for a confirmation; turning it off is safe to do at once.
+    onMark: () => setConfirming(true),
+    onConfirm: () =>
+      void change({ add: [userId] }).then((saved) => {
+        if (saved) setConfirming(false);
+      }),
+    onCancel: () => setConfirming(false),
+    onUnmark: () => void change({ remove: [userId] }),
+  };
 }
 
 export function CanaryPanelView({
@@ -185,7 +178,8 @@ export function CanaryPanelView({
       <h3 id={titleId}>Canary accounts</h3>
       {accounts.length === 0 ? (
         <p className="empty-data">
-          No canary accounts yet. Turn on Canary account on a person's page to add one.
+          No canary accounts yet. Open a person's page and choose Mark as canary in its Actions menu
+          to add one.
         </p>
       ) : (
         <>

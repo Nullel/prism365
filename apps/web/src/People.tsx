@@ -1,6 +1,8 @@
 import {
+  type FindingState,
   findingSchema,
   licenseName,
+  type PersonChangePage,
   type PersonDirectory,
   type PersonList,
   type PersonListItem,
@@ -14,11 +16,31 @@ import {
   personSigninPageSchema,
 } from "@prism365/contracts";
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
-import { CanaryToggle } from "./Canary.tsx";
-import { AccountName, day, FindingItem, number, place, post, readJson, when } from "./common.tsx";
+import { CanaryStepView, type PersonCanary, usePersonCanary } from "./Canary.tsx";
+import {
+  AccountName,
+  day,
+  FindingItem,
+  number,
+  place,
+  post,
+  RelativeTime,
+  readJson,
+  when,
+} from "./common.tsx";
 import { ShieldIcon } from "./icons.tsx";
 import { PersonChanges } from "./PersonChanges.tsx";
+import { PersonActions, PersonHeader, personAddress } from "./PersonHeader.tsx";
 import { PersonReceipts } from "./PersonReceipts.tsx";
+import {
+  type PersonTab,
+  PersonTabList,
+  PersonTabPanel,
+  personTabCounts,
+  type TabCount,
+} from "./PersonTabs.tsx";
+
+export { hibpLink } from "./PersonHeader.tsx";
 
 // People: every account that signs in, and one page per account with everything Prism365 knows
 // about it. Stored sign-ins come from the sign-in audit module; the directory, manager, last
@@ -31,12 +53,6 @@ const resultLabels: Record<PersonSignin["result"], string> = {
   blocked: "Blocked",
   interrupted: "Interrupted",
 };
-
-// Have I Been Pwned's documented deep link: the search runs when the page opens, in the
-// administrator's own browser. No API, no key.
-export function hibpLink(address: string): string {
-  return `https://haveibeenpwned.com/account/${encodeURIComponent(address.trim()).replace(/%40/g, "@")}`;
-}
 
 const yesNo = (value: boolean | null) => (value === null ? "Unknown" : value ? "Yes" : "No");
 
@@ -66,10 +82,15 @@ export function People({
   session,
   selected,
   onSelect,
+  tab = "overview",
+  onTab = () => {},
 }: {
   session: PrismSession;
   selected: string | null;
   onSelect: (userId: string | null) => void;
+  // The tab of the open person's page, which the address bar holds.
+  tab?: PersonTab;
+  onTab?: (tab: PersonTab) => void;
 }) {
   if (session.mode === "demo")
     return (
@@ -93,6 +114,8 @@ export function People({
       session={session}
       userId={selected}
       onBack={() => onSelect(null)}
+      tab={tab}
+      onTab={onTab}
     />
   ) : (
     <PeopleList onSelect={onSelect} />
@@ -261,24 +284,33 @@ function Status({ usual, known }: { usual: boolean; known: boolean }) {
   return <span className="person-muted">Not learned</span>;
 }
 
+type SigninFilter = "all" | "success" | "failed";
+
 function PersonProfile({
   session,
   userId,
   onBack,
+  tab,
+  onTab,
 }: {
   session: PrismSession;
   userId: string;
   onBack: () => void;
+  tab: PersonTab;
+  onTab: (tab: PersonTab) => void;
 }) {
   const titleId = useId();
+  const tabsId = useId();
   const path = `/api/v1/people/${encodeURIComponent(userId)}`;
   const [record, setRecord] = useState<PersonRecord | null>(null);
   const [directory, setDirectory] = useState<PersonDirectory | null>(null);
   const [signins, setSignins] = useState<PersonSignin[] | null>(null);
   const [next, setNext] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "success" | "failed">("all");
+  const [filter, setFilter] = useState<SigninFilter>("all");
+  const [changes, setChanges] = useState<TabCount | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const canary = usePersonCanary(session, userId);
 
   const loadRecord = useCallback(
     async (signal?: AbortSignal) => {
@@ -360,6 +392,103 @@ function PersonProfile({
     }
   }
 
+  // The directory changes panel reports what it has loaded, for the count on its tab.
+  const onChanges = useCallback(
+    (page: PersonChangePage) => setChanges({ value: page.items.length, more: page.next !== null }),
+    [],
+  );
+
+  return (
+    <PersonProfileView
+      session={session}
+      userId={userId}
+      titleId={titleId}
+      tabsId={tabsId}
+      tab={tab}
+      record={record}
+      directory={directory}
+      signins={signins}
+      next={next}
+      filter={filter}
+      error={error}
+      busy={busy}
+      changes={changes}
+      canary={canary}
+      onBack={onBack}
+      onTab={onTab}
+      onFilter={setFilter}
+      onFindingState={(findingId, state) =>
+        void act(findingId, () =>
+          readJson(
+            `/api/v1/findings/${findingId}/state`,
+            (value) => findingSchema.parse(value),
+            post(session, { state }),
+          ),
+        )
+      }
+      onMoreSignins={() => {
+        setBusy("more");
+        loadSignins(next)
+          .catch((loadError: unknown) =>
+            setError(
+              loadError instanceof Error ? loadError.message : "Sign-ins could not be loaded.",
+            ),
+          )
+          .finally(() => setBusy(null));
+      }}
+      onChanges={onChanges}
+    />
+  );
+}
+
+export interface PersonProfileViewProps {
+  session: PrismSession;
+  userId: string;
+  titleId: string;
+  // The prefix of the tab and panel ids, which point at each other.
+  tabsId: string;
+  tab: PersonTab;
+  record: PersonRecord | null;
+  directory: PersonDirectory | null;
+  signins: PersonSignin[] | null;
+  next: string | null;
+  filter: SigninFilter;
+  error: string;
+  busy: string | null;
+  changes: TabCount | null;
+  canary: PersonCanary;
+  onBack: () => void;
+  onTab: (tab: PersonTab) => void;
+  onFilter: (filter: SigninFilter) => void;
+  onFindingState: (findingId: string, state: FindingState) => void;
+  onMoreSignins: () => void;
+  onChanges: (page: PersonChangePage) => void;
+}
+
+// A person's page as a function of what has loaded so far. It holds no state of its own, so a test
+// can draw it with a record, a directory and sign-ins in hand.
+export function PersonProfileView({
+  session,
+  userId,
+  titleId,
+  tabsId,
+  tab,
+  record,
+  directory,
+  signins,
+  next,
+  filter,
+  error,
+  busy,
+  changes,
+  canary,
+  onBack,
+  onTab,
+  onFilter,
+  onFindingState,
+  onMoreSignins,
+  onChanges,
+}: PersonProfileViewProps) {
   const history = record?.history ?? null;
   const profile = directory?.profile ?? null;
   const name =
@@ -369,12 +498,7 @@ function PersonProfile({
     history?.userPrincipalName ??
     userId;
   const upn = profile?.userPrincipalName ?? history?.userPrincipalName ?? null;
-  // The person's own address for the breach search: their mailbox, else their sign-in name.
-  // Guest sign-in names (#EXT#) are not mail addresses and are skipped.
-  const breachAddress =
-    [profile?.mail, upn].find(
-      (value): value is string => Boolean(value?.includes("@")) && !value?.includes("#EXT#"),
-    ) ?? null;
+  const address = personAddress(profile?.mail ?? null, upn);
   const learned = new Map(
     (history?.baseline ?? []).map((entry) => [`${entry.kind}|${entry.value}`, entry.trusted]),
   );
@@ -385,6 +509,12 @@ function PersonProfile({
   const openFindings = (record?.findings ?? []).filter((finding) => finding.state !== "resolved");
   const activity = directory?.signInActivity ?? null;
   const manager = directory?.manager?.data ?? null;
+  const counts = personTabCounts({
+    openFindings: record ? openFindings.length : null,
+    signIns: record ? (history?.totals.signIns ?? 0) : null,
+    licenses: directory?.licenses?.state === "available" ? directory.licenses.data.length : null,
+    changes,
+  });
 
   return (
     <section className="people person" aria-labelledby={titleId}>
@@ -402,260 +532,290 @@ function PersonProfile({
         </p>
       ) : null}
 
-      <section className="panel person-header">
-        <div>
-          <span className="eyebrow">Person</span>
-          <h2 id={titleId}>{name}</h2>
-          <p>
-            {[upn, profile?.jobTitle, profile?.department].filter(Boolean).join(" · ") ||
-              "No directory details"}
-          </p>
-          <div className="person-tags">
-            {profile ? (
-              profile.accountEnabled === false ? (
-                <span className="person-tag person-tag--alert">Sign-in blocked</span>
-              ) : profile.accountEnabled ? (
-                <span className="person-tag person-tag--ok">Account enabled</span>
-              ) : null
-            ) : null}
-            {profile?.userType ? <span className="person-tag">{profile.userType}</span> : null}
-            {profile ? (
-              <span className="person-tag">
-                {profile.onPremisesSyncEnabled ? "Synced from on-premises" : "Cloud account"}
-              </span>
-            ) : null}
-            {openFindings.length > 0 ? (
-              <span className="person-tag person-tag--alert">
-                {openFindings.length} open {openFindings.length === 1 ? "finding" : "findings"}
-              </span>
-            ) : record ? (
-              <span className="person-tag person-tag--ok">Nothing open</span>
-            ) : null}
-          </div>
-          <CanaryToggle session={session} userId={userId} name={name} />
-          {breachAddress ? (
-            <p className="person-actions">
-              <a
-                className="button button--secondary"
-                href={hibpLink(breachAddress)}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                Check Have I Been Pwned
-              </a>
-              <span className="person-muted">
-                Opens haveibeenpwned.com in a new tab with {breachAddress} already searched.
-              </span>
+      <PersonHeader
+        titleId={titleId}
+        name={name}
+        principal={upn}
+        jobTitle={profile?.jobTitle ?? null}
+        department={profile?.department ?? null}
+        account={
+          profile
+            ? {
+                enabled: profile.accountEnabled,
+                userType: profile.userType,
+                synced: profile.onPremisesSyncEnabled,
+              }
+            : null
+        }
+        openSeverities={record ? openFindings.map((finding) => finding.severity) : null}
+        canary={canary.active}
+        actions={<PersonActions userId={userId} address={address} canary={canary} />}
+        below={
+          canary.confirming || canary.error ? (
+            <CanaryStepView
+              name={name}
+              confirming={canary.confirming}
+              busy={canary.busy}
+              error={canary.error}
+              onConfirm={canary.onConfirm}
+              onCancel={canary.onCancel}
+            />
+          ) : undefined
+        }
+      />
+
+      <PersonTabList idBase={tabsId} selected={tab} counts={counts} onSelect={onTab} />
+
+      <PersonTabPanel idBase={tabsId} tab="overview" selected={tab}>
+        <section className="panel person-facts" aria-label="Directory details">
+          <h3>Directory</h3>
+          {directory === null ? (
+            <p className="empty-data">Reading Microsoft's directory…</p>
+          ) : directory.state !== "available" ? (
+            <p className="empty-data">
+              {directory.message ?? "Directory details are unavailable."}
             </p>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="panel person-facts" aria-label="Directory details">
-        <h3>Directory</h3>
-        {directory === null ? (
-          <p className="empty-data">Reading Microsoft's directory…</p>
-        ) : directory.state !== "available" ? (
-          <p className="empty-data">{directory.message ?? "Directory details are unavailable."}</p>
-        ) : (
-          <dl>
-            {(
-              [
-                ["Email", profile?.mail],
-                ["Office", profile?.officeLocation],
-                ["Company", profile?.companyName],
-                ["Employee ID", profile?.employeeId],
+          ) : (
+            <dl>
+              {(
                 [
-                  "Manager",
-                  manager
-                    ? `${manager.displayName ?? manager.userPrincipalName ?? "Unnamed"}${manager.jobTitle ? `, ${manager.jobTitle}` : ""}`
-                    : directory.manager?.state === "available"
-                      ? "None set"
-                      : "Unavailable",
-                ],
-                [
-                  "Phone",
-                  [profile?.mobilePhone, ...(profile?.businessPhones ?? [])]
-                    .filter(Boolean)
-                    .join(", "),
-                ],
-                [
-                  "Location",
-                  [profile?.city, profile?.state, profile?.country].filter(Boolean).join(", "),
-                ],
-                ["Usage location", profile?.usageLocation],
-                ["Account created", profile?.createdDateTime ? day(profile.createdDateTime) : null],
-                [
-                  "Password last changed",
-                  profile?.lastPasswordChangeDateTime
-                    ? when(profile.lastPasswordChangeDateTime)
-                    : null,
-                ],
-                [
-                  "Last sign-in (Microsoft)",
-                  activity?.state === "available"
-                    ? when(activity.lastSignIn)
-                    : activity?.state === "missingConsent"
-                      ? "Needs sign-in log access"
-                      : "Unavailable",
-                ],
-                [
-                  "Last successful sign-in",
-                  activity?.state === "available" ? when(activity.lastSuccessfulSignIn) : null,
-                ],
-                [
-                  "Last background sign-in",
-                  activity?.state === "available" ? when(activity.lastNonInteractiveSignIn) : null,
-                ],
-              ] as const
-            ).map(([label, value]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value || "Not set"}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
-      </section>
-
-      {history ? (
-        <section className="panel person-stats" aria-label="Stored sign-ins">
-          <dl>
-            {(
-              [
-                ["Sign-ins stored", history.totals.signIns],
-                ["Successful", history.totals.successes],
-                ["Failed", history.totals.failures],
-                ["Blocked by policy", history.totals.blocked],
-                ["Places", history.places.length],
-                ["IP addresses", history.addresses.length],
-                ["Devices", history.devices.length],
-              ] as const
-            ).map(([label, value]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{number.format(value)}</dd>
-              </div>
-            ))}
-          </dl>
-          <p>
-            Stored from {when(history.totals.firstSeen)} to {when(history.totals.lastSeen)}. Last
-            successful sign-in {when(history.totals.lastSuccess)}.
-          </p>
+                  ["Email", profile?.mail],
+                  ["Office", profile?.officeLocation],
+                  ["Company", profile?.companyName],
+                  ["Employee ID", profile?.employeeId],
+                  [
+                    "Manager",
+                    manager
+                      ? `${manager.displayName ?? manager.userPrincipalName ?? "Unnamed"}${manager.jobTitle ? `, ${manager.jobTitle}` : ""}`
+                      : directory.manager?.state === "available"
+                        ? "None set"
+                        : "Unavailable",
+                  ],
+                  [
+                    "Phone",
+                    [profile?.mobilePhone, ...(profile?.businessPhones ?? [])]
+                      .filter(Boolean)
+                      .join(", "),
+                  ],
+                  [
+                    "Location",
+                    [profile?.city, profile?.state, profile?.country].filter(Boolean).join(", "),
+                  ],
+                  ["Usage location", profile?.usageLocation],
+                  [
+                    "Account created",
+                    profile?.createdDateTime ? day(profile.createdDateTime) : null,
+                  ],
+                  [
+                    "Password last changed",
+                    profile?.lastPasswordChangeDateTime
+                      ? when(profile.lastPasswordChangeDateTime)
+                      : null,
+                  ],
+                  [
+                    "Last sign-in (Microsoft)",
+                    activity?.state === "available"
+                      ? when(activity.lastSignIn)
+                      : activity?.state === "missingConsent"
+                        ? "Needs sign-in log access"
+                        : "Unavailable",
+                  ],
+                  [
+                    "Last successful sign-in",
+                    activity?.state === "available" ? when(activity.lastSuccessfulSignIn) : null,
+                  ],
+                  [
+                    "Last background sign-in",
+                    activity?.state === "available"
+                      ? when(activity.lastNonInteractiveSignIn)
+                      : null,
+                  ],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value || "Not set"}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </section>
-      ) : record ? (
-        <p className="signin-coverage">
-          Prism365 has no stored sign-ins for this person. They appear here once collection reads
-          one.
-        </p>
-      ) : null}
 
-      {record && record.findings.length > 0 ? (
-        <section className="panel signin-findings" aria-label="Findings">
-          <h3>Findings</h3>
-          <ul className="finding-list">
-            {record.findings.map((finding) => (
-              <li key={finding.id}>
-                <FindingItem
-                  finding={finding}
-                  showSubject={false}
-                  busy={busy !== null}
-                  onState={(state) =>
-                    void act(finding.id, () =>
-                      readJson(
-                        `/api/v1/findings/${finding.id}/state`,
-                        (value) => findingSchema.parse(value),
-                        post(session, { state }),
-                      ),
-                    )
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      <section className="panel signin-table" aria-label="Licenses">
-        <h3>Licenses</h3>
-        {directory === null ? (
-          <p className="empty-data">Reading licenses…</p>
-        ) : directory.licenses?.state !== "available" ? (
-          <p className="empty-data">
-            {directory.licenses?.message ?? directory.message ?? "Licenses are unavailable."}
+        {history ? (
+          <section className="panel person-stats" aria-label="Stored sign-ins">
+            <dl>
+              {(
+                [
+                  ["Sign-ins stored", history.totals.signIns],
+                  ["Successful", history.totals.successes],
+                  ["Failed", history.totals.failures],
+                  ["Blocked by policy", history.totals.blocked],
+                  ["Places", history.places.length],
+                  ["IP addresses", history.addresses.length],
+                  ["Devices", history.devices.length],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{number.format(value)}</dd>
+                </div>
+              ))}
+            </dl>
+            <p>
+              Stored from {when(history.totals.firstSeen)} to {when(history.totals.lastSeen)}. Last
+              successful sign-in {when(history.totals.lastSuccess)}.
+            </p>
+          </section>
+        ) : record ? (
+          <p className="signin-coverage">
+            Prism365 has no stored sign-ins for this person. They appear here once collection reads
+            one.
           </p>
-        ) : directory.licenses.data.length === 0 ? (
-          <p className="empty-data">No licenses assigned.</p>
-        ) : (
-          <>
-            {directory.licenses.message ? (
-              <p className="signin-coverage">{directory.licenses.message}</p>
-            ) : null}
-            <ul className="person-licenses">
-              {directory.licenses.data.map((license) => {
-                const active = license.servicePlans.filter(
-                  (plan) => plan.provisioningStatus === "Success",
-                );
-                return (
-                  <li key={license.id}>
-                    <strong>{licenseName(license.skuPartNumber)}</strong>
-                    <span>{license.skuPartNumber}</span>
-                    <details>
-                      <summary>
-                        {active.length} of {license.servicePlans.length} services on
-                      </summary>
-                      <ul>
-                        {license.servicePlans.map((plan) => (
-                          <li key={plan.servicePlanId}>
-                            {plan.servicePlanName}
-                            <span className="person-muted"> {plan.provisioningStatus}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  </li>
-                );
-              })}
+        ) : null}
+
+        {record && record.findings.length > 0 ? (
+          <section className="panel signin-findings" aria-label="Findings">
+            <h3>Findings</h3>
+            <ul className="finding-list">
+              {record.findings.map((finding) => (
+                <li key={finding.id}>
+                  <FindingItem
+                    finding={finding}
+                    showSubject={false}
+                    busy={busy !== null}
+                    onState={(state) => onFindingState(finding.id, state)}
+                  />
+                </li>
+              ))}
             </ul>
-          </>
-        )}
-      </section>
+          </section>
+        ) : null}
 
-      {history ? (
-        <>
-          <div className="signin-tables">
+        {record && !history && record.findings.length === 0 ? (
+          <div className="signin-findings__empty">
+            <ShieldIcon />
+            <p>Nothing has been flagged about this person.</p>
+          </div>
+        ) : null}
+      </PersonTabPanel>
+
+      <PersonTabPanel idBase={tabsId} tab="signins" selected={tab}>
+        {history ? (
+          <>
+            <div className="signin-tables">
+              <section className="panel signin-table person-grid">
+                <h3>Places</h3>
+                <table>
+                  <caption className="visually-hidden">Places this person signed in from</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Place</th>
+                      <th scope="col" className="num">
+                        Sign-ins
+                      </th>
+                      <th scope="col" className="num">
+                        Failed
+                      </th>
+                      <th scope="col">Last seen</th>
+                      <th scope="col">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.places.map((row) => {
+                      const country = status("country", row.country);
+                      const state = status("state", row.state);
+                      return (
+                        <tr key={`${row.country}|${row.state}|${row.city}`}>
+                          <th scope="row">{place(row)}</th>
+                          <td className="num">{number.format(row.count)}</td>
+                          <td className="num">{number.format(row.failures)}</td>
+                          <td className="nowrap">
+                            <RelativeTime value={row.lastSeen} />
+                          </td>
+                          <td>
+                            <Status
+                              usual={country.usual && (state.usual || !row.state)}
+                              known={country.known || state.known}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </section>
+              <section className="panel signin-table person-grid">
+                <h3>Apps</h3>
+                <table>
+                  <caption className="visually-hidden">Apps this person signed in to</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">App</th>
+                      <th scope="col" className="num">
+                        Sign-ins
+                      </th>
+                      <th scope="col" className="num">
+                        Failed
+                      </th>
+                      <th scope="col">Last used</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.apps.map((row) => (
+                      <tr key={row.app ?? "-"}>
+                        <th scope="row">{row.app ?? "Not reported"}</th>
+                        <td className="num">{number.format(row.count)}</td>
+                        <td className="num">{number.format(row.failures)}</td>
+                        <td className="nowrap">
+                          <RelativeTime value={row.lastSeen} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            </div>
+
             <section className="panel signin-table person-grid">
-              <h3>Places</h3>
+              <h3>IP addresses</h3>
               <table>
-                <caption className="visually-hidden">Places this person signed in from</caption>
+                <caption className="visually-hidden">
+                  IP addresses this person signed in from
+                </caption>
                 <thead>
                   <tr>
-                    <th scope="col">Place</th>
+                    <th scope="col">Address</th>
+                    <th scope="col">Location</th>
                     <th scope="col" className="num">
                       Sign-ins
                     </th>
                     <th scope="col" className="num">
                       Failed
                     </th>
+                    <th scope="col">First seen</th>
                     <th scope="col">Last seen</th>
                     <th scope="col">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {history.places.map((row) => {
-                    const country = status("country", row.country);
-                    const state = status("state", row.state);
+                  {history.addresses.map((row) => {
+                    const known = status("ip", row.ip);
                     return (
-                      <tr key={`${row.country}|${row.state}|${row.city}`}>
-                        <th scope="row">{place(row)}</th>
+                      <tr key={row.ip}>
+                        <th scope="row">
+                          <code>{row.ip}</code>
+                        </th>
+                        <td className="person-text">{place(row)}</td>
                         <td className="num">{number.format(row.count)}</td>
                         <td className="num">{number.format(row.failures)}</td>
-                        <td className="nowrap">{day(row.lastSeen)}</td>
+                        <td className="nowrap">
+                          <RelativeTime value={row.firstSeen} />
+                        </td>
+                        <td className="nowrap">
+                          <RelativeTime value={row.lastSeen} />
+                        </td>
                         <td>
-                          <Status
-                            usual={country.usual && (state.usual || !row.state)}
-                            known={country.known || state.known}
-                          />
+                          <Status {...known} />
                         </td>
                       </tr>
                     );
@@ -663,249 +823,212 @@ function PersonProfile({
                 </tbody>
               </table>
             </section>
+
             <section className="panel signin-table person-grid">
-              <h3>Apps</h3>
+              <h3>Devices</h3>
               <table>
-                <caption className="visually-hidden">Apps this person signed in to</caption>
+                <caption className="visually-hidden">Devices this person signed in with</caption>
                 <thead>
                   <tr>
-                    <th scope="col">App</th>
+                    <th scope="col">Device</th>
+                    <th scope="col">Device ID</th>
+                    <th scope="col">Compliant</th>
+                    <th scope="col">Managed</th>
+                    <th scope="col">Join type</th>
                     <th scope="col" className="num">
                       Sign-ins
                     </th>
-                    <th scope="col" className="num">
-                      Failed
-                    </th>
-                    <th scope="col">Last used</th>
+                    <th scope="col">Last seen</th>
+                    <th scope="col">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {history.apps.map((row) => (
-                    <tr key={row.app ?? "-"}>
-                      <th scope="row">{row.app ?? "Not reported"}</th>
-                      <td className="num">{number.format(row.count)}</td>
-                      <td className="num">{number.format(row.failures)}</td>
-                      <td className="nowrap">{day(row.lastSeen)}</td>
+                  {history.devices.map((row) => {
+                    const known = status("device", row.deviceId);
+                    return (
+                      <tr key={`${row.deviceId}|${row.operatingSystem}|${row.browser}`}>
+                        <th scope="row">
+                          {[row.operatingSystem, row.browser].filter(Boolean).join(" / ") ||
+                            "Not reported"}
+                        </th>
+                        <td className="person-text">
+                          {row.deviceId ? <code>{row.deviceId}</code> : "Unregistered"}
+                        </td>
+                        <td>{yesNo(row.compliant)}</td>
+                        <td>{yesNo(row.managed)}</td>
+                        <td>{row.trustType ?? "None"}</td>
+                        <td className="num">{number.format(row.count)}</td>
+                        <td className="nowrap">
+                          <RelativeTime value={row.lastSeen} />
+                        </td>
+                        <td>
+                          {row.deviceId ? (
+                            <Status {...known} />
+                          ) : (
+                            <span className="person-muted">No ID</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="signin-coverage">
+                Sign-in logs do not carry MAC addresses. Those come from Intune device records,
+                which Prism365 does not read yet.
+              </p>
+            </section>
+          </>
+        ) : null}
+
+        <section className="panel signin-table person-grid person-history">
+          <div className="panel__header">
+            <h3>Every sign-in</h3>
+            <fieldset className="signin-range">
+              <legend className="visually-hidden">Sign-in result</legend>
+              {(
+                [
+                  ["all", "All"],
+                  ["success", "Successful"],
+                  ["failed", "Not successful"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={filter === value}
+                  className={filter === value ? "is-active" : ""}
+                  onClick={() => onFilter(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </fieldset>
+          </div>
+          {signins === null ? (
+            <p className="empty-data">Loading sign-ins…</p>
+          ) : signins.length === 0 ? (
+            <p className="empty-data">No stored sign-ins match.</p>
+          ) : (
+            <>
+              <table>
+                <caption className="visually-hidden">Sign-ins, newest first</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">When</th>
+                    <th scope="col">Result</th>
+                    <th scope="col">App</th>
+                    <th scope="col">IP address</th>
+                    <th scope="col">Location</th>
+                    <th scope="col">Device</th>
+                    <th scope="col">Client</th>
+                    <th scope="col">Conditional Access</th>
+                    <th scope="col">Risk</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {signins.map((row) => (
+                    <tr key={row.id}>
+                      <th scope="row" className="nowrap">
+                        <RelativeTime value={row.createdAt} />
+                      </th>
+                      <td className="person-text">
+                        <span className={`person-result person-result--${row.result}`}>
+                          {resultLabels[row.result]}
+                        </span>
+                        {row.result !== "success" ? (
+                          <span className="person-muted person-reason">
+                            {row.failureReason ?? "No reason given"} ({row.errorCode})
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="person-text">{row.app ?? "Not reported"}</td>
+                      <td className="person-text">
+                        {row.ip ? <code>{row.ip}</code> : "Not reported"}
+                      </td>
+                      <td className="person-text">{place(row)}</td>
+                      <td className="person-text">
+                        {[row.operatingSystem, row.browser].filter(Boolean).join(" / ") ||
+                          "Not reported"}
+                        {row.compliant ? <span className="person-muted"> compliant</span> : null}
+                      </td>
+                      <td className="person-text">{row.clientApp ?? "Not reported"}</td>
+                      <td className="person-text">{row.conditionalAccess ?? "Not reported"}</td>
+                      <td className="person-text">
+                        {row.riskLevel && row.riskLevel !== "none" && row.riskLevel !== "hidden"
+                          ? `${row.riskLevel}${row.riskEventTypes.length ? ` (${row.riskEventTypes.join(", ")})` : ""}`
+                          : "None reported"}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </section>
-          </div>
+              {next ? (
+                <button
+                  className="button button--secondary person-more"
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={onMoreSignins}
+                >
+                  Show older sign-ins
+                </button>
+              ) : null}
+            </>
+          )}
+        </section>
+      </PersonTabPanel>
 
-          <section className="panel signin-table person-grid">
-            <h3>IP addresses</h3>
-            <table>
-              <caption className="visually-hidden">IP addresses this person signed in from</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Address</th>
-                  <th scope="col">Location</th>
-                  <th scope="col" className="num">
-                    Sign-ins
-                  </th>
-                  <th scope="col" className="num">
-                    Failed
-                  </th>
-                  <th scope="col">First seen</th>
-                  <th scope="col">Last seen</th>
-                  <th scope="col">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.addresses.map((row) => {
-                  const known = status("ip", row.ip);
-                  return (
-                    <tr key={row.ip}>
-                      <th scope="row">
-                        <code>{row.ip}</code>
-                      </th>
-                      <td className="person-text">{place(row)}</td>
-                      <td className="num">{number.format(row.count)}</td>
-                      <td className="num">{number.format(row.failures)}</td>
-                      <td className="nowrap">{day(row.firstSeen)}</td>
-                      <td className="nowrap">{when(row.lastSeen)}</td>
-                      <td>
-                        <Status {...known} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </section>
-
-          <section className="panel signin-table person-grid">
-            <h3>Devices</h3>
-            <table>
-              <caption className="visually-hidden">Devices this person signed in with</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Device</th>
-                  <th scope="col">Device ID</th>
-                  <th scope="col">Compliant</th>
-                  <th scope="col">Managed</th>
-                  <th scope="col">Join type</th>
-                  <th scope="col" className="num">
-                    Sign-ins
-                  </th>
-                  <th scope="col">Last seen</th>
-                  <th scope="col">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.devices.map((row) => {
-                  const known = status("device", row.deviceId);
-                  return (
-                    <tr key={`${row.deviceId}|${row.operatingSystem}|${row.browser}`}>
-                      <th scope="row">
-                        {[row.operatingSystem, row.browser].filter(Boolean).join(" / ") ||
-                          "Not reported"}
-                      </th>
-                      <td className="person-text">
-                        {row.deviceId ? <code>{row.deviceId}</code> : "Unregistered"}
-                      </td>
-                      <td>{yesNo(row.compliant)}</td>
-                      <td>{yesNo(row.managed)}</td>
-                      <td>{row.trustType ?? "None"}</td>
-                      <td className="num">{number.format(row.count)}</td>
-                      <td className="nowrap">{when(row.lastSeen)}</td>
-                      <td>
-                        {row.deviceId ? (
-                          <Status {...known} />
-                        ) : (
-                          <span className="person-muted">No ID</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <p className="signin-coverage">
-              Sign-in logs do not carry MAC addresses. Those come from Intune device records, which
-              Prism365 does not read yet.
+      <PersonTabPanel idBase={tabsId} tab="licenses" selected={tab}>
+        <section className="panel signin-table" aria-label="Licenses">
+          <h3>Licenses</h3>
+          {directory === null ? (
+            <p className="empty-data">Reading licenses…</p>
+          ) : directory.licenses?.state !== "available" ? (
+            <p className="empty-data">
+              {directory.licenses?.message ?? directory.message ?? "Licenses are unavailable."}
             </p>
-          </section>
-        </>
-      ) : null}
+          ) : directory.licenses.data.length === 0 ? (
+            <p className="empty-data">No licenses assigned.</p>
+          ) : (
+            <>
+              {directory.licenses.message ? (
+                <p className="signin-coverage">{directory.licenses.message}</p>
+              ) : null}
+              <ul className="person-licenses">
+                {directory.licenses.data.map((license) => {
+                  const active = license.servicePlans.filter(
+                    (plan) => plan.provisioningStatus === "Success",
+                  );
+                  return (
+                    <li key={license.id}>
+                      <strong>{licenseName(license.skuPartNumber)}</strong>
+                      <span>{license.skuPartNumber}</span>
+                      <details>
+                        <summary>
+                          {active.length} of {license.servicePlans.length} services on
+                        </summary>
+                        <ul>
+                          {license.servicePlans.map((plan) => (
+                            <li key={plan.servicePlanId}>
+                              {plan.servicePlanName}
+                              <span className="person-muted"> {plan.provisioningStatus}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </section>
+      </PersonTabPanel>
 
-      <PersonChanges session={session} userId={userId} />
-      <PersonReceipts session={session} userId={userId} principal={upn} />
-
-      <section className="panel signin-table person-grid person-history">
-        <div className="panel__header">
-          <h3>Every sign-in</h3>
-          <fieldset className="signin-range">
-            <legend className="visually-hidden">Sign-in result</legend>
-            {(
-              [
-                ["all", "All"],
-                ["success", "Successful"],
-                ["failed", "Not successful"],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={filter === value}
-                className={filter === value ? "is-active" : ""}
-                onClick={() => setFilter(value)}
-              >
-                {label}
-              </button>
-            ))}
-          </fieldset>
-        </div>
-        {signins === null ? (
-          <p className="empty-data">Loading sign-ins…</p>
-        ) : signins.length === 0 ? (
-          <p className="empty-data">No stored sign-ins match.</p>
-        ) : (
-          <>
-            <table>
-              <caption className="visually-hidden">Sign-ins, newest first</caption>
-              <thead>
-                <tr>
-                  <th scope="col">When</th>
-                  <th scope="col">Result</th>
-                  <th scope="col">App</th>
-                  <th scope="col">IP address</th>
-                  <th scope="col">Location</th>
-                  <th scope="col">Device</th>
-                  <th scope="col">Client</th>
-                  <th scope="col">Conditional Access</th>
-                  <th scope="col">Risk</th>
-                </tr>
-              </thead>
-              <tbody>
-                {signins.map((row) => (
-                  <tr key={row.id}>
-                    <th scope="row" className="nowrap">
-                      {when(row.createdAt)}
-                    </th>
-                    <td className="person-text">
-                      <span className={`person-result person-result--${row.result}`}>
-                        {resultLabels[row.result]}
-                      </span>
-                      {row.result !== "success" ? (
-                        <span className="person-muted person-reason">
-                          {row.failureReason ?? "No reason given"} ({row.errorCode})
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="person-text">{row.app ?? "Not reported"}</td>
-                    <td className="person-text">
-                      {row.ip ? <code>{row.ip}</code> : "Not reported"}
-                    </td>
-                    <td className="person-text">{place(row)}</td>
-                    <td className="person-text">
-                      {[row.operatingSystem, row.browser].filter(Boolean).join(" / ") ||
-                        "Not reported"}
-                      {row.compliant ? <span className="person-muted"> compliant</span> : null}
-                    </td>
-                    <td className="person-text">{row.clientApp ?? "Not reported"}</td>
-                    <td className="person-text">{row.conditionalAccess ?? "Not reported"}</td>
-                    <td className="person-text">
-                      {row.riskLevel && row.riskLevel !== "none" && row.riskLevel !== "hidden"
-                        ? `${row.riskLevel}${row.riskEventTypes.length ? ` (${row.riskEventTypes.join(", ")})` : ""}`
-                        : "None reported"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {next ? (
-              <button
-                className="button button--secondary person-more"
-                type="button"
-                disabled={busy !== null}
-                onClick={() => {
-                  setBusy("more");
-                  loadSignins(next)
-                    .catch((loadError: unknown) =>
-                      setError(
-                        loadError instanceof Error
-                          ? loadError.message
-                          : "Sign-ins could not be loaded.",
-                      ),
-                    )
-                    .finally(() => setBusy(null));
-                }}
-              >
-                Show older sign-ins
-              </button>
-            ) : null}
-          </>
-        )}
-      </section>
-
-      {record && !history && record.findings.length === 0 ? (
-        <div className="signin-findings__empty">
-          <ShieldIcon />
-          <p>Nothing has been flagged about this person.</p>
-        </div>
-      ) : null}
+      <PersonTabPanel idBase={tabsId} tab="changes" selected={tab}>
+        <PersonChanges session={session} userId={userId} onLoaded={onChanges} />
+        <PersonReceipts session={session} userId={userId} principal={upn} />
+      </PersonTabPanel>
     </section>
   );
 }
