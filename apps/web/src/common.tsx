@@ -1,4 +1,4 @@
-import type { Finding, FindingState, PrismSession } from "@prism365/contracts";
+import type { Finding, FindingState, PrismSession, Severity } from "@prism365/contracts";
 import { CopyButton } from "./CopyButton.tsx";
 import { LockIcon } from "./icons.tsx";
 
@@ -51,6 +51,80 @@ export function day(value: string | null): string {
 }
 
 export const number = new Intl.NumberFormat();
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+// A timestamp this far ahead of now is a clock that disagrees with the server by a little, and
+// reads as "just now". Further ahead than this it is shown as its date, never as a time ago.
+const CLOCK_SKEW = 5 * MINUTE;
+
+// How long ago something happened, the way a mail client says it: "just now", "5 min ago",
+// "3 h ago", "yesterday", "4 days ago", and from a week on, the date. Whole units are rounded
+// down, so "59 min ago" never turns into "60 min ago" a moment early.
+export function relativeTime(value: string | null, now: number = Date.now()): string {
+  if (!value) return "never";
+  const at = Date.parse(value);
+  if (Number.isNaN(at)) return "unknown";
+  const elapsed = now - at;
+  if (elapsed < -CLOCK_SKEW) return day(value);
+  if (elapsed < MINUTE) return "just now";
+  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)} min ago`;
+  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)} h ago`;
+  const days = Math.floor(elapsed / DAY);
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return day(value);
+}
+
+// The time as words, with the exact moment on hover and in the markup. `now` is for tests.
+export function RelativeTime({ value, now }: { value: string | null; now?: number }) {
+  if (!value || Number.isNaN(Date.parse(value)))
+    return <span className="person-muted">{relativeTime(value, now)}</span>;
+  return (
+    <time dateTime={value} title={when(value)}>
+      {relativeTime(value, now)}
+    </time>
+  );
+}
+
+const severityNames: Record<Severity, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  info: "Info",
+};
+
+// The one way severity looks outside a finding's own card: a dot in the severity's colour and
+// its name, so the colour never carries the meaning alone. With a count it reads "2 critical",
+// for a tile. Info shares low's colour.
+export function SeverityDot({ severity, count }: { severity: Severity; count?: number }) {
+  const name = severityNames[severity];
+  return (
+    <span className={`sev sev--${severity === "info" ? "low" : severity}`}>
+      <span className="sev__dot" aria-hidden="true" />
+      {count === undefined ? name : `${number.format(count)} ${name.toLowerCase()}`}
+    </span>
+  );
+}
+
+// Keys for loading rows. Fixed, because the rows are identical and never reorder.
+const SKELETON_KEYS = Array.from({ length: 20 }, (_, position) => `skeleton-${position + 1}`);
+
+// Grey bars where rows will be, drawn without animation: the loading state of a list or table.
+// The label is for screen readers, which would otherwise hear nothing. Spans throughout, so it can
+// stand inside a button as well as in a panel.
+export function SkeletonRows({ rows = 4, label }: { rows?: number; label: string }) {
+  return (
+    <span className="skeleton" aria-busy="true">
+      <span className="visually-hidden">{label}</span>
+      {SKELETON_KEYS.slice(0, Math.min(rows, SKELETON_KEYS.length)).map((key) => (
+        <span className="skeleton__row" key={key} aria-hidden="true" />
+      ))}
+    </span>
+  );
+}
 
 export async function readJson<T>(
   url: string,

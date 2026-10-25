@@ -893,7 +893,7 @@ export function createApp(options: AppOptions = {}) {
     return findingListSchema.shape.items.element.parse(updated);
   });
 
-  // Notification center ("attention") and the Microsoft service-health panel.
+  // Notification center ("attention") and Microsoft service health.
   // The enabled read pack that carries a permission. Several packs can share one permission
   // (AuditLog.Read.All, LicenseAssignment.Read.All); consent can only be asked for an enabled one.
   const featureFor = (permission: string) =>

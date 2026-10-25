@@ -12,17 +12,9 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { day, post, readJson, when } from "./common.tsx";
 
-// Notification center: Admin attention on the Overview, the Notifications inbox, and its settings.
+// Notification center: the list the Overview reads, the Notifications inbox, and its settings.
 // Microsoft's status and labels are shown as Microsoft's; the administrator's own state (read,
 // reviewed, done, muted) is shown separately and never changes what Microsoft said.
-
-const classTitles: Record<string, string> = {
-  incident: "Service incidents",
-  advisory: "Service advisories",
-  "message.action": "Message center: action required",
-  "message.retirement": "Message center: retirements",
-  "message.change": "Message center: major changes",
-};
 
 const reviewLabels: Record<AttentionReviewState, string> = {
   new: "Not reviewed",
@@ -249,88 +241,6 @@ function SystemAlertRow({
         )
       ) : null}
     </li>
-  );
-}
-
-// Overview section: open items grouped by kind, plus problems that stop Prism365 from checking.
-// Only categories whose connector exists and is set up appear.
-export function AdminAttention({
-  session,
-  onNavigate,
-}: {
-  session: PrismSession;
-  onNavigate: (view: "signins" | "notifications") => void;
-}) {
-  const { list, error, reload } = useAttention(session, "open");
-  const groups = new Map<string, AttentionItem[]>();
-  for (const item of list?.items ?? []) {
-    // Incidents have their own panel above; advisories and Message center live here.
-    if (item.class === "incident" || item.class === "advisory") continue;
-    groups.set(item.class, [...(groups.get(item.class) ?? []), item]);
-  }
-  const unset = (list?.sources ?? []).filter((source) => source.state === "not_enabled");
-  return (
-    <section className="panel admin-attention" aria-labelledby="attention-title">
-      <div className="overview-list__header">
-        <h2 id="attention-title">Admin attention</h2>
-        <button className="link-button" type="button" onClick={() => onNavigate("notifications")}>
-          All notifications
-        </button>
-      </div>
-      {error ? <p className="form-error">{error}</p> : null}
-      {!list ? (
-        <p className="empty-data">Loading…</p>
-      ) : (
-        <>
-          {list.system.length > 0 ? (
-            <div className="attention-group">
-              <h3>Prism365 monitoring</h3>
-              <ul className="system-alerts">
-                {list.system.map((alert) => (
-                  <SystemAlertRow
-                    key={alert.id}
-                    alert={alert}
-                    onNavigate={() => onNavigate("signins")}
-                  />
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {[...groups].map(([itemClass, items]) => (
-            <div className="attention-group" key={itemClass}>
-              <h3>
-                {classTitles[itemClass] ?? "Other items"} ({items.length})
-              </h3>
-              <ul className="attention-list">
-                {items.slice(0, 5).map((item) => (
-                  <li key={item.id}>
-                    <AttentionCard item={item} session={session} onChanged={() => void reload()} />
-                  </li>
-                ))}
-              </ul>
-              {items.length > 5 ? (
-                <button
-                  className="link-button"
-                  type="button"
-                  onClick={() => onNavigate("notifications")}
-                >
-                  {items.length - 5} more in Notifications
-                </button>
-              ) : null}
-            </div>
-          ))}
-          {list.system.length === 0 && groups.size === 0 ? (
-            <p className="empty-data">Nothing needs your attention from the connected sources.</p>
-          ) : null}
-          {unset.length > 0 ? (
-            <p className="signin-coverage">
-              Not set up: {unset.map((source) => source.title).join(", ")}. Enable them in
-              ENABLED_READ_FEATURES to add their items here.
-            </p>
-          ) : null}
-        </>
-      )}
-    </section>
   );
 }
 

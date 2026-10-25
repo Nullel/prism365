@@ -127,7 +127,7 @@ export const attentionSettingsSchema = z.object({
 });
 export type AttentionSettings = z.infer<typeof attentionSettingsSchema>;
 
-// "Is Microsoft down?": the service-health panel. `state` says whether the check itself worked,
+// Microsoft service health, as the Overview and Microsoft updates show it. `state` says whether the check itself worked,
 // separately from what it found.
 export const serviceHealthStatusSchema = z.object({
   state: z.enum(["ok", "partial", "stale", "failed", "never", "missing_permission", "not_enabled"]),

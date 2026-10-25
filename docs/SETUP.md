@@ -498,7 +498,7 @@ the sign-in audit (`docs/modules/signins-audit.md`); the People view builds on w
 
 ## Service health, Message center and notifications
 
-The Overview's "Is Microsoft down?" panel, Admin attention and the Notifications inbox read
+The Overview's Microsoft tile and "From Microsoft" list, and the Microsoft updates page, read
 Microsoft's service communications. Each source is optional: enable `service.health.read`
 and `service.messages.read` (both in the default feature list of `npm run setup`), grant them,
 and start collecting. Your account needs a role Microsoft accepts, such as Global Reader,

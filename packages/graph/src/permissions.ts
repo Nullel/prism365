@@ -130,7 +130,7 @@ export const permissionPacks = [
     phase: "mvp",
     defaultEnabled: false,
     purpose: "Show current Microsoft 365 service health, incidents and advisories.",
-    deniedBehavior: "The service-health panel says it cannot check, and why.",
+    deniedBehavior: "Microsoft incidents show as not checked, with the reason.",
     clouds: allGraphClouds,
     prerequisites: [],
     roleNotes:

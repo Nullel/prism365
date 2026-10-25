@@ -41,6 +41,13 @@
   --info: #3b5794;
   --info-soft: #eef2fa;
 
+  /* Severity borrows the status colours: critical and high share danger, and the dot tells them
+     apart by a ring. No hue of its own. */
+  --sev-critical: var(--danger);
+  --sev-high: var(--danger);
+  --sev-medium: var(--warning);
+  --sev-low: var(--info);
+
   --sidebar-bg: #0f1614;
   --sidebar-hover: #18211e;
   --sidebar-active: #1e2a26;
@@ -642,6 +649,80 @@ a.button {
   color: var(--info);
   background: var(--info-soft);
 }
+/* Severity dot and name: the one way severity looks outside a finding's own card. */
+.sev {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sev-color, var(--text-2));
+  font-size: var(--text-xs);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sev--critical {
+  --sev-color: var(--sev-critical);
+}
+.sev--high {
+  --sev-color: var(--sev-high);
+}
+.sev--medium {
+  --sev-color: var(--sev-medium);
+}
+.sev--low {
+  --sev-color: var(--sev-low);
+}
+.sev__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sev-color, var(--text-3));
+}
+.sev__dot--critical {
+  --sev-color: var(--sev-critical);
+}
+.sev__dot--medium {
+  --sev-color: var(--sev-medium);
+}
+.sev--critical .sev__dot,
+.sev__dot--critical {
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+.tile-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.tile-dot--good {
+  background: var(--success);
+}
+.tile-dot--warning {
+  background: var(--warning);
+}
+
+/* Loading: grey bars where the rows will be. Still on purpose, so nothing moves for anyone with
+   Reduce Motion on. */
+.skeleton {
+  display: grid;
+  gap: 10px;
+  padding: 6px 0 10px;
+}
+.skeleton__row {
+  display: block;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+.skeleton__row:nth-child(3n + 2) {
+  width: 86%;
+}
+.skeleton__row:nth-child(3n + 3) {
+  width: 64%;
+}
+
 .person-tag--ok,
 .person-result--success {
   color: var(--success);
@@ -930,95 +1011,174 @@ a.button {
   display: grid;
   gap: 16px;
 }
-.overview-status {
-  display: flex;
-  align-items: center;
+/* Summary tiles: five buttons, each opening the page that owns the figure. */
+.overview-tiles {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.overview-tile {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
   padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
 }
-.overview-status > div {
-  flex: 1;
-  min-width: 0;
+.overview-tile:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-muted);
 }
-.overview-status strong {
-  font-size: var(--text-md);
-  font-weight: 600;
-}
-.overview-status p {
-  margin: 2px 0 0;
+.overview-tile__label {
   color: var(--text-2);
   font-size: var(--text-sm);
+  font-weight: 500;
 }
-:where(.overview-status) .collection-dot {
-  margin-top: 0;
+.overview-tile__value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-2xl);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
 }
-.overview-grid {
+.overview-tile__value--muted {
+  color: var(--text-3);
+  font-size: var(--text-lg);
+  font-weight: 550;
+  letter-spacing: 0;
+}
+.overview-tile__detail {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.overview-tile__counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+}
+.overview-tile__alert {
+  color: var(--danger);
+  font-weight: 550;
+}
+.overview-tile .skeleton {
+  gap: 8px;
+  padding: 4px 0 0;
+}
+.overview-tile .skeleton__row:nth-child(2) {
+  height: 24px;
+  width: 45%;
+}
+
+/* Two lists of one-line rows. */
+.overview-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   align-items: start;
 }
-.overview-list {
-  padding: 14px 16px 6px;
+.overview-card {
+  min-width: 0;
+  padding: 14px 16px 10px;
 }
-.overview-list__header {
+.overview-card__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
-.overview-list h2 {
+.overview-card__header h2 {
   margin: 0;
   font-size: var(--text-md);
   font-weight: 600;
 }
-.overview-list ul {
+.overview-card__note {
+  margin: 6px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.overview-rows {
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.overview-list li {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 0;
+.overview-rows li + li {
   border-top: 1px solid var(--border);
 }
-.overview-list li:first-child {
-  border-top: 0;
-}
-.overview-list :where(li) > div {
+.overview-row {
   display: grid;
-  flex: 1;
-  min-width: 0;
-}
-.overview-list__title {
+  gap: 2px;
+  width: calc(100% + 16px);
+  margin: 0 -8px;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text);
+  background: none;
   font-size: var(--text-sm);
-  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
 }
-.overview-list__sub {
+.overview-row:hover {
+  background: var(--surface-muted);
+}
+/* Line one: the severity and the whole title, wrapping to a second line and no further. */
+.overview-row__head {
+  display: -webkit-box;
   overflow: hidden;
-  color: var(--text-3);
-  font-size: var(--text-xs);
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  font-weight: 550;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
-.overview-list :where(li) .link-button {
-  font-size: inherit;
-  justify-content: flex-start;
+.overview-row__head .sev {
+  margin-right: 4px;
+  vertical-align: baseline;
 }
-.overview-list :where(li) .link-button--strong {
-  font-size: var(--text-sm);
-}
-.overview-list__meta {
+/* Line two: who it is about on the left, when or by when on the right. */
+.overview-row__meta {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.overview-row__subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.overview-list__meta .person-tag {
+.overview-row__when,
+.overview-row__due {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.overview-row__due--late {
   color: var(--danger);
+  font-weight: 550;
 }
 
 /* Demo dashboard ------------------------------------------------------- */
@@ -2162,9 +2322,33 @@ a.button {
 
 @media (max-width: 1080px) {
   .dashboard-grid,
-  .lower-grid,
-  .overview-grid {
+  .lower-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1100px) {
+  .overview-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 959px) {
+  .overview-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A phone: two tiles to a row with the odd one across. */
+@media (max-width: 560px) {
+  .overview-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .overview-tiles > li:last-child {
+    grid-column: 1 / -1;
+  }
+  .overview-tile {
+    padding: 12px;
   }
 }
 
@@ -2234,9 +2418,6 @@ a.button {
   .ai-grant-status {
     flex-direction: column;
   }
-  .overview-status {
-    flex-wrap: wrap;
-  }
 }
 
 @media (max-width: 560px) {
@@ -2296,95 +2477,10 @@ a.button {
   line-height: 18px;
   text-align: center;
 }
-.health-panel,
-.admin-attention,
 .notifications__inbox,
 .notification-settings {
   padding: 14px 16px;
 }
-.health-panel__header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px 16px;
-}
-.health-panel__header h2,
-.admin-attention h2 {
-  margin: 0;
-  font-size: var(--text-md);
-  font-weight: 600;
-}
-.health-panel__header p {
-  margin: 2px 0 0;
-  color: var(--text-3);
-  font-size: var(--text-xs);
-}
-.health-verdict {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: var(--radius);
-  font-size: var(--text-sm);
-  font-weight: 600;
-}
-.health-verdict::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.health-verdict--clear {
-  color: var(--success);
-  background: var(--success-soft);
-}
-.health-verdict--issues {
-  color: var(--danger);
-  background: var(--danger-soft);
-}
-.health-state {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  color: var(--warning);
-  background: var(--warning-soft);
-  font-size: var(--text-sm);
-}
-.health-state--failed,
-.health-state--missing_permission {
-  color: var(--danger);
-  background: var(--danger-soft);
-}
-.health-state--not_enabled,
-.health-state--never {
-  color: var(--text-2);
-  background: var(--surface-sunken);
-}
-.health-state code {
-  font-size: var(--text-xs);
-}
-.health-state a,
-.health-state .link-button {
-  font-size: var(--text-sm);
-}
-.incident-list {
-  display: grid;
-  gap: 0;
-  margin-top: 8px;
-}
-.incident {
-  padding: 12px 0;
-  border-top: 1px solid var(--border);
-}
-.incident:first-child {
-  border-top: 0;
-}
-.incident--resolved h3 {
-  color: var(--text-2);
-}
-.incident__topline,
 .attention__topline,
 .attention__labels {
   display: flex;
@@ -2392,21 +2488,11 @@ a.button {
   align-items: center;
   gap: 6px;
 }
-.incident__topline strong {
-  font-size: var(--text-sm);
-  font-weight: 600;
-}
-.incident__status {
-  color: var(--text-2);
-  font-size: var(--text-xs);
-}
-.incident h3,
 .attention h3 {
   margin: 6px 0 4px;
   font-size: var(--text-md);
   font-weight: 600;
 }
-.incident p,
 .attention__summary {
   max-width: 90ch;
   margin: 0 0 4px;
@@ -2414,48 +2500,9 @@ a.button {
   font-size: var(--text-sm);
   white-space: pre-line;
 }
-.incident__label {
-  color: var(--text);
-  font-weight: 600;
-}
-.incident .incident__meta,
 .attention .incident__meta {
   color: var(--text-3);
   font-size: var(--text-xs);
-}
-.health-resolved,
-.health-services {
-  margin-top: 10px;
-  font-size: var(--text-sm);
-}
-.health-resolved summary,
-.health-services summary {
-  color: var(--accent);
-  font-weight: 500;
-}
-.health-services ul {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 4px 16px;
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.health-services li {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-}
-.attention-group + .attention-group {
-  margin-top: 12px;
-}
-.attention-group h3 {
-  margin: 8px 0 2px;
-  color: var(--text-2);
-  font-size: var(--text-sm);
-  font-weight: 600;
 }
 .attention-list,
 .system-alerts {
@@ -2592,36 +2639,37 @@ a.button {
   background: var(--surface-muted);
   font-size: var(--text-sm);
 }
-.audit-group {
-  padding: 4px 0;
-}
 .audit-group__title {
   margin: 0;
-  padding: 10px 16px 6px;
+  padding: 10px 0 6px;
   color: var(--text-3);
   font-size: var(--text-xs);
   font-weight: 550;
 }
-.audit-scope,
-.audit-scope__editor {
-  padding: 4px 16px 12px;
-}
+
+/* The scope, as one line above the table. */
 .audit-scope {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px 16px;
+  padding: 8px 16px;
 }
 .audit-scope p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
   margin: 0;
-  color: var(--text-2);
+  color: var(--text);
   font-size: var(--text-sm);
 }
-.audit-scope p.muted-label {
-  margin-top: 2px;
-  color: var(--text-3);
-  font-size: var(--text-xs);
+.audit-scope__label {
+  color: var(--text-2);
+}
+.audit-scope__editing {
+  padding: 4px 16px 12px;
 }
 .audit-scope__choices {
   margin: 0 0 12px;
@@ -2633,48 +2681,178 @@ a.button {
   color: var(--text-3);
   font-size: var(--text-xs);
 }
-.audit-list {
-  margin: 0;
+.audit-scope__editor {
   padding: 0;
-  list-style: none;
 }
-.audit-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 16px;
+
+/* The catalog: every audit and its latest result in one table, grouped by category. */
+.catalog-table {
+  overflow: hidden;
 }
-.audit-item + .audit-item {
-  border-top: 1px solid var(--border);
-}
-.audit-item__body {
-  min-width: 0;
-}
-.audit-item h3 {
-  margin: 0;
-  font-size: var(--text-md);
-}
-.audit-item h3 .link-button {
-  font-size: var(--text-md);
-}
-.audit-item__body p {
-  max-width: 78ch;
-  margin: 2px 0 0;
-  color: var(--text-2);
+.catalog-table table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
   font-size: var(--text-sm);
-}
-.audit-item__body .audit-item__meta {
-  color: var(--text-3);
-  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
-.audit-item__body .audit-item__meta--failed,
-.audit-item__body .audit-item__access {
-  color: var(--warning);
+.catalog-table th,
+.catalog-table td {
+  padding: 10px 12px;
+  overflow: hidden;
+  text-align: left;
+  vertical-align: middle;
+}
+.catalog-table thead th {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 550;
+  white-space: nowrap;
+}
+.catalog-table thead th:nth-child(2) {
+  width: 112px;
+}
+.catalog-table thead th:nth-child(3) {
+  width: 34%;
+}
+.catalog-table thead th:nth-child(4) {
+  width: 92px;
+}
+.catalog-table thead th:nth-child(5) {
+  width: 84px;
+}
+.catalog-table thead th:first-child,
+.catalog-table .catalog-table__name {
+  padding-left: 16px;
+}
+.catalog-table__group th {
+  padding: 8px 16px 6px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  background: var(--surface-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.catalog-table tbody:first-of-type .catalog-table__group th {
+  border-top: 0;
+}
+.catalog-table__row > * {
+  border-top: 1px solid var(--border);
+}
+.catalog-table__group + .catalog-table__row > * {
+  border-top: 0;
+}
+.catalog-table__row:hover > * {
+  background: var(--surface-muted);
+}
+.catalog-table__name {
+  min-width: 0;
+  font-weight: 400;
+}
+.catalog-table__link {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: 600;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.catalog-table__link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.catalog-table__purpose {
+  display: block;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.catalog-table__when {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.audit-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--text);
+}
+.audit-result__total,
+.audit-result__note {
+  flex: none;
+  white-space: nowrap;
+}
+.audit-result__note {
+  color: var(--text-3);
+}
+/* Only the number worth a look takes a colour. Critical also goes heavier and wears a ring on its
+   dot, because red and amber of this lightness differ by hue alone. */
+.audit-result__issue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--issue-color, var(--text-3));
+}
+.audit-result__issue--critical {
+  --issue-color: var(--sev-critical);
+  font-weight: 600;
+}
+.audit-result__issue--warning {
+  --issue-color: var(--sev-medium);
+}
+.audit-result__issue-text,
+.audit-result__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-result--none {
+  color: var(--text-3);
+}
+.audit-result--running {
+  color: var(--text-2);
+}
+.audit-result--failed {
+  color: var(--danger);
+}
+.audit-result__access {
+  display: block;
+  color: var(--text-3);
   font-size: var(--text-xs);
 }
-.audit-item__actions,
+.audit-result + .audit-result__access {
+  margin-top: 2px;
+}
+.audit-result__access a {
+  white-space: nowrap;
+}
+.catalog-table__run {
+  text-align: right;
+}
+.catalog-table .skeleton {
+  padding: 10px 16px 12px;
+}
+.catalog-table .skeleton__row {
+  height: 28px;
+}
+.button--compact {
+  min-height: 28px;
+  padding: 0 10px;
+}
+
 .audit-header__actions {
   display: flex;
   flex: none;
@@ -2925,10 +3103,6 @@ button.audit-tile:hover {
   color: var(--text-2);
   font-size: var(--text-sm);
 }
-.audit-item__tag {
-  margin-left: 8px;
-  vertical-align: middle;
-}
 
 .audit-schedule {
   display: grid;
@@ -3063,17 +3237,95 @@ button.audit-tile:hover {
 }
 
 @media (max-width: 860px) {
-  .audit-item,
   .audit-header {
     flex-direction: column;
     align-items: stretch;
   }
-  .audit-item__actions,
   .audit-header__actions {
     justify-content: flex-start;
   }
   .audit-search {
     max-width: none;
+  }
+}
+
+/* A phone: each audit is a stacked block, the name and its Run button on top and the rest as
+   labelled lines under them. Every row is built by the same rules, none by a rule that matches
+   only the first row of a group, and the selectors are as specific as the desktop cell rules they
+   override. Nothing scrolls sideways. */
+@media (max-width: 720px) {
+  .catalog-table table,
+  .catalog-table tbody,
+  .catalog-table__group,
+  .catalog-table__group th {
+    display: block;
+  }
+  .catalog-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+  .catalog-table .catalog-table__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name run"
+      "when when"
+      "result result"
+      "schedule schedule";
+    gap: 2px 12px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .catalog-table .catalog-table__group + .catalog-table__row {
+    border-top: 0;
+  }
+  .catalog-table .catalog-table__row > * {
+    padding: 0;
+    border-top: 0;
+  }
+  .catalog-table .catalog-table__name {
+    grid-area: name;
+  }
+  .catalog-table .catalog-table__run {
+    grid-area: run;
+  }
+  .catalog-table .catalog-table__when {
+    grid-area: when;
+  }
+  .catalog-table .catalog-table__result {
+    grid-area: result;
+  }
+  .catalog-table .catalog-table__schedule {
+    grid-area: schedule;
+  }
+  .catalog-table td[data-label] {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 8px;
+  }
+  .catalog-table td[data-label]::before {
+    content: attr(data-label);
+    min-width: 64px;
+    color: var(--text-3);
+    font-size: var(--text-xs);
+  }
+  .catalog-table__result .audit-result {
+    flex: 1 1 0;
+  }
+  .catalog-table__result .audit-result__access {
+    flex-basis: 100%;
+  }
+
+  /* On a phone the result is the line people read, so it wraps instead of being cut. */
+  .catalog-table .audit-result__issue-text,
+  .catalog-table .audit-result__text {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
   }
 }
 
