@@ -6,7 +6,7 @@ import {
   type PrismSession,
 } from "@prism365/contracts";
 import { useCallback, useEffect, useId, useState } from "react";
-import { day, post, readJson } from "./common.tsx";
+import { post, RelativeTime, readJson } from "./common.tsx";
 
 // Canary accounts: decoy accounts nobody should ever sign in to. An item in the Actions menu on
 // the person's page marks or unmarks one, and a small panel on the sign-in audit page lists them.
@@ -200,7 +200,9 @@ export function CanaryPanelView({
                 ) : (
                   <span className="canary-list__name">{account.principal}</span>
                 )}
-                <span className="person-muted">Added {day(account.addedAt)}</span>
+                <span className="person-muted">
+                  Added <RelativeTime value={account.addedAt} />
+                </span>
                 <button
                   className="button button--secondary"
                   type="button"

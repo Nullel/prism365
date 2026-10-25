@@ -17,6 +17,7 @@ import {
   RuleForm,
   ruleSummary,
 } from "../src/Alerts.tsx";
+import { at, expectSkeleton, relativeCell } from "./markup.ts";
 
 // The Alerts settings page, rendered without a browser. Synthetic destinations and rules only.
 
@@ -365,6 +366,45 @@ describe("alerts page", () => {
     }
     expect(text(renderToStaticMarkup(createElement(Alerts, { session })))).not.toContain(
       "The demo sends no alerts.",
+    );
+  });
+});
+
+describe("the page speaks the shared visual language", () => {
+  const table = (deliveries = overview().deliveries) =>
+    renderToStaticMarkup(
+      createElement(DeliveryTable, {
+        deliveries,
+        destinations: overview().destinations,
+        rules: overview().rules,
+      }),
+    );
+
+  it("shows when each delivery went as words, with the exact moment on hover", () => {
+    const html = at("2026-10-24T12:00:00.000Z", () => table());
+    expect(html).toMatch(relativeCell("2026-10-24T11:00:00.000Z", "1 h ago"));
+    expect(html).toMatch(relativeCell("2026-10-24T10:30:00.000Z", "1 h ago"));
+  });
+
+  it("says what an empty list is for in one plain line", () => {
+    const html = table([]);
+    expect(html).toContain('<p class="empty-data">Nothing has been sent yet.');
+    expect(html).not.toContain("<table");
+  });
+
+  it("draws still skeleton rows while the settings load", () => {
+    const session: PrismSession = sessionSchema.parse({
+      mode: "live",
+      configured: true,
+      authenticated: true,
+      displayName: "Synthetic admin",
+      csrfToken: "synthetic-csrf-token-value-000000000000",
+      enabledFeatures: [],
+      missingConfiguration: [],
+    });
+    expectSkeleton(
+      renderToStaticMarkup(createElement(Alerts, { session })),
+      "Loading alert settings",
     );
   });
 });

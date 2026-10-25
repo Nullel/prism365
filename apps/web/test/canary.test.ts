@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { CanaryPanel, CanaryPanelView, CanaryStepView, canaryExplanation } from "../src/Canary.tsx";
 import { People } from "../src/People.tsx";
 import { SigninAudit } from "../src/SigninAudit.tsx";
-import { findAll, hostTree, textOf } from "./markup.ts";
+import { at, findAll, hostTree, textOf } from "./markup.ts";
 
 function session(overrides: Partial<PrismSession> = {}): PrismSession {
   return sessionSchema.parse({
@@ -151,6 +151,15 @@ describe("canary panel", () => {
     expect(html.match(/Remove/g)).toHaveLength(2);
     expect(panel({ accounts: [account("a-1", "x@example.invalid")], busy: true })).toContain(
       "disabled",
+    );
+  });
+
+  it("says when each account was added in words, with the exact moment on hover", () => {
+    const html = at("2026-10-22T15:00:00.000Z", () =>
+      panel({ accounts: [account("a-1", "decoy.one@example.invalid")] }),
+    );
+    expect(html).toMatch(
+      /Added <time dateTime="2026-10-22T12:00:00.000Z" title="[^"]+">3 h ago<\/time>/,
     );
   });
 

@@ -2,7 +2,8 @@ import { type PrismSession, sessionSchema } from "@prism365/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { SigninAudit } from "../src/SigninAudit.tsx";
+import { findingsEmptyText, runLine, SigninAudit } from "../src/SigninAudit.tsx";
+import { at, relativeCell } from "./markup.ts";
 
 function session(overrides: Partial<PrismSession> = {}): PrismSession {
   return sessionSchema.parse({
@@ -38,8 +39,43 @@ describe("sign-in audit view", () => {
     const html = render(session());
     expect(html).toContain("Not collecting");
     expect(html).toContain("Start collecting");
-    expect(html).toContain("Nothing open");
+    // Before the first read answers, the list says it is loading, never "Nothing open".
+    expect(html).toContain("Loading findings");
+    expect(html).not.toContain("Nothing open");
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("not a measure of");
+  });
+});
+
+describe("the page speaks the shared visual language", () => {
+  const run = {
+    credentialKind: "delegated" as const,
+    startedAt: "2026-10-22T19:44:01.000Z",
+    finishedAt: "2026-10-22T19:46:40.000Z",
+    fetched: 1354,
+    inserted: 1300,
+    findings: 0,
+    skipped: 0,
+    errorCategory: null,
+  };
+  const line = (status: "succeeded" | "failed" | "running") =>
+    at("2026-10-22T22:00:00.000Z", () =>
+      renderToStaticMarkup(createElement("p", null, runLine({ ...run, status }))),
+    );
+
+  it("says when the last run started in words, whatever became of it", () => {
+    for (const status of ["succeeded", "failed", "running"] as const)
+      expect(line(status), status).toMatch(relativeCell("2026-10-22T19:44:01.000Z", "2 h ago"));
+  });
+
+  it("gives an empty list one plain line in the shared style", () => {
+    expect(findingsEmptyText("open")).toBe(
+      "Nothing open. New findings appear here as collection runs.",
+    );
+    expect(findingsEmptyText("resolved")).toBe(
+      "No resolved findings. Findings you resolve are listed here.",
+    );
+    const html = render(session());
+    expect(html).not.toContain("signin-findings__empty");
   });
 });

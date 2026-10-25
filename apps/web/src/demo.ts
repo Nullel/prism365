@@ -56,7 +56,7 @@ export const localDemoDashboard = dashboardSummarySchema.parse({
       category: "identity",
       severity: "high",
       observedAt: "2026-10-13T16:42:00.000Z",
-      evidence: "Demo sign-in events · selected 7-day window",
+      evidence: "Demo sign-in events, selected 7-day window",
     },
     {
       id: "activity-2",
@@ -66,7 +66,7 @@ export const localDemoDashboard = dashboardSummarySchema.parse({
       category: "sharing",
       severity: "medium",
       observedAt: "2026-10-13T14:18:00.000Z",
-      evidence: "Demo directory audit · synthetic actor",
+      evidence: "Demo directory audit, synthetic actor",
     },
     {
       id: "activity-3",
@@ -75,7 +75,7 @@ export const localDemoDashboard = dashboardSummarySchema.parse({
       category: "system",
       severity: "info",
       observedAt: "2026-10-13T12:06:00.000Z",
-      evidence: "Demo connector state · no tenant connected",
+      evidence: "Demo connector state, no tenant connected",
     },
   ],
 });
