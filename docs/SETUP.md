@@ -438,8 +438,7 @@ are kept when you grant another.
 
 ## Encrypted durable state
 
-Local development may use memory sessions, which reset on restart. AI and script import require
-PostgreSQL, and production live mode additionally requires encrypted durable state and
+Local development may use memory sessions, which reset on restart. AI requires PostgreSQL, and production live mode additionally requires encrypted durable state and
 certificates.
 
 Provision PostgreSQL 17 with a separate migration administrator. Generate unique URL-safe
@@ -452,12 +451,24 @@ an existing runtime password.
 The application role must not be a superuser, bypass RLS, or own the tables. State rows use
 tenant keys and forced row-level policies; encrypted values are bound to tenant, kind and key
 with AES-GCM. Token-cache entries expire with their eight-hour session; OAuth state lasts five
-minutes, AI grants one hour, and imported script packages thirty days. Expired state is
+minutes and AI grants one hour. Expired state is
 physically pruned on startup and every minute while the service runs. The runtime can insert and
 read audit records but cannot update or delete them.
 
+Script package import was removed on 2026-10-24. An install that imported packages before then
+still holds them, encrypted, until they expire 30 days after import. The purge deletes them only
+while the service runs in live mode with its identity configured, and only for that tenant, so
+on any other install they stay. To remove them at once, run this as a PostgreSQL superuser
+(row-level security hides the rows from other roles):
+
+```sql
+DELETE FROM prism365_state WHERE kind = 'automationPackage';
+```
+
+The access ledger keeps its import and removal entries either way.
+
 Keep the encryption key backed up securely with the encrypted database backup. Losing the key
-makes stored sessions and script packages unreadable. Key rotation, backup and restore, and
+makes stored sessions unreadable. Key rotation, backup and restore, and
 audit-ledger retention and deletion procedures still need an operator-reviewed runbook before
 stable production use.
 
@@ -631,20 +642,7 @@ After investigating a user, select the available datasets and approve a one-hour
 AI panel. The first integration permits directory, license-count, and sign-in evidence only;
 external processing, raw records, and direct identifiers remain off. Arbitrary names typed in a
 question cannot be reliably detected by redaction; do not put unnecessary sensitive text there.
-AI can explain evidence and cannot change the tenant or run imported scripts.
-
-## Private script import
-
-The Lifecycle Automation view imports organization-owned JSON packages into encrypted storage.
-Use `{ "manifest": {...}, "files": [{ "path": "scripts/run.ps1", "content": "..." }] }`.
-Only PowerShell 7 packages with a fixed `.ps1` entrypoint, safe unique paths, an empty
-network-host list, and a total canonical payload below 500000 bytes are accepted. See
-[Lifecycle automation](AUTOMATION.md) for the full schema and a valid example.
-
-Each upload receives a digest and unreviewed status. Neither import nor viewing the library
-executes code. Package source is excluded from list responses, AI evidence, and public
-repository content. Import only code you have permission to use and remove embedded secrets
-first.
+AI can explain evidence and cannot change the tenant.
 
 ## Required pilot acceptance
 
@@ -656,7 +654,6 @@ Before enabling real organizational use, verify in a non-production tenant:
 4. Removing an operator, signing out, or revoking consent blocks further access.
 5. Sessions survive a server restart only when durable state is configured; no token is logged.
 6. AI receives only selected minimized evidence and records failed attempts as well as success.
-7. Package source remains private and cannot execute.
 
 ## Primary references
 

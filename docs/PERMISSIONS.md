@@ -106,26 +106,12 @@ packs are added only when named or with `--features all`, and `directory.permiss
 - `Mail.Send` or any other `*.Send` permission. Alerts go through the operator's own mail relay or
   a webhook (ADR-0011, `docs/alerts.md`), so they need no Microsoft permission at all.
 
-## Future lifecycle action packs (disabled)
+## Write permissions
 
-The preview contracts name these permissions so an administrator can understand the eventual
-impact. They are not requested by the current app, are not present in the executable read catalog,
-and cannot be used because no execution route or write identity exists.
-
-| Capability | Candidate least permission / authorization | Constraint before approval |
-|---|---|---|
-| Create a user | `User.Create` | Approved property template; separate write identity |
-| Disable or enable a user | `User.EnableDisableAccount.All` + `User.Read.All` | Entra role and target-role checks; protected accounts blocked |
-| Revoke sessions | `User.RevokeSessions.All` | Eventual propagation; external-user limitation disclosed |
-| Assign or remove licenses | `LicenseAssignment.ReadWrite.All` | Capacity, dependency, and retention preview |
-| Add or remove static group members | `GroupMember.ReadWrite.All` | Dynamic and role-assignable groups excluded by default |
-| Mailbox handoff | Resource-scoped Exchange Online RBAC | Separate connector/identity; recipient and resource scope |
-| File/data handoff | Workload-specific resource authorization | Ownership, sharing, retention, hold, and region policy |
-
-Prism365 will not replace these packs with `Directory.ReadWrite.All`. Authentication-method
-deletion, user deletion, role assignment, dynamic-group mutation, and legal-hold changes require
-separate designs and are not part of the initial lifecycle runbooks. See
-[Lifecycle automation](AUTOMATION.md).
+Prism365 is read-only (ROADMAP Milestone 6): the running app asks for no write permission and has
+no write identity. Onboarding, role changes and offboarding, and the runbooks behind them, belong
+to the separate action tool that a [handoff](handoff.md) feeds. That tool requests its own
+permissions and holds its own credentials; Prism365 shares none with it.
 
 ## Endpoint constraints
 

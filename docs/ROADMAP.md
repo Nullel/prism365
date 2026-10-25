@@ -22,6 +22,7 @@ Goal: a contributor can run, understand, test, and safely extend the project.
 - [x] Source inventory, Microsoft-cloud profiles, and compatibility contract.
 - [x] Provider-neutral AI broker, access-grant contract, and synthetic isolation/policy tests.
 - [x] Preview-only lifecycle runbook contracts, synthetic UI, and isolated-runner design.
+  Removed 2026-10-24, see Milestone 6.
 - [x] CI, dependency updates, CodeQL, issue forms, and security policy.
 - [ ] Publish the repository after owner authentication and settings review.
 - [ ] Enable branch protection, private vulnerability reporting, secret scanning, and
@@ -124,8 +125,10 @@ confirmation, audit chain and adversarial review.
 
 What this means for code that already exists:
 
-- The lifecycle preview and private package import stay exactly as they are: preview-only,
-  execution disabled. They are retained as design artifacts and will not gain a runner.
+- The lifecycle preview and the private package import were removed on 2026-10-24, with their
+  routes, contracts, screens and `packages/automation`. Packages stored before then are never
+  read again. The purge removes them once their 30-day retention ends, on an install that still
+  runs with its identity configured; `docs/SETUP.md` has the SQL for removing them by hand.
 - The write permission packs in `packages/graph/src/permissions.ts` stay catalogued as
   "never requested" so the readiness screen can say so explicitly.
 - ADR 0005 (isolated lifecycle automation) is superseded by this decision and kept for history.
@@ -164,6 +167,4 @@ What this means for code that already exists:
 | Implement resumable report ingestion | data/platform | tenant-scoped queue/cursors, retries/deferred throttles, restart recovery, retention/deletion and source coverage |
 | Add tenant license/service-health reporting | connector/frontend | narrow opt-in adapters, clear source states and accessible report views |
 | Verify local model pilot | AI/security | model identity/citations/coverage, no identifiers/raw disclosure, grants/revocation/cancellation/audit failure |
-| Design first native write action | automation/security | dedicated write identity, exact before/after preview, second approval, protected target checks, idempotency, recovery |
-| Implement isolated script worker | automation/platform | reviewed immutable digest, capability broker, runtime bounds, denied egress, action ledger and reconciliation |
 | Complete stable-release operations | platform/security | image digests, backup/restore, encryption-key rotation, audit retention/deletion, SBOM/release signing and external review |

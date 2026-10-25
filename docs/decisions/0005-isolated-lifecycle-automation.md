@@ -1,7 +1,9 @@
 # ADR-0005: isolate imported lifecycle automation behind capability grants
 
-- Status: superseded for execution on 2026-10-22: Prism365 stays read-only (see `docs/ROADMAP.md`,
-  Milestone 6). Private import and preview remain as design artifacts; no runner will be built.
+- Status: superseded on 2026-10-22 by the read-only decision (`docs/ROADMAP.md`, Milestone 6).
+  Prism365 never writes to a tenant; runbooks belong to the separate action tool that a handoff
+  feeds (`docs/handoff.md`). The import, preview and package code was removed on 2026-10-24.
+  This record is kept for history.
 - Date: 2026-10-13
 - Owners: maintainers
 - Implementation update: 2026-10-14

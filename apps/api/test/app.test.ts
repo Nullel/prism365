@@ -59,57 +59,18 @@ describe("demo API", () => {
     );
   });
 
-  it("lists lifecycle workflows without enabling import or execution", async () => {
-    const response = await app.inject({ method: "GET", url: "/v1/automation/workflows" });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      mode: "demo",
-      importEnabled: false,
-      executionEnabled: false,
-      items: expect.arrayContaining([
-        expect.objectContaining({ lifecycle: "onboarding" }),
-        expect.objectContaining({ lifecycle: "offboarding", runtime: "powershell7" }),
-      ]),
-    });
-  });
-
-  it("returns a guarded preview and never exposes an execute endpoint", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/v1/automation/previews",
-      payload: {
-        workflowId: "prism365.secure-offboarding",
-        targetEmail: "alex.rivera@example.invalid",
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      mode: "demo",
-      targetEmail: "alex.rivera@example.invalid",
-      executionAllowed: false,
-      steps: expect.arrayContaining([
-        expect.objectContaining({ capability: "identity.user.disable" }),
-      ]),
-    });
-
-    const executeResponse = await app.inject({
-      method: "POST",
-      url: "/v1/automation/runs",
-      payload: { previewId: response.json().previewId },
-    });
-    expect(executeResponse.statusCode).toBe(404);
-  });
-
-  it("rejects an invalid lifecycle preview request", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/v1/automation/previews",
-      payload: { workflowId: "prism365.secure-offboarding", targetEmail: "not-an-email" },
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ error: "invalid_request" });
+  it("has no automation, script package or single-user investigation routes", async () => {
+    for (const [method, url] of [
+      ["GET", "/v1/automation/workflows"],
+      ["POST", "/v1/automation/previews"],
+      ["POST", "/v1/automation/runs"],
+      ["GET", "/v1/automation/packages"],
+      ["POST", "/v1/automation/packages"],
+      ["DELETE", "/v1/automation/packages/44444444-4444-4444-8444-444444444444"],
+      ["GET", "/v1/investigations/user?email=alex@example.invalid"],
+    ] as const) {
+      const response = await app.inject({ method, url });
+      expect(response.statusCode, `${method} ${url}`).toBe(404);
+    }
   });
 });

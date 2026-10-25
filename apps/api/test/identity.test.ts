@@ -133,7 +133,7 @@ describe("tenant identity", () => {
     const { identity, store } = harness();
     const app = createApp({ config, identity, store });
     const anonymous = await app.inject({
-      url: "/api/v1/investigations/user?email=alex@example.invalid",
+      url: "/api/v1/ai/status",
     });
     expect(anonymous.statusCode).toBe(401);
     const start = await app.inject({ url: "/v1/auth/login?feature=directory.users.read" });
@@ -182,38 +182,6 @@ describe("tenant identity", () => {
       (await app.inject({ url: "/v1/session", headers: { cookie: sessionCookie } })).json()
         .authenticated,
     ).toBe(false);
-    await app.close();
-  });
-
-  it("performs an authenticated user lookup with independently missing optional consent", async () => {
-    const { identity, store } = harness();
-    const fetcher = vi.fn<typeof fetch>(async () =>
-      Response.json({
-        id: "synthetic-user",
-        displayName: "Alex (demo fixture)",
-        userPrincipalName: "alex@example.invalid",
-        mail: null,
-        jobTitle: null,
-        department: null,
-        userType: "Member",
-      }),
-    );
-    const app = createApp({ config, identity, store, graphFetch: fetcher });
-    const login = await identity.startLogin("directory.users.read");
-    const signedIn = await identity.finishLogin("fake-code", login.state, login.state);
-    const response = await app.inject({
-      url: "/v1/investigations/user?email=alex@example.invalid",
-      headers: { cookie: `prism365_session=${signedIn.handle}` },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      mode: "live",
-      profile: { state: "available" },
-      licenses: { state: "missingConsent" },
-      signIns: { state: "missingConsent" },
-    });
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(store.audit.some((entry) => entry.event.type === "investigation.requested")).toBe(true);
     await app.close();
   });
 

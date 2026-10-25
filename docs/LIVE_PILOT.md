@@ -14,18 +14,17 @@ role check, and rotating the dev secret (it was pasted into a chat transcript du
 ## 1. What "demo" is, in the code
 
 - `DATA_MODE` defaults to `demo` (`apps/api/src/config.ts`). In demo the API has no identity
-  service, `/v1/dashboard/summary` returns the synthetic `demoDashboard`, investigations return
-  `createDemoUserInvestigation`, lifecycle previews are enabled, and the UI shows the
+  service, `/v1/dashboard/summary` returns the synthetic `demoDashboard`, and the UI shows the
   "Exploring with synthetic data" banner, "Northstar Labs / Demo workspace" and "Demo" chips.
 - `DATA_MODE=live` flips all of that: the identity service must be configured or the UI shows
   "Complete installation setup" with the missing keys; every `/v1/*` route except session,
   login, callback and health requires a session; `/v1/dashboard/summary` returns 409 and the
-  Overview renders the "Tenant-wide reporting is next" placeholder; lifecycle previews return
-  409; User Intelligence runs against Microsoft Graph with the operator's delegated token.
+  Overview renders the "Tenant-wide reporting is next" placeholder; People looks accounts up in
+  Microsoft Graph with the operator's delegated token.
 
 So "out of demo" is two different jobs:
 
-1. **Live mode on a real tenant.** Removes every demo label, makes User Intelligence real.
+1. **Live mode on a real tenant.** Removes every demo label, makes People lookups real.
    This is Phase 1 and it is mostly operator work plus two small code fixes.
 2. **A real Overview.** Needs tenant-wide collection, which does not exist yet (roadmap
    Milestones 2 and 3). Phase 2 scopes the first honest version.
@@ -118,8 +117,8 @@ Open `http://localhost:5173`, not `127.0.0.1`: the cookie and the origin check a
 `PUBLIC_ORIGIN`. Expected: topbar says "Live setup", the Tenant connection card offers
 "Sign in with Microsoft". After the round trip: "Microsoft connected", "Signed in as …", the
 workspace switcher reads "Your organization / Microsoft 365 workspace", the demo banner is
-gone. Open User Intelligence and look up a test user; the licence and sign-in sections each
-report their own state.
+gone. Open People and look up a test user by their full work email; the licence and sign-in
+sections each report their own state.
 
 ### 2.5 Two code fixes before the pilot (GREEN)
 
@@ -158,10 +157,10 @@ prove:
    restarted, that section explains missing access on its own.
 3. A missing user returns the 404 state; an empty sign-in window says so without implying
    inactivity.
-4. After sign-out, `/api/v1/investigations/user` answers 401.
+4. After sign-out, `/api/v1/people/lookup?email=...` answers 401.
 5. No token or secret appears in the API console (Fastify logging is off; check anyway).
 
-Items 6 and 7 of the original list (AI, packages) need PostgreSQL and belong to Phase 1b.
+Item 6 of the original list (AI) needs PostgreSQL and belongs to Phase 1b.
 
 ### 2.8 Phase 1b, optional: durable state
 
@@ -170,7 +169,7 @@ PostgreSQL 17 locally. Note that `compose.yml` publishes no host port for `db`, 
 service or run the `migrate` service inside Compose. Set `DATABASE_ADMIN_URL` and a 24+
 character URL-safe `DATABASE_APP_PASSWORD`, migrate, then set `DATABASE_URL` for the
 `prism365_app` login and a 64-hex `STATE_ENCRYPTION_KEY`. This unlocks AI grants (with
-`AI_LOCAL_MODEL` and Ollama) and script import, and runs the six skipped PostgreSQL tests.
+`AI_LOCAL_MODEL` and Ollama) and runs the six skipped PostgreSQL tests.
 
 ### 2.9 Phase 1c: the container (done 2026-10-22, see SETUP.md "Live install in Docker")
 
