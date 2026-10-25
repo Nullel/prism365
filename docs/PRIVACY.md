@@ -62,7 +62,7 @@ people does not. Stored sign-in tables are encrypted at rest only by the host's 
 encryption (FileVault, BitLocker or LUKS); Prism365 does not encrypt those columns itself.
 Backups made with `scripts/docker-live.sh backup` are plain `pg_dump` files outside retention.
 
-The "Check Have I Been Pwned" button on a person page opens haveibeenpwned.com with that person's
+"Check Have I Been Pwned" in a person page's Actions menu opens haveibeenpwned.com with that person's
 address in the link, so the administrator's browser, not Prism365, sends it to HIBP, only when
 the button is pressed. The address also lands in that browser's history.
 

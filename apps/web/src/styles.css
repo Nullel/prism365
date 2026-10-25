@@ -728,6 +728,10 @@ a.button {
   color: var(--success);
   background: var(--success-soft);
 }
+.person-tag--notice {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
 
 /* Tables */
 .signin-table {
@@ -2092,13 +2096,49 @@ a.button {
 .copy-button.is-failed {
   color: var(--danger);
 }
-.person-header {
-  padding: 0;
-  background: none;
-  border: 0;
+/* A person's page. Numbers line up in every table and tile on it. */
+.person {
+  font-variant-numeric: tabular-nums;
 }
-.person-header .eyebrow {
-  display: none;
+/* The header: avatar, name and state on the left, the Actions menu on the right. It wraps on a
+   narrow screen, with the menu under the identity. */
+.person-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+}
+.person-header__main {
+  display: flex;
+  flex: 1 1 320px;
+  gap: 14px;
+  min-width: 0;
+}
+.person-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: var(--text-lg);
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.person-header__text {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  min-width: 0;
+}
+.person-header__title {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
 }
 .person-header h2 {
   margin: 0;
@@ -2108,17 +2148,181 @@ a.button {
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
-.person-header p {
-  margin: 4px 0 0;
+.person-header__principal {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+/* The address may be long; here it wraps instead of pushing the header wider than the screen. */
+.person-header__principal .copy-line__text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.person-header__role {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
   color: var(--text-2);
   font-size: var(--text-md);
   overflow-wrap: anywhere;
 }
+.person-header__role > span + span {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-strong);
+}
+.person-header__actions {
+  flex: none;
+}
+.person-header__below {
+  flex: 1 0 100%;
+}
 .person-tags {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 8px;
+}
+.person-findings {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+}
+.person-findings__label {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+/* The Actions menu: a button over a short list of choices. */
+.actions-menu {
+  position: relative;
+}
+.actions-menu__chevron {
+  transform: rotate(90deg);
+}
+.actions-menu__button[aria-expanded="true"] .actions-menu__chevron {
+  transform: rotate(-90deg);
+}
+.actions-menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  width: max-content;
+  min-width: 260px;
+  max-width: min(360px, calc(100vw - 32px));
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+.actions-menu__item {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text);
+  background: none;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.actions-menu__item:hover:not(:disabled),
+.actions-menu__item:focus-visible {
+  background: var(--surface-muted);
+}
+.actions-menu__item:focus-visible {
+  box-shadow: inset 0 0 0 2px #3a9b7d;
+}
+.actions-menu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.actions-menu__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+.actions-menu__label svg {
+  width: 13px;
+  height: 13px;
+  color: var(--text-3);
+}
+.actions-menu__hint {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* The tabs under the header. The strip scrolls sideways by itself on a narrow screen. */
+.person-tabs-strip {
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+.person-tabs {
+  display: flex;
+  gap: 4px;
+}
+.person-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
   gap: 6px;
-  margin-top: 10px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  background: none;
+  font-size: var(--text-sm);
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.person-tab:hover {
+  color: var(--text);
+}
+.person-tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+/* The strip clips outside shadows, so the focus ring sits inside the tab. */
+.person-tab:focus-visible {
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 2px #3a9b7d;
+}
+.person-tab__count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--text-2);
+  background: var(--surface-sunken);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+/* Every panel stays on the page; the ones not showing are hidden. The column may shrink below
+   its content, so a wide table scrolls inside its own panel instead of widening the page. */
+.person-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+.person-panel[hidden] {
+  display: none;
+}
+.person-panel:focus-visible {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--ring);
 }
 .person-muted {
   color: var(--text-3);
@@ -2425,6 +2629,10 @@ a.button {
   .person-header h2 {
     font-size: var(--text-xl);
   }
+  .actions-menu__list {
+    right: auto;
+    left: 0;
+  }
   .legend {
     display: none;
   }
@@ -2611,14 +2819,6 @@ a.button {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 0 16px;
-}
-
-.person-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  margin: 12px 0 0;
 }
 
 /* Audits --------------------------------------------------------------- */

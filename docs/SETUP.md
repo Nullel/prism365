@@ -521,7 +521,7 @@ per audit) and can be exported as CSV. See `docs/audits.md`.
 
 ## Breach lookup (Have I Been Pwned)
 
-Each person page has a Check Have I Been Pwned button. It opens haveibeenpwned.com in a new tab
+Each person page's Actions menu has Check Have I Been Pwned. It opens haveibeenpwned.com in a new tab
 with the person's mailbox address (or, failing that, their sign-in name) already searched,
 using HIBP's documented link `https://haveibeenpwned.com/account/{address}`. Nothing needs
 configuring and no API key is used: the search runs in your own browser, and Prism365 itself

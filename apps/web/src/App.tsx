@@ -28,6 +28,7 @@ import {
 } from "./icons.tsx";
 import { LiveOverview } from "./LiveOverview.tsx";
 import { People } from "./People.tsx";
+import { type PersonTab, parsePersonTab } from "./PersonTabs.tsx";
 import { SetupChecklist } from "./Setup.tsx";
 import { SigninAudit } from "./SigninAudit.tsx";
 import { TenantConnection } from "./TenantConnection.tsx";
@@ -257,12 +258,15 @@ export function readAuthNotice(): string {
 }
 
 // The page in the address bar, so links can open a view, an account or an audit, and the back
-// button works: #/audits/accounts.inactive, #/people/<id>. Other hashes (the skip link) are not
-// routes and leave the page alone.
+// button works: #/audits/accounts.inactive, #/people/<id>, #/people/<id>/signins. Other hashes
+// (the skip link) are not routes and leave the page alone.
 export interface Route {
   view: WorkspaceView;
   person: string | null;
   audit: string | null;
+  // The tab of an open person's page. Left out for the Overview, which is what a plain
+  // #/people/<id> opens, so a route without it means the same as one that names it.
+  tab?: PersonTab;
 }
 
 const workspaceViews: readonly WorkspaceView[] = [
@@ -290,9 +294,13 @@ export function parseRoute(hash: string): Route | null {
   const [name = "", ...rest] = hash.slice(2).split("/");
   const view = workspaceViews.find((item) => item === (movedViews[name] ?? name));
   if (!view) return null;
+  // A last segment that names a tab is the tab; anything else stays part of the id, as it did
+  // before the tabs existed.
+  const tab = view === "people" && rest.length > 1 ? parsePersonTab(rest[rest.length - 1]) : null;
+  const idParts = tab ? rest.slice(0, -1) : rest;
   let detail: string | null = null;
   try {
-    detail = rest.length > 0 && rest.join("/") ? decodeURIComponent(rest.join("/")) : null;
+    detail = idParts.length > 0 && idParts.join("/") ? decodeURIComponent(idParts.join("/")) : null;
   } catch {
     detail = null;
   }
@@ -300,13 +308,18 @@ export function parseRoute(hash: string): Route | null {
     view,
     person: view === "people" ? detail : null,
     audit: view === "audits" ? detail : null,
+    ...(tab && tab !== "overview" && detail ? { tab } : {}),
   };
 }
 
 export function routeHash(route: Route): string {
   const detail =
     route.view === "people" ? route.person : route.view === "audits" ? route.audit : null;
-  return `#/${route.view}${detail ? `/${encodeURIComponent(detail)}` : ""}`;
+  const tab =
+    route.view === "people" && route.person && route.tab && route.tab !== "overview"
+      ? `/${route.tab}`
+      : "";
+  return `#/${route.view}${detail ? `/${encodeURIComponent(detail)}` : ""}${tab}`;
 }
 
 const initialRoute = (): Route =>
@@ -321,21 +334,23 @@ export function App() {
   const [view, setView] = useState<WorkspaceView>(() => initialRoute().view);
   const [person, setPerson] = useState<string | null>(() => initialRoute().person);
   const [audit, setAudit] = useState<string | null>(() => initialRoute().audit);
+  const [personTab, setPersonTab] = useState<PersonTab>(() => initialRoute().tab ?? "overview");
   // Keep the address bar in step with the page, and follow back and forward. A load without
   // a route replaces its entry rather than adding one.
   useEffect(() => {
-    const next = routeHash({ view, person, audit });
+    const next = routeHash({ view, person, audit, tab: personTab });
     if (window.location.hash === next) return;
     const url = `${window.location.pathname}${window.location.search}${next}`;
     if (parseRoute(window.location.hash)) window.history.pushState(null, "", url);
     else window.history.replaceState(null, "", url);
-  }, [view, person, audit]);
+  }, [view, person, audit, personTab]);
   useEffect(() => {
     const follow = () => {
       const route = parseRoute(window.location.hash);
       if (!route) return;
       setView(route.view);
       setPerson(route.person);
+      setPersonTab(route.tab ?? "overview");
       setAudit(route.audit);
     };
     window.addEventListener("popstate", follow);
@@ -345,8 +360,13 @@ export function App() {
       window.removeEventListener("hashchange", follow);
     };
   }, []);
-  const openPerson = (userId: string) => {
+  // A person's page always opens on its first tab.
+  const selectPerson = (userId: string | null) => {
     setPerson(userId);
+    setPersonTab("overview");
+  };
+  const openPerson = (userId: string) => {
+    selectPerson(userId);
     setView("people");
   };
   const openAudit = (auditId: string) => {
@@ -354,7 +374,7 @@ export function App() {
     setView("audits");
   };
   const navigate = (next: WorkspaceView) => {
-    if (next === "people") setPerson(null);
+    if (next === "people") selectPerson(null);
     if (next === "audits") setAudit(null);
     setView(next);
   };
@@ -601,7 +621,9 @@ export function App() {
                   key={`${session.mode}-${session.authenticated}`}
                   session={session}
                   selected={person}
-                  onSelect={setPerson}
+                  onSelect={selectPerson}
+                  tab={personTab}
+                  onTab={setPersonTab}
                 />
               ) : null}
               {view === "audits" ? (

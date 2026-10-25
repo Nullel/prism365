@@ -72,7 +72,16 @@ export function PersonChangeList({
   );
 }
 
-export function PersonChanges({ session, userId }: { session: PrismSession; userId: string }) {
+export function PersonChanges({
+  session,
+  userId,
+  onLoaded,
+}: {
+  session: PrismSession;
+  userId: string;
+  // Told what has loaded each time the list changes, for the count on the page's Changes tab.
+  onLoaded?: (page: PersonChangePage) => void;
+}) {
   const path = `/api/v1/people/${encodeURIComponent(userId)}/changes`;
   const [page, setPage] = useState<PersonChangePage | null>(null);
   const [error, setError] = useState("");
@@ -107,6 +116,10 @@ export function PersonChanges({ session, userId }: { session: PrismSession; user
     });
     return () => controller.abort();
   }, [live, load]);
+
+  useEffect(() => {
+    if (page) onLoaded?.(page);
+  }, [page, onLoaded]);
 
   if (!live) return null;
   return (

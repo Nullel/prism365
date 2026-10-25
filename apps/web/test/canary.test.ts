@@ -2,9 +2,10 @@ import { type CanaryAccount, type PrismSession, sessionSchema } from "@prism365/
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CanaryPanel, CanaryPanelView, CanaryToggle, CanaryToggleView } from "../src/Canary.tsx";
+import { CanaryPanel, CanaryPanelView, CanaryStepView, canaryExplanation } from "../src/Canary.tsx";
 import { People } from "../src/People.tsx";
 import { SigninAudit } from "../src/SigninAudit.tsx";
+import { findAll, hostTree, textOf } from "./markup.ts";
 
 function session(overrides: Partial<PrismSession> = {}): PrismSession {
   return sessionSchema.parse({
@@ -33,62 +34,77 @@ const text = (html: string) => {
   return current.replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 };
 
-const toggle = (
-  overrides: Partial<Parameters<typeof CanaryToggleView>[0]> = {},
+const step = (
+  overrides: Partial<Parameters<typeof CanaryStepView>[0]> = {},
 ): ReturnType<typeof renderToStaticMarkup> =>
   renderToStaticMarkup(
-    createElement(CanaryToggleView, {
+    createElement(CanaryStepView, {
       name: "Avery Stone",
-      active: false,
       confirming: false,
       busy: false,
       error: "",
-      onChange: noop,
       onConfirm: noop,
       onCancel: noop,
       ...overrides,
     }),
   );
 
-describe("canary toggle", () => {
-  it("is a checkbox with a one-line explanation, off by default", () => {
-    const html = toggle();
-    expect(html).toContain("Canary account");
-    expect(text(html)).toContain(
+describe("canary explanation", () => {
+  it("is one plain sentence pair that says what a canary does", () => {
+    expect(canaryExplanation).toBe(
       "A decoy account nobody should ever sign in to. Any sign-in attempt on it, successful or not, opens a critical finding.",
     );
-    expect(html).toMatch(/<input[^>]*type="checkbox"/);
-    expect(html).not.toContain("checked");
-    expect(html).not.toContain("Mark as canary");
+  });
+});
+
+describe("canary step after the menu item", () => {
+  it("draws nothing until there is a question or a failure to show", () => {
+    expect(step()).toBe("");
   });
 
-  it("is on when the account is a canary", () => {
-    expect(toggle({ active: true })).toContain("checked");
-  });
-
-  it("asks before turning on, naming the account, and stays off until confirmed", () => {
-    const html = toggle({ confirming: true });
+  it("asks before marking, naming the account", () => {
+    const html = step({ confirming: true });
     expect(text(html)).toContain("Mark Avery Stone as a canary account?");
     expect(html).toContain("Mark as canary");
     expect(html).toContain("Cancel");
-    expect(html).not.toContain("checked");
+    expect(html).not.toMatch(/<input/);
   });
 
-  it("does not ask before turning off", () => {
-    expect(toggle({ active: true })).not.toContain("Cancel");
+  it("wires the two buttons to confirm and cancel", () => {
+    const calls: string[] = [];
+    const tree = hostTree(
+      createElement(CanaryStepView, {
+        name: "Avery Stone",
+        confirming: true,
+        busy: false,
+        error: "",
+        onConfirm: () => calls.push("confirm"),
+        onCancel: () => calls.push("cancel"),
+      }),
+    );
+    const buttons = findAll(tree, (host) => host.tag === "button");
+    expect(buttons.map((button) => textOf(button))).toEqual(["Mark as canary", "Cancel"]);
+    for (const button of buttons) {
+      const onClick = button.props.onClick;
+      if (typeof onClick !== "function") throw new Error("The button has no click handler.");
+      onClick();
+    }
+    expect(calls).toEqual(["confirm", "cancel"]);
   });
 
-  it("disables the controls while saving and shows a failure", () => {
-    const busy = toggle({ busy: true, confirming: true });
-    expect(busy.match(/disabled/g)?.length).toBeGreaterThanOrEqual(3);
-    const failed = toggle({ error: "That account is not in the directory." });
+  it("disables the buttons while saving and shows a failure", () => {
+    const busy = step({ busy: true, confirming: true });
+    expect(busy.match(/disabled/g)?.length).toBeGreaterThanOrEqual(2);
+    const failed = step({ error: "That account is not in the directory." });
     expect(failed).toContain('role="alert"');
     expect(failed).toContain("That account is not in the directory.");
+    expect(failed).not.toContain("Mark as canary");
   });
 
   it("reads like a colleague wrote it", () => {
-    const words = text(toggle({ confirming: true, error: "Nothing was changed." }));
+    const words = text(step({ confirming: true, error: "Nothing was changed." }));
     expect(words).not.toMatch(/[—–·!]/);
+    expect(canaryExplanation).not.toMatch(/[—–·!]/);
   });
 });
 
@@ -117,7 +133,7 @@ describe("canary panel", () => {
     const html = panel();
     expect(html).toContain("Canary accounts");
     expect(text(html)).toContain(
-      "No canary accounts yet. Turn on Canary account on a person's page",
+      "No canary accounts yet. Open a person's page and choose Mark as canary in its Actions menu to add one.",
     );
     expect(html).not.toContain("<ul");
   });
@@ -155,18 +171,13 @@ describe("canary panel", () => {
 });
 
 describe("canary containers", () => {
-  it("show the controls, disabled, while the list loads", () => {
-    const html = renderToStaticMarkup(
-      createElement(CanaryToggle, { session: session(), userId: "u-1", name: "Avery Stone" }),
-    );
-    expect(html).toContain("Canary account");
-    expect(html).toContain("disabled");
+  it("show the panel's heading while the list loads", () => {
     expect(renderToStaticMarkup(createElement(CanaryPanel, { session: session() }))).toContain(
       "Canary accounts",
     );
   });
 
-  it("sit on the person page and the sign-in audit page", () => {
+  it("sit in the person page's Actions menu and on the sign-in audit page", () => {
     const profile = renderToStaticMarkup(
       createElement(People, {
         session: session(),
@@ -174,7 +185,10 @@ describe("canary containers", () => {
         onSelect: noop,
       }),
     );
-    expect(profile).toContain("Canary account");
+    // The item is there, off until the list has loaded, and its explanation is its second line.
+    expect(profile).toMatch(/<button[^>]*disabled=""[^>]*><span[^>]*>Mark as canary<\/span>/);
+    expect(text(profile)).toContain(canaryExplanation);
+    expect(profile).not.toMatch(/type="checkbox"/);
     expect(renderToStaticMarkup(createElement(SigninAudit, { session: session() }))).toContain(
       "Canary accounts",
     );

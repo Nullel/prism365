@@ -5,7 +5,7 @@ import {
   personReceiptListSchema,
 } from "@prism365/contracts";
 import { useEffect, useId, useState } from "react";
-import { readJson, when } from "./common.tsx";
+import { RelativeTime, readJson } from "./common.tsx";
 import { statusTagClass } from "./Handoffs.tsx";
 
 // What other tools reported doing to this person, from the receipts imported on the Handoffs
@@ -68,7 +68,9 @@ export function PersonReceiptsPanel({
                     {item.tool.name} <span className="muted-label">{item.tool.version}</span>
                     <span className="muted-label"> run by {item.performedBy}</span>
                   </td>
-                  <td className="nowrap">{when(item.performedAt)}</td>
+                  <td className="nowrap">
+                    <RelativeTime value={item.performedAt} />
+                  </td>
                   <td className="person-text">{item.detail || "None"}</td>
                 </tr>
               ))}
