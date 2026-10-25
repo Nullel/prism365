@@ -31,7 +31,16 @@ import {
 } from "@prism365/contracts";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { CopyButton, useCopy } from "./CopyButton.tsx";
-import { AccountName, day, number, post, readJson, when } from "./common.tsx";
+import {
+  AccountName,
+  day,
+  number,
+  post,
+  RelativeTime,
+  readJson,
+  SkeletonRows,
+  when,
+} from "./common.tsx";
 import { downloadHandoff } from "./Handoffs.tsx";
 import { ArrowUpRightIcon, CheckIcon, CopyIcon, DownloadIcon } from "./icons.tsx";
 
@@ -45,16 +54,6 @@ const POLL_MILLISECONDS = 5_000;
 const MAX_POLL_MILLISECONDS = 30_000;
 const PAGE_ROWS = 200;
 
-export function ago(value: string, now = Date.now()): string {
-  const seconds = Math.max(0, Math.round((now - Date.parse(value)) / 1_000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  return day(value);
-}
-
 function duration(run: AuditRun): string | null {
   if (!run.finishedAt) return null;
   const seconds = Math.max(
@@ -64,24 +63,89 @@ function duration(run: AuditRun): string | null {
   return seconds < 90 ? `${seconds} s` : `${Math.round(seconds / 60)} min`;
 }
 
-// The line under an audit's name: what its last run found, or why there is nothing.
-export function runHeadline(run: AuditRun | null, definition: AuditDefinition): string {
-  if (!run) return "Not run yet.";
-  if (run.status === "running") return `Running since ${when(run.startedAt)}.`;
-  if (run.status === "failed")
-    return `Last run failed ${ago(run.startedAt)}: ${run.error?.message ?? "no reason recorded."}`;
-  const notable =
+// The tile an audit leads with: the first one that is neither neutral nor good and has something
+// to show. It names the number worth a look in the catalog, and its tone decides whether the
+// Overview counts the audit as needing attention.
+export function headlineTile(run: AuditRun | null): AuditSummaryItem | null {
+  if (run?.status !== "succeeded") return null;
+  return (
     run.summary.find((item) => item.tone !== "neutral" && item.tone !== "good" && item.value > 0) ??
-    null;
-  const total = `${number.format(run.rowCount)} ${run.rowCount === 1 ? definition.subject.one : definition.subject.many}`;
-  return [
-    `Ran ${ago(run.startedAt)}`,
-    total,
-    notable ? `${number.format(notable.value)} ${notable.label.toLowerCase()}` : null,
-    run.complete ? null : "partial",
-  ]
+    null
+  );
+}
+
+export type AuditResultState = "none" | "running" | "failed" | "critical" | "warning" | "clear";
+
+// What the latest run says about the audit, for the colour of its result.
+export function auditResultState(run: AuditRun | null): AuditResultState {
+  if (!run) return "none";
+  if (run.status === "running") return "running";
+  if (run.status === "failed") return "failed";
+  const tone = headlineTile(run)?.tone;
+  return tone === "critical" || tone === "warning" ? tone : "clear";
+}
+
+export interface AuditResultCounts {
+  // Latest run led with a critical number, or failed: a failure is treated as critical because
+  // nothing about that audit is known.
+  critical: number;
+  // Latest run led with a warning number.
+  warning: number;
+  // Audits that have a finished or failed run to count at all.
+  ran: number;
+}
+
+// How many audits' latest results are critical, how many only warn, and out of how many that
+// have run. A run still going says nothing yet, and an audit that never ran has nothing to show.
+export function auditResultCounts(catalog: AuditCatalog): AuditResultCounts {
+  const counts: AuditResultCounts = { critical: 0, warning: 0, ran: 0 };
+  for (const entry of catalog.audits) {
+    if (entry.lastRun) counts.ran += 1;
+    const state = auditResultState(entry.lastRun);
+    if (state === "critical" || state === "failed") counts.critical += 1;
+    else if (state === "warning") counts.warning += 1;
+  }
+  return counts;
+}
+
+// A tile label turned into the middle of a sentence: the first letter drops to lower case unless
+// the second is not lower case, so "Inactive 30+ days" becomes "inactive 30+ days" while "MFA not
+// set up" and "No Microsoft 365 app activity" keep what makes them read right.
+export function lowerFirst(label: string): string {
+  return /^\p{Lu}\p{Ll}/u.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label;
+}
+
+export interface RunResultParts {
+  // "214 accounts"
+  total: string;
+  // The number worth a look and how serious it is; null when nothing stands out.
+  issue: { text: string; tone: "critical" | "warning" } | null;
+  partial: boolean;
+}
+
+export function runResultParts(run: AuditRun, definition: AuditDefinition): RunResultParts {
+  const tile = headlineTile(run);
+  return {
+    total: `${number.format(run.rowCount)} ${run.rowCount === 1 ? definition.subject.one : definition.subject.many}`,
+    issue: tile
+      ? {
+          text: `${number.format(tile.value)} ${lowerFirst(tile.label)}`,
+          tone: tile.tone === "critical" ? "critical" : "warning",
+        }
+      : null,
+    partial: !run.complete,
+  };
+}
+
+// What the last run found, without when it ran: the Last run column says that.
+export function runResult(run: AuditRun | null, definition: AuditDefinition): string {
+  if (!run) return "Not run yet";
+  if (run.status === "running") return "Running";
+  if (run.status === "failed") return `Failed: ${run.error?.message ?? "no reason recorded"}`;
+  const parts = runResultParts(run, definition);
+  return [parts.total, parts.issue?.text, parts.partial ? "partial result" : null]
     .filter(Boolean)
-    .join(" · ");
+    .join(", ");
 }
 
 function AccessAction({ entry }: { entry: AuditCatalogEntry }) {
@@ -98,6 +162,7 @@ function AccessAction({ entry }: { entry: AuditCatalogEntry }) {
   return null;
 }
 
+// Why an audit cannot run, in plain words; null when it can.
 function accessText(entry: AuditCatalogEntry): string | null {
   const { availability } = entry;
   if (availability.state === "missing_permission")
@@ -282,10 +347,10 @@ export function AuditScopeSection({
   }
 
   return (
-    <section className="panel audit-group" aria-label="Audit scope">
-      <h2 className="audit-group__title">Audit scope</h2>
+    <section className="panel audit-scope-bar" aria-label="Audit scope">
       {editing ? (
-        <div ref={editor}>
+        <div className="audit-scope__editing" ref={editor}>
+          <h2 className="audit-group__title">Audit scope</h2>
           <AuditScopeEditor
             domains={choices}
             selected={draft}
@@ -306,19 +371,165 @@ export function AuditScopeSection({
         </div>
       ) : (
         <div className="audit-scope">
-          <div>
-            <p>{scopeSummary(saved)}</p>
+          <p>
+            <span className="audit-scope__label">Scope:</span> {scopeSummary(saved)}
             {applies.length > 0 ? (
-              <p className="muted-label">Applies to {titles(applies)} on their next run.</p>
+              <span
+                className="muted-label audit-scope__note"
+                title={`Applies to ${titles(applies)}.`}
+              >
+                Takes effect on each audit's next run.
+              </span>
             ) : null}
-            {settings.domains.length === 0 ? <p className="muted-label">{firstRunHint}</p> : null}
-          </div>
+            {settings.domains.length === 0 ? (
+              <span className="muted-label audit-scope__note">{firstRunHint}</span>
+            ) : null}
+          </p>
           <button ref={change} className="button button--secondary" type="button" onClick={open}>
             Change
           </button>
         </div>
       )}
     </section>
+  );
+}
+
+// The address of an audit's results page. A link rather than a button, so it can be opened in a
+// new tab; a plain click is handled in the page without reloading.
+export function auditHref(auditId: string): string {
+  return `#/audits/${encodeURIComponent(auditId)}`;
+}
+
+function ResultCell({
+  entry,
+  running,
+  state,
+}: {
+  entry: AuditCatalogEntry;
+  running: boolean;
+  state: AuditResultState;
+}) {
+  const { definition, availability, lastRun } = entry;
+  const access = accessText(entry);
+  const text = running ? "Running" : runResult(lastRun, definition);
+  // The numbers of a finished run are split so the total reads as plain text and only the
+  // number worth a look carries a colour.
+  const parts =
+    !running && lastRun?.status === "succeeded" ? runResultParts(lastRun, definition) : null;
+  return (
+    <>
+      {access && !lastRun ? null : (
+        <span className={`audit-result audit-result--${state}`} title={text}>
+          {parts ? (
+            <>
+              <span className="audit-result__total">{parts.total}</span>
+              {parts.issue ? (
+                <span className={`audit-result__issue audit-result__issue--${parts.issue.tone}`}>
+                  <span
+                    className={`sev__dot sev__dot--${parts.issue.tone === "critical" ? "critical" : "medium"}`}
+                    aria-hidden="true"
+                  />
+                  <span className="visually-hidden">
+                    {parts.issue.tone === "critical" ? "Critical: " : "Warning: "}
+                  </span>
+                  <span className="audit-result__issue-text">{parts.issue.text}</span>
+                </span>
+              ) : null}
+              {parts.partial ? <span className="audit-result__note">partial result</span> : null}
+            </>
+          ) : (
+            <span className="audit-result__text">{text}</span>
+          )}
+        </span>
+      )}
+      {access ? (
+        <span className="audit-result__access">
+          {access}{" "}
+          {availability.state === "missing_permission" && availability.grantFeature ? (
+            <a href={`/api/v1/auth/login?feature=${encodeURIComponent(availability.grantFeature)}`}>
+              Grant access
+            </a>
+          ) : null}{" "}
+          <a href="#/access">Microsoft access</a>
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+function AuditTableRow({
+  entry,
+  busy,
+  demo,
+  frequency,
+  now,
+  onOpen,
+  onRun,
+}: {
+  entry: AuditCatalogEntry;
+  busy: string | null;
+  demo: boolean;
+  // How often it runs on its own; null when the page has not loaded the schedule.
+  frequency: AuditScheduleFrequency | null;
+  now: number;
+  onOpen: (auditId: string) => void;
+  onRun: (auditId: string) => void;
+}) {
+  const { definition, lastRun } = entry;
+  const running =
+    Boolean(entry.runningId) || busy === definition.id || lastRun?.status === "running";
+  const state: AuditResultState = running ? "running" : auditResultState(lastRun);
+  const tag = scheduleTag(frequency ?? undefined);
+  return (
+    <tr className="catalog-table__row">
+      <th scope="row" className="catalog-table__name">
+        <a
+          className="catalog-table__link"
+          href={auditHref(definition.id)}
+          onClick={(event) => {
+            // Let the browser handle a click that means something else, such as a new tab.
+            if (event.defaultPrevented || event.button !== 0) return;
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            onOpen(definition.id);
+          }}
+        >
+          {definition.title}
+        </a>
+        <span className="catalog-table__purpose" title={definition.description}>
+          {definition.description}
+        </span>
+      </th>
+      <td data-label="Last run" className="catalog-table__when">
+        <RelativeTime value={lastRun?.startedAt ?? null} now={now} />
+      </td>
+      <td data-label="Result" className="catalog-table__result">
+        <ResultCell entry={entry} running={running} state={state} />
+      </td>
+      <td data-label="Schedule" className="catalog-table__schedule">
+        {frequency === null ? (
+          <span className="person-muted" title="Not loaded">
+            -
+          </span>
+        ) : tag ? (
+          <span className="person-tag">{tag}</span>
+        ) : (
+          <span className="person-muted">{frequencyLabels.off}</span>
+        )}
+      </td>
+      <td className="catalog-table__run">
+        <button
+          className="button button--secondary button--compact"
+          type="button"
+          aria-label={`Run ${definition.title}`}
+          aria-busy={running || undefined}
+          disabled={demo || running || entry.availability.state !== "available"}
+          onClick={() => onRun(definition.id)}
+        >
+          Run
+        </button>
+      </td>
+    </tr>
   );
 }
 
@@ -329,15 +540,18 @@ export function AuditCatalogList({
   onRun,
   scope,
   schedule = null,
+  now = Date.now(),
 }: {
   catalog: AuditCatalog;
   busy: string | null;
   onOpen: (auditId: string) => void;
   onRun: (auditId: string) => void;
-  // The audit scope section, shown above the audits when the page has loaded it.
+  // The audit scope bar, shown above the table when the page has loaded it.
   scope?: ReactNode;
   // How often each audit runs on its own, when the page has loaded it.
   schedule?: Readonly<Record<string, AuditScheduleFrequency>> | null;
+  // For tests: the moment the relative times are measured from.
+  now?: number;
 }) {
   const demo = catalog.mode === "demo";
   const categories = [...new Set(catalog.audits.map((entry) => entry.definition.category))];
@@ -350,67 +564,100 @@ export function AuditCatalogList({
         </p>
       ) : null}
       {scope}
-      {categories.map((category) => (
-        <section className="panel audit-group" key={category} aria-label={category}>
-          <h2 className="audit-group__title">{category}</h2>
-          <ul className="audit-list">
-            {catalog.audits
-              .filter((entry) => entry.definition.category === category)
-              .map((entry) => {
-                const { definition } = entry;
-                const running = Boolean(entry.runningId) || busy === definition.id;
-                const access = accessText(entry);
-                const tag = scheduleTag(schedule?.[definition.id]);
-                return (
-                  <li className="audit-item" key={definition.id}>
-                    <div className="audit-item__body">
-                      <h3>
-                        <button
-                          className="link-button link-button--strong"
-                          type="button"
-                          onClick={() => onOpen(definition.id)}
-                        >
-                          {definition.title}
-                        </button>
-                        {tag ? <span className="person-tag audit-item__tag">{tag}</span> : null}
-                      </h3>
-                      <p>{definition.description}</p>
-                      <p
-                        className={`audit-item__meta${entry.lastRun?.status === "failed" ? " audit-item__meta--failed" : ""}`}
-                      >
-                        {busy === definition.id && entry.lastRun?.status !== "running"
-                          ? "Starting…"
-                          : runHeadline(entry.lastRun, definition)}
-                      </p>
-                      {access ? <p className="audit-item__access">{access}</p> : null}
-                    </div>
-                    <div className="audit-item__actions">
-                      <AccessAction entry={entry} />
-                      {entry.lastRun ? (
-                        <button
-                          className="button button--secondary"
-                          type="button"
-                          onClick={() => onOpen(definition.id)}
-                        >
-                          View results
-                        </button>
-                      ) : null}
-                      <button
-                        className="button button--primary"
-                        type="button"
-                        disabled={demo || running || entry.availability.state !== "available"}
-                        onClick={() => onRun(definition.id)}
-                      >
-                        {running ? "Running…" : entry.lastRun ? "Run again" : "Run audit"}
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-          </ul>
-        </section>
-      ))}
+      <section className="panel catalog-table" aria-label="Audits">
+        <table>
+          <caption className="visually-hidden">Audits and their latest results</caption>
+          <thead>
+            <tr>
+              <th scope="col">Audit</th>
+              <th scope="col">Last run</th>
+              <th scope="col">Result</th>
+              <th scope="col">Schedule</th>
+              <th scope="col">
+                <span className="visually-hidden">Run</span>
+              </th>
+            </tr>
+          </thead>
+          {categories.map((category) => (
+            <tbody key={category}>
+              <tr className="catalog-table__group">
+                <th scope="colgroup" colSpan={5}>
+                  {category}
+                </th>
+              </tr>
+              {catalog.audits
+                .filter((entry) => entry.definition.category === category)
+                .map((entry) => (
+                  <AuditTableRow
+                    key={entry.definition.id}
+                    entry={entry}
+                    busy={busy}
+                    demo={demo}
+                    frequency={schedule ? (schedule[entry.definition.id] ?? "off") : null}
+                    now={now}
+                    onOpen={onOpen}
+                    onRun={onRun}
+                  />
+                ))}
+            </tbody>
+          ))}
+        </table>
+      </section>
     </div>
+  );
+}
+
+// What the catalog page shows around the table: its loading rows while the list is read, the
+// reason when it could not be, a note about a run that was joined, and the table itself.
+export function AuditCatalogPage({
+  catalog,
+  error,
+  notice,
+  busy,
+  onOpen,
+  onRun,
+  schedule,
+  scope,
+  now,
+}: {
+  catalog: AuditCatalog | null;
+  error: string;
+  notice: string;
+  busy: string | null;
+  onOpen: (auditId: string) => void;
+  onRun: (auditId: string) => void;
+  schedule: Readonly<Record<string, AuditScheduleFrequency>> | null;
+  scope?: ReactNode;
+  now?: number;
+}) {
+  return (
+    <>
+      {error ? (
+        <p className="form-error form-error--banner" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="audit-note" role="status">
+          {notice}
+        </p>
+      ) : null}
+      {catalog ? (
+        <AuditCatalogList
+          catalog={catalog}
+          busy={busy}
+          onOpen={onOpen}
+          onRun={onRun}
+          schedule={schedule}
+          scope={scope}
+          {...(now === undefined ? {} : { now })}
+        />
+      ) : error ? null : (
+        <section className="panel catalog-table" aria-label="Audits">
+          <SkeletonRows rows={10} label="Loading audits" />
+        </section>
+      )}
+    </>
   );
 }
 
@@ -1757,39 +2004,25 @@ export function Audits({
       />
     );
   return (
-    <>
-      {error ? (
-        <p className="form-error form-error--banner" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {notice ? (
-        <p className="audit-note" role="status">
-          {notice}
-        </p>
-      ) : null}
-      {catalog ? (
-        <AuditCatalogList
-          catalog={catalog}
-          busy={busy}
-          onOpen={onSelect}
-          onRun={(id) => void run(id)}
-          schedule={schedule?.audits ?? null}
-          scope={
-            settings ? (
-              <AuditScopeSection
-                settings={settings}
-                applies={catalog.audits
-                  .filter((item) => item.definition.scoped)
-                  .map((item) => item.definition.title)}
-                onSave={saveScope}
-              />
-            ) : null
-          }
-        />
-      ) : error ? null : (
-        <p className="empty-data">Loading audits…</p>
-      )}
-    </>
+    <AuditCatalogPage
+      catalog={catalog}
+      error={error}
+      notice={notice}
+      busy={busy}
+      onOpen={onSelect}
+      onRun={(id) => void run(id)}
+      schedule={schedule?.audits ?? null}
+      scope={
+        catalog && settings ? (
+          <AuditScopeSection
+            settings={settings}
+            applies={catalog.audits
+              .filter((item) => item.definition.scoped)
+              .map((item) => item.definition.title)}
+            onSave={saveScope}
+          />
+        ) : null
+      }
+    />
   );
 }

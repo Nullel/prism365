@@ -4,7 +4,7 @@ Read-only Microsoft 365 administration for one tenant, self-hosted. It watches e
 gives each account one page with everything about it, runs on-demand account and license audits,
 and tracks Microsoft's own incidents and Message center posts.
 
-![The Overview of the demo tenant: collection status, a Microsoft incident, and a Message center deadline](docs/images/overview.jpg)
+![The Overview of the demo tenant: open findings by severity, critical audit results, sign-ins, collection and Microsoft, then the findings that need attention and Microsoft's incidents and deadlines](docs/images/overview.jpg)
 
 [Try the demo](https://nullel.github.io/prism365/). It shows every screen on data recorded from
 the real server running against an invented company, with no tenant and no backend
