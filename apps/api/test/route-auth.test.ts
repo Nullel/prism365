@@ -55,8 +55,7 @@ describe("route authorization", () => {
     for (const path of [
       "/v1/modules",
       "/v1/findings",
-      "/v1/automation/packages",
-      "/v1/investigations/user?email=alex@example.invalid",
+      "/v1/people/lookup?email=alex@example.invalid",
       "/v1/ai/status",
       "/v1/changes?days=30",
       "/v1/digest?days=7",

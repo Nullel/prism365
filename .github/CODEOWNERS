@@ -5,7 +5,6 @@
 /packages/graph/ @Nullel
 /packages/policy/ @Nullel
 /packages/ai/ @Nullel
-/packages/automation/ @Nullel
 /packages/storage/ @Nullel
 /apps/api/src/identity.ts @Nullel
 /apps/api/src/config.ts @Nullel

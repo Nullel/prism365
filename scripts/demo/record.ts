@@ -409,8 +409,6 @@ async function main() {
   await record("/api/v1/modules/service.health/status");
   // The This week page, for each range it offers (the demo has no other).
   for (const days of [1, 7, 14, 30]) await record(`/api/v1/digest?days=${days}`);
-  await record("/api/v1/automation/workflows");
-  await record("/api/v1/automation/packages");
   await record("/api/v1/ai/status");
 
   // A handoff from the inactive accounts audit, and a receipt from an invented action tool for
@@ -516,7 +514,6 @@ async function main() {
     if (page.next !== null) throw new Error(`${principal} has more sign-ins than one page.`);
     await recordPages(`/api/v1/people/${encodeURIComponent(id)}/changes?limit=20`);
     await record(`/api/v1/people/lookup?email=${encodeURIComponent(principal)}`);
-    await record(`/api/v1/investigations/user?email=${encodeURIComponent(principal)}`);
     // Recorded without the principal name: the replay answers the page's request, which names
     // it, from this one, and the demo receipt names every account by its id.
     await record(`/api/v1/people/${encodeURIComponent(id)}/receipts`);

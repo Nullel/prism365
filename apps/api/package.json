@@ -15,7 +15,6 @@
     "@fastify/static": "10.1.6",
     "@prism365/ai": "0.0.0",
     "@prism365/audits": "0.0.0",
-    "@prism365/automation": "0.0.0",
     "@prism365/contracts": "0.0.0",
     "@prism365/graph": "0.0.0",
     "@prism365/module-directory-changes": "0.0.0",

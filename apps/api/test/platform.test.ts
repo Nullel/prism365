@@ -110,6 +110,7 @@ describe("authenticated platform", () => {
     expect(store.audit.map((item) => item.event.type)).toEqual(
       expect.arrayContaining([
         "ai.grant.approved",
+        "investigation.requested",
         "ai.analysis.authorized",
         "ai.analysis.completed",
       ]),
@@ -131,81 +132,6 @@ describe("authenticated platform", () => {
       ).statusCode,
     ).toBe(403);
     expect(model.analyze).toHaveBeenCalledTimes(1);
-    await app.close();
-  });
-
-  it("privately stores unreviewed script source and returns metadata only", async () => {
-    const { app, headers, store } = await setup();
-    const payload = {
-      manifest: {
-        schemaVersion: 1,
-        id: "example.offboard",
-        name: "Example runbook",
-        version: "1.0.0",
-        description: "Synthetic package",
-        lifecycle: "offboarding",
-        runtime: "powershell7",
-        entrypoint: "scripts/offboard.ps1",
-        publisher: "Example publisher",
-        parameters: [],
-        capabilities: ["identity.lookup"],
-        allowedHosts: [],
-        timeoutSeconds: 30,
-        steps: [
-          {
-            id: "lookup",
-            label: "Inspect target",
-            description: "Read only",
-            capability: "identity.lookup",
-            risk: "readOnly",
-            reversible: true,
-            recovery: "No changes made.",
-          },
-        ],
-      },
-      files: [{ path: "scripts/offboard.ps1", content: "Write-Output 'synthetic-private-source'" }],
-    };
-    const imported = await app.inject({
-      method: "POST",
-      url: "/v1/automation/packages",
-      headers,
-      payload,
-    });
-    expect(imported.statusCode).toBe(201);
-    expect(imported.json()).toMatchObject({ status: "unreviewed", name: "Example runbook" });
-    const list = await app.inject({ url: "/v1/automation/packages", headers });
-    expect(list.json()).toMatchObject({
-      executionEnabled: false,
-      items: [{ status: "unreviewed" }],
-    });
-    expect(list.body).not.toContain("synthetic-private-source");
-    expect(imported.body).not.toContain("synthetic-private-source");
-    expect(JSON.stringify(await store.list(tenantId, "automationPackage"))).toContain(
-      "synthetic-private-source",
-    );
-    expect(await store.list("44444444-4444-4444-8444-444444444444", "automationPackage")).toEqual(
-      [],
-    );
-    expect(
-      (
-        await app.inject({
-          method: "POST",
-          url: "/v1/automation/runs",
-          headers,
-          payload: { packageId: imported.json().id },
-        })
-      ).statusCode,
-    ).toBe(404);
-    expect(
-      (
-        await app.inject({
-          method: "DELETE",
-          url: `/v1/automation/packages/${imported.json().id}`,
-          headers,
-        })
-      ).statusCode,
-    ).toBe(200);
-    expect(await store.list(tenantId, "automationPackage")).toEqual([]);
     await app.close();
   });
 });

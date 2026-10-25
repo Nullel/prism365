@@ -19,12 +19,6 @@ import {
   writeAuditScope,
 } from "@prism365/audits";
 import {
-  createAutomationPreview,
-  inspectAutomationPackage,
-  listAutomationWorkflows,
-  summarizeAutomationPackage,
-} from "@prism365/automation";
-import {
   type AiEvidenceRecord,
   type AuditAvailability,
   aiAccessGrantSchema,
@@ -42,9 +36,6 @@ import {
   auditScopeSchema,
   auditSettingsSchema,
   auditStartSchema,
-  automationPackageListSchema,
-  automationPackageSummarySchema,
-  automationPreviewRequestSchema,
   capabilitySummarySchema,
   collectionStatusSchema,
   findingListSchema,
@@ -74,7 +65,6 @@ import {
   microsoftCloudProfiles,
   permissionPacks,
   readPersonDirectory,
-  UserInvestigationError,
 } from "@prism365/graph";
 import {
   HEALTH_MODULE,
@@ -1590,8 +1580,7 @@ export function createApp(options: AppOptions = {}) {
     if (config.mode === "demo") return demoDashboard;
     return reply.status(409).send({
       error: "dashboard_not_collected",
-      message:
-        "Use User Intelligence to inspect current tenant data. Tenant-wide collection is not enabled.",
+      message: "Use People to look up current tenant data. Tenant-wide collection is not enabled.",
     });
   });
 
@@ -1610,36 +1599,6 @@ export function createApp(options: AppOptions = {}) {
       },
     }),
   );
-
-  app.get("/v1/automation/workflows", async () => listAutomationWorkflows());
-
-  app.post("/v1/automation/previews", async (request, reply) => {
-    if (config.mode !== "demo")
-      return reply.status(409).send({
-        error: "live_automation_unavailable",
-        message:
-          "Live lifecycle automation requires a reviewed write identity and isolated runner.",
-      });
-    const parsed = automationPreviewRequestSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({
-        error: "invalid_request",
-        message: "Choose an approved workflow and enter a valid work email address.",
-      });
-    }
-
-    try {
-      return createAutomationPreview(parsed.data);
-    } catch (error) {
-      if (error instanceof Error && error.message === "Unknown lifecycle workflow.") {
-        return reply.status(404).send({
-          error: "workflow_not_found",
-          message: "The selected workflow is not available.",
-        });
-      }
-      throw error;
-    }
-  });
 
   async function investigation(
     email: string,
@@ -1671,24 +1630,6 @@ export function createApp(options: AppOptions = {}) {
     });
     return investigateUser({ email, client, grantedScopes: scopes, ...(now ? { now } : {}) });
   }
-
-  app.get("/v1/investigations/user", async (request, reply) => {
-    const query = z.object({ email: investigationEmailSchema }).safeParse(request.query);
-    if (!query.success)
-      return reply
-        .status(400)
-        .send({ error: "invalid_input", message: "Enter a valid work email address." });
-    try {
-      return await investigation(query.data.email, request);
-    } catch (error) {
-      if (error instanceof UserInvestigationError)
-        return reply.status(error.status).send({ error: error.code, message: error.message });
-      return reply.status(503).send({
-        error: "investigation_unavailable",
-        message: "The tenant session or data source is unavailable. Sign in again and retry.",
-      });
-    }
-  });
 
   app.get("/v1/ai/status", async () => ({
     available: aiAvailable,
@@ -1881,72 +1822,6 @@ export function createApp(options: AppOptions = {}) {
       await options.modules.database.close();
     }
     await store.close();
-  });
-
-  app.get("/v1/automation/packages", async (request, reply) => {
-    if (config.mode === "live" && !(await sessionFor(request)))
-      return reply.status(401).send({ error: "authentication_required" });
-    const values = identity ? await store.list(identity.tenantId, "automationPackage") : [];
-    const schema = z.object({ summary: automationPackageSummarySchema });
-    return automationPackageListSchema.parse({
-      importEnabled: Boolean(identity && store.durable),
-      executionEnabled: false,
-      items: values.map((value) => schema.parse(value).summary),
-    });
-  });
-
-  app.post("/v1/automation/packages", async (request, reply) => {
-    const session = await sessionFor(request);
-    if (!session || !store.durable)
-      return reply.status(409).send({
-        error: "import_not_ready",
-        message:
-          "Private script imports require an authenticated tenant and encrypted PostgreSQL storage.",
-      });
-    try {
-      const record = inspectAutomationPackage(request.body, {
-        tenantId: session.tenantId,
-        actorId: session.actorId,
-      });
-      const summary = summarizeAutomationPackage(record);
-      await store.appendAudit(session.tenantId, session.actorId, {
-        type: "automation.package.imported",
-        packageId: record.id,
-        digest: record.digest,
-        trust: "unreviewed",
-      });
-      await store.set(
-        session.tenantId,
-        "automationPackage",
-        record.id,
-        { summary, record },
-        new Date(Date.now() + 30 * 86_400_000),
-      );
-      return reply.status(201).send(summary);
-    } catch {
-      return reply.status(400).send({
-        error: "package_rejected",
-        message:
-          "Use a valid PowerShell 7 package with a fixed entrypoint, safe file paths, and no direct network hosts. Imports expire after 30 days and require review before execution.",
-      });
-    }
-  });
-
-  app.delete("/v1/automation/packages/:id", async (request, reply) => {
-    const session = await sessionFor(request);
-    const parsed = z.object({ id: z.uuid() }).safeParse(request.params);
-    if (!session || !parsed.success) return reply.status(400).send({ error: "invalid_request" });
-    const existing = await store.get(session.tenantId, "automationPackage", parsed.data.id);
-    if (!existing)
-      return reply
-        .status(404)
-        .send({ error: "package_not_found", message: "The private package is not available." });
-    await store.appendAudit(session.tenantId, session.actorId, {
-      type: "automation.package.deleted",
-      packageId: parsed.data.id,
-    });
-    await store.delete(session.tenantId, "automationPackage", parsed.data.id);
-    return { deleted: true };
   });
 
   if (identity) {

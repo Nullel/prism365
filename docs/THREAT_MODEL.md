@@ -9,8 +9,8 @@ deployment, or write actions.
 - Tenant configuration, consent state, roles, and connector cursors.
 - Directory, audit, usage, finding, and export data.
 - AI provider credentials, tenant AI grants, evidence bundles, prompts, and generated answers.
-- Administrative action intent and the future immutable action ledger.
-- Imported automation packages, approval state, runner images, capability grants, and output.
+- Script packages imported before the import was removed (2026-10-24), encrypted until they
+  expire or an operator deletes them, and backups that still hold them.
 - Software supply chain, release artifacts, and update channel.
 
 ## Trust boundaries
@@ -22,7 +22,6 @@ deployment, or write actions.
 - One customer tenant to another.
 - Untrusted provider or issue content to logs, UI, AI, and operators.
 - Contributor source to CI and released artifacts.
-- Control plane to the future isolated automation worker and worker to Microsoft workloads.
 
 ## Priority threats and controls
 
@@ -44,13 +43,10 @@ deployment, or write actions.
 | Direct/indirect prompt injection | Question or audit field asks model to reveal data or act | structured evidence boundary, no tools, bounded retrieval, output validation, injection tests, treat output as untrusted |
 | Hallucinated evidence | Model invents a record or conclusion | supplied-ID citation validation, visible limitations, deterministic policy, no automatic downstream action |
 | Provider retention drift | Vendor begins storing prompts differently | provider manifest, no-store where supported, periodic policy review, kill switch, tenant disclosure |
-| Malicious imported script | Package reads secrets, scans the network, or alters undeclared resources | immutable digest review, isolated non-root worker, read-only package, denied egress, capability broker, no host access |
-| Package swap after approval | Approved manifest points to changed script bytes | content-addressed package, signature/digest binding, immutable registry, changed bytes return to unreviewed state |
-| Runner escape or resource exhaustion | Script attacks host or forks indefinitely | ephemeral sandbox, supported hardened runtime, CPU/memory/process/time/output bounds, no host socket/filesystem |
-| Targeting a protected account | Operator offboards self, break-glass account, or higher privilege admin | target class policy, self-target block, protected-account registry, step-up and independent approval |
-| Cross-tenant write | Queued run uses the wrong tenant credential | tenant-bound intent/grant/worker, dedicated token audience/issuer validation, pre-write and post-write tenant checks |
-| Partial lifecycle failure | Account disabled but later license/data steps fail | step state machine, before-state record, stop on uncertainty, reconciliation, explicit recovery/manual handoff |
-| Script output disclosure | Terminal output contains tokens or personal data | structured bounded events, secret redaction, no raw terminal stream, retention limit and access audit |
+
+Prism365 has no write path (ROADMAP Milestone 6). The threats that come with acting on a tenant,
+such as a malicious imported script, a runner escape, targeting a protected account or a lifecycle
+run that fails halfway, belong to the threat model of the action tool that a handoff feeds.
 
 ## Security assumptions
 
@@ -89,7 +85,7 @@ bytes and parsed by a bounded CSV reader.
 The AI broker loads trusted expiring grants, checks current actor permissions, records attempts
 before evidence access/disclosure, minimizes fields, preserves structural coverage, and rejects
 invented citations and prohibited workforce claims. Its local transport rejects redirects and caps
-streamed responses. Private package imports are encrypted and unreviewed, with no execution path.
+streamed responses.
 
 Alert delivery (ADR-0011) is the one path that sends data out on the server's own initiative. It
 never uses Graph. Webhook addresses are HTTPS host names only, resolved at send time with every

@@ -22,22 +22,20 @@ and job they are processing.
 
 ### Administration plane
 
-Future write actions run through a separate identity and queue. Every action requires a
-preview, policy decision, explicit confirmation, idempotency key, result record, and
-reconciliation path. Imported scripts are immutable reviewed packages and execute only in a
-short-lived isolated worker, never in the API process. No write capability is part of the MVP.
+There is none. Prism365 never writes to a tenant (ROADMAP Milestone 6). Onboarding, role
+changes and offboarding, and the runbooks behind them, belong to the separate action tool that a
+[handoff](handoff.md) feeds, which carries its own write identity.
 
 ## Target components
 
 | Component | Responsibility | Current state |
 |---|---|---|
-| `apps/web` | Accessible administrator UI | Investigation, connection, local AI, private import, demo overview |
+| `apps/web` | Accessible administrator UI | Overview, This week, People, Microsoft updates, audits, sign-ins, directory changes, handoffs, alerts, Microsoft access, demo |
 | `apps/api` | Authenticated application API | Single-tenant delegated pilot, CSRF/session protection, bounded read routes |
 | `packages/contracts` | Runtime-validated shared contracts | Implemented |
 | `packages/graph` | Validated read requests, retry/paging/cloud boundary and investigation adapter | Implemented with synthetic tests; live acceptance pending |
 | `packages/policy` | Product and authorization guardrails | Initial finding policy implemented |
 | `packages/ai` | Authorized minimized evidence analysis and attempt ledger | Local integration implemented; provider pilot pending |
-| `packages/automation` | Runbook previews and immutable private imports | JSON import implemented; all source unreviewed; execution unavailable |
 | `packages/storage` | Encrypted tenant state and restricted append-only access ledger | PostgreSQL/RLS implemented; integration verified separately in CI |
 | Worker service | Scheduled ingestion and reconciliation | Milestone 2 |
 | `packages/modules` | Module contract, registry, scheduler, findings, collection cursors and run history | Spine implemented (TL-020, ADR-0006); no built-in modules yet |
@@ -45,7 +43,6 @@ short-lived isolated worker, never in the API process. No write capability is pa
 | Queue | Bounded jobs, retries, dead-letter handling | Milestone 2 |
 | Object storage | Optional encrypted exports/raw archives | Post-MVP and opt-in |
 | Action ledger | Append-only record of administrative writes | Before any write action |
-| Isolated automation worker | Runs approved packages with bounded capabilities | Before any imported script execution |
 
 Each provider adapter follows [the connector standard](CONNECTOR_STANDARD.md). Microsoft Graph,
 Purview, the Management Activity API, and workload-specific administration surfaces remain
@@ -80,23 +77,6 @@ separate security boundaries even when they expose overlapping records.
 
 See [AI integration](AI_INTEGRATION.md) for the provider and privacy contract.
 
-## Lifecycle automation flow
-
-1. An administrator imports an immutable package; extraction and validation do not execute it.
-2. Review binds the package digest and declared capabilities to allowed tenants and parameters.
-3. Preview resolves the target, protected-account policy, before-state, exact change set, required
-   permission packs, and recovery paths without using the write identity.
-4. Explicit confirmation and any required second approval create immutable action intent.
-5. A queue sends one tenant- and run-scoped capability grant to an isolated worker. The API never
-   starts the process and the preferred runner never exposes a Microsoft token to the script.
-6. Each step records a provider request ID and result. Unknown outcomes stop for reconciliation;
-   unsafe writes are not blindly retried.
-7. A read-back verifies tenant state before the run is closed or a recovery workflow is offered.
-
-See [Lifecycle automation](AUTOMATION.md) and ADR-0005. The current UI/API end at step 3 using
-synthetic metadata with execution explicitly disabled; private imports are stored as unreviewed
-packages and cannot enter a live preview or run.
-
 ## Tenant isolation
 
 The MVP target is shared infrastructure with mandatory `tenant_id` partition keys and
@@ -106,8 +86,8 @@ use a database or installation per tenant.
 
 The first implemented installation has one configured tenant and an operator allowlist. Its
 PostgreSQL control-state and audit tables force tenant row policies; the runtime refuses superuser,
-RLS-bypass, owner/member-of-owner, and mutable-ledger roles. OAuth/session/cache/grant/package state
-is AES-GCM encrypted and bound to tenant/kind/key. Single-use OAuth take and update-only session
+RLS-bypass, owner/member-of-owner, and mutable-ledger roles. OAuth/session/cache/grant state is
+AES-GCM encrypted and bound to tenant/kind/key. Single-use OAuth take and update-only session
 refresh prevent replay and logged-out session resurrection. This is not hosted multi-tenant support.
 
 Every cache key, job payload, idempotency key, export path, metric dimension, and log context
@@ -124,8 +104,8 @@ jobs, and stale-cache access.
 - A request declares the feature/permission pack it belongs to; permission drift is visible.
 - AI providers access normalized evidence only through `packages/ai`; domain/UI code does not
   send database rows or Graph responses directly to a model SDK.
-- Imported runbooks are planned only through `packages/automation`; the API and AI gateway cannot
-  execute packages or mint tenant write credentials for them.
+- No route runs a script or writes to a tenant, and neither the API nor the AI gateway holds a
+  tenant write credential.
 - Retries honor `Retry-After`, are bounded, and never turn an unsafe write into an
   uncontrolled replay.
 - Delta queries and change notifications are used where they are supported and justified.
