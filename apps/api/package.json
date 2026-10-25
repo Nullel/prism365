@@ -24,7 +24,7 @@
     "@prism365/storage": "0.0.0",
     "fastify": "5.12.7",
     "jose": "6.2.12",
-    "nodemailer": "10.0.16",
+    "nodemailer": "10.1.4",
     "zod": "4.6.7"
   }
 }
