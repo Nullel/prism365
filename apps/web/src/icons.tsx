@@ -119,6 +119,15 @@ export function BellIcon(props: IconProps) {
   );
 }
 
+export function SendIcon(props: IconProps) {
+  return (
+    <svg aria-hidden="true" {...common} {...props}>
+      <path d="M21 3 10 14" />
+      <path d="m21 3-7 18-4-7-7-4 18-7Z" />
+    </svg>
+  );
+}
+
 export function ChecklistIcon(props: IconProps) {
   return (
     <svg aria-hidden="true" {...common} {...props}>

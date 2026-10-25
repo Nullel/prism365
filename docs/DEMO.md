@@ -104,8 +104,8 @@ Add `"!**/dist-demo"` to `files.includes` in `biome.json`, or delete the folder 
   It does not follow what the visitor changes, such as resolving a finding or stopping collection.
 - The CSV export is built in the browser from the recorded rows, with the same filters and sort
   the page shows.
-- The people search works on the recorded list. Looking someone up by email, and the Live lookup
-  page, only know the accounts in the recording, for example `admin@larkspur.example`,
+- The people search works on the recorded list. Looking someone up by email only knows the
+  accounts in the recording, for example `admin@larkspur.example`,
   `ingrid.solheim@larkspur.example`, `dagny.holloway@larkspur.example`,
   `kasimir.orne@larkspur.example` and `wendell.aris@larkspur.example`.
 - Sign-out does nothing, and the links that start a Microsoft sign-in are left as they are.
