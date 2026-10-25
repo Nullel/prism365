@@ -699,7 +699,9 @@ describe("the page's address and place in the navigation", () => {
   it("lists This week right after Overview, and each page once", async () => {
     const { App } = await import("../src/App.tsx");
     const html = renderToStaticMarkup(createElement(App));
-    const labels = [...html.matchAll(/<span>([^<]+)<\/span><\/button>/g)].map((match) => match[1]);
+    // Only the navigation: the Search button above it opens a dialog and is not a page.
+    const nav = html.match(/<nav\b[\s\S]*?<\/nav>/)?.[0] ?? "";
+    const labels = [...nav.matchAll(/<span>([^<]+)<\/span><\/button>/g)].map((match) => match[1]);
     expect(labels).toEqual([
       "Overview",
       "This week",
