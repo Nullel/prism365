@@ -69,6 +69,15 @@ function Intro({ title, children }: { title: string; children: string }) {
   );
 }
 
+// Finds the account behind a full work email in the directory, for someone with no stored
+// sign-ins. The People search and quick search both use it, so the request has one definition.
+export async function lookUpPerson(email: string): Promise<string> {
+  const found = await readJson(`/api/v1/people/lookup?email=${encodeURIComponent(email)}`, (body) =>
+    personLookupSchema.parse(body),
+  );
+  return found.userId;
+}
+
 export function People({
   session,
   selected,
@@ -153,11 +162,7 @@ function PeopleList({ onSelect }: { onSelect: (userId: string) => void }) {
     setLooking(true);
     setError("");
     try {
-      const found = await readJson(
-        `/api/v1/people/lookup?email=${encodeURIComponent(value)}`,
-        (body) => personLookupSchema.parse(body),
-      );
-      onSelect(found.userId);
+      onSelect(await lookUpPerson(value));
     } catch (lookupError) {
       setError(lookupError instanceof Error ? lookupError.message : "The lookup failed.");
     } finally {

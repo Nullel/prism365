@@ -5,7 +5,7 @@ import {
   type PrismSession,
   sessionSchema,
 } from "@prism365/contracts";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alerts } from "./Alerts.tsx";
 import { Notifications } from "./Attention.tsx";
 import { Audits } from "./Audits.tsx";
@@ -29,6 +29,7 @@ import {
 import { LiveOverview } from "./LiveOverview.tsx";
 import { People } from "./People.tsx";
 import { type PersonTab, parsePersonTab } from "./PersonTabs.tsx";
+import { isMacPlatform, pageItems, QuickSearch, QuickSearchButton } from "./QuickSearch.tsx";
 import { SetupChecklist } from "./Setup.tsx";
 import { SigninAudit } from "./SigninAudit.tsx";
 import { TenantConnection } from "./TenantConnection.tsx";
@@ -56,7 +57,7 @@ interface NavItem {
 // One entry per page. Looking someone up in Microsoft is the People search (a full work email
 // opens anyone in the directory), and acting on accounts belongs to the tool a handoff feeds, so
 // neither has its own entry.
-const navGroups: { label: string; items: NavItem[] }[] = [
+export const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: "",
     items: [
@@ -378,6 +379,9 @@ export function App() {
     if (next === "audits") setAudit(null);
     setView(next);
   };
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchPages = useMemo(() => pageItems(navGroups), []);
+  const mac = isMacPlatform(typeof navigator === "undefined" ? undefined : navigator);
   const [session, setSession] = useState<PrismSession | null>(null);
   const [sessionError, setSessionError] = useState("");
   const [authNotice, setAuthNotice] = useState(readAuthNotice);
@@ -531,6 +535,8 @@ export function App() {
           </span>
           <span>Prism365</span>
         </a>
+
+        <QuickSearchButton mac={mac} onOpen={() => setSearchOpen(true)} />
 
         <nav className="nav" aria-label="Workspace">
           {navGroups.map((group) => (
@@ -853,6 +859,20 @@ export function App() {
           ) : null}
         </div>
       </main>
+
+      <QuickSearch
+        key={`${session?.mode ?? "checking"}-${session?.authenticated ?? false}`}
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        session={session}
+        pages={searchPages}
+        onNavigate={(next) => {
+          const found = workspaceViews.find((item) => item === next);
+          if (found) navigate(found);
+        }}
+        onOpenAudit={openAudit}
+        onOpenPerson={openPerson}
+      />
     </div>
   );
 }
