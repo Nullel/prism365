@@ -138,6 +138,22 @@ a handoff stays while a kept receipt answers it.
 Exporting, importing and reading them each write an access-ledger entry with ids and counts, not
 names or the tool's text.
 
+## Shared mailbox access
+
+A mailbox access export (ADR-0012) is a file an administrator writes with
+`Export-MailboxAccess.ps1` in their own Exchange Online session and imports. Prism365 stores, for
+each grant in it, the mailbox's id, address, display name and type, the right (Full Access, Send
+As, Send on Behalf), and the trustee's id, address, display name and kind; a trustee the script
+could not resolve is kept as the text Exchange returned, such as a deleted account's SID. With it
+the import keeps when the export was taken, when it was imported and by whom, and its counts.
+
+Only the latest import is kept, until another import replaces it or an administrator clears it on
+the Microsoft access page; there is no other retention. Importing, clearing, and viewing the
+import or a person's shared mailboxes each write an access-ledger entry with ids and counts, never
+names or addresses. The person page reads the account's groups live from Microsoft to match grants
+made to groups, and does not store them. The file itself stays wherever the administrator saved
+it, outside Prism365's retention, and should be handled like an audit export.
+
 ## Alerts
 
 Alerts (`docs/alerts.md`, ADR-0011) send data out of the server, to the operator's own mail relay

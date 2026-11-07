@@ -22,6 +22,7 @@ import type { AppConfig, IdentityConfig } from "../../apps/api/src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../../apps/api/src/identity.ts";
 import { createModuleRegistry } from "../../apps/api/src/modules.ts";
 import { type Fixtures, normalizeKey } from "../../apps/web/src/demo/replay.ts";
+import { demoMailboxAccessExport } from "./mailbox-access.ts";
 import {
   assertSynthetic,
   buildSyntheticTenant,
@@ -481,6 +482,24 @@ async function main() {
   await record(`/api/v1/receipts/${receipt.id}?limit=200`);
   log(`Handed off ${handoff.items.length} inactive accounts and imported a receipt for four.`);
 
+  // A mailbox access export from two days ago, imported as an administrator would import the file
+  // Export-MailboxAccess.ps1 wrote (scripts/demo/mailbox-access.ts), so the Microsoft access page
+  // and the Access tab's Shared mailboxes section have something to show.
+  const mailboxExport = demoMailboxAccessExport(
+    tenant,
+    new Date(anchor.getTime() - 2 * DAY),
+    tenantId,
+  );
+  const mailboxImport = await call("POST", "/api/v1/mailbox-access/import", mailboxExport);
+  if (mailboxImport.statusCode !== 201)
+    throw new Error(
+      `The mailbox access import answered ${mailboxImport.statusCode}: ${mailboxImport.body.slice(0, 200)}`,
+    );
+  await record("/api/v1/mailbox-access");
+  log(
+    `Imported mailbox access for ${mailboxExport.mailboxes.length} shared mailboxes and ${mailboxExport.grants.length} grants.`,
+  );
+
   const audits = await record<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
   const accounts: { id: string; principal: string }[] = [];
   for (const entry of audits.audits) {
@@ -506,6 +525,7 @@ async function main() {
     await record(`/api/v1/people/${encodeURIComponent(id)}`);
     await record(`/api/v1/people/${encodeURIComponent(id)}/directory`);
     await record(`/api/v1/people/${encodeURIComponent(id)}/access`);
+    await record(`/api/v1/people/${encodeURIComponent(id)}/mailbox-access`);
     // The first page of all sign-ins; the demo works the "successful" and "not successful"
     // filters out from it. A later page would be asked for by a position that moves with the
     // dates, so every account has to fit on this one.

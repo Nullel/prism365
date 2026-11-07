@@ -28,6 +28,7 @@ import {
   UsersIcon,
 } from "./icons.tsx";
 import { LiveOverview } from "./LiveOverview.tsx";
+import { MailboxAccess } from "./MailboxAccess.tsx";
 import { People } from "./People.tsx";
 import { type PersonTab, parsePersonTab } from "./PersonTabs.tsx";
 import { isMacPlatform, pageItems, QuickSearch, QuickSearchButton } from "./QuickSearch.tsx";
@@ -673,6 +674,9 @@ export function App() {
                   key={`${session.mode}-${session.authenticated}`}
                   session={session}
                 />
+              ) : null}
+              {view === "access" ? (
+                <MailboxAccess key={`${session.mode}-${session.authenticated}`} session={session} />
               ) : null}
               {view === "access" ? (
                 <section className="panel access-note" aria-label="Write access">

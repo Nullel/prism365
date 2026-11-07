@@ -3,13 +3,21 @@ import {
   type AccessMembership,
   type AccessMembershipKind,
   type AccessPolicy,
+  isStaleExport,
+  MAILBOX_ACCESS_STALE_DAYS,
+  type MailboxHolder,
+  type MailboxRight,
   type PersonAccess as PersonAccessData,
+  type PersonMailboxAccess,
+  type PersonMailboxGrant,
   type PolicyReason,
   type PrismSession,
   personAccessSchema,
+  personMailboxAccessSchema,
+  type TrusteeKind,
 } from "@prism365/contracts";
 import { type ReactNode, useEffect, useState } from "react";
-import { number, RelativeTime, readJson, SeverityDot, SkeletonRows } from "./common.tsx";
+import { day, number, RelativeTime, readJson, SeverityDot, SkeletonRows } from "./common.tsx";
 import {
   lineKey,
   partKey,
@@ -442,15 +450,211 @@ const auditSections: { title: string; audits: string[] }[] = [
   { title: "Activity", audits: ["accounts.activity"] },
 ];
 
+export const rightLabels: Record<MailboxRight, string> = {
+  FullAccess: "Full Access",
+  SendAs: "Send As",
+  SendOnBehalf: "Send on Behalf",
+};
+const trusteeLabels: Record<TrusteeKind, string | null> = {
+  user: null,
+  group: "Group",
+  other: null,
+  unresolved: "Not resolved",
+};
+
+const groupMailboxNote = (
+  <p className="signin-coverage">
+    The Microsoft 365 group mailboxes this account can use are listed under Groups and roles.
+  </p>
+);
+
+// "Full Access directly", "Send As through All plant staff".
+function grantText(grant: PersonMailboxGrant): string {
+  const how = grant.via.kind === "direct" ? "directly" : `through ${grant.via.name}`;
+  return `${rightLabels[grant.right]} ${how}`;
+}
+
+// The person's grants, one line per mailbox, in the order the server sorted them.
+function byMailbox(grants: readonly PersonMailboxGrant[]) {
+  const mailboxes = new Map<string, { mailbox: PersonMailboxGrant["mailbox"]; rights: string[] }>();
+  for (const grant of grants) {
+    const entry = mailboxes.get(grant.mailbox.id) ?? { mailbox: grant.mailbox, rights: [] };
+    entry.rights.push(grantText(grant));
+    mailboxes.set(grant.mailbox.id, entry);
+  }
+  return [...mailboxes.values()];
+}
+
+function HolderItem({ holder }: { holder: MailboxHolder }) {
+  const tag = trusteeLabels[holder.trustee.kind];
+  return (
+    <li>
+      <strong>{holder.trustee.name}</strong>
+      {holder.trustee.address ? (
+        <span className="person-muted"> {holder.trustee.address}</span>
+      ) : null}
+      {tag ? <span className="person-access__tag">{tag}</span> : null}
+      <span className="person-muted"> {rightLabels[holder.right]}</span>
+    </li>
+  );
+}
+
+// Why grants to groups may be missing: the groups were not, or not all, read.
+function GroupsNote({ groups }: { groups: PersonMailboxAccess["groups"] }) {
+  if (groups.status === "ok")
+    return groups.truncated ? (
+      <p className="signin-coverage">
+        Only the first {number.format(groups.count)} groups this account is in were checked, so a
+        right granted to another group may be missing.
+      </p>
+    ) : null;
+  if (groups.status === "not_read") return null;
+  return (
+    <>
+      <p className="signin-coverage">
+        Only rights granted to this account directly are shown: the groups it is in could not be
+        read, so rights granted to a group are not matched.
+      </p>
+      <CannotShow section={groups} />
+    </>
+  );
+}
+
+// The Shared mailboxes section, from the imported Exchange export (ADR-0012): what the person can
+// use, how, and for a mailbox, who can use it. Every line is the export's claim, so the source and
+// its age come first.
+export function SharedMailboxesSection({
+  mailbox,
+  error,
+}: {
+  // null while it loads.
+  mailbox: PersonMailboxAccess | null;
+  error: string;
+}) {
+  const body = (() => {
+    if (error) return <p className="empty-data">{error}</p>;
+    if (!mailbox) return <SkeletonRows rows={2} label="Reading shared mailbox access" />;
+    const stored = mailbox.import;
+    if (!stored)
+      return (
+        <>
+          <p className="empty-data">
+            Microsoft's read-only APIs do not show Full Access, Send As or Send on Behalf, and no
+            mailbox access export is imported. <a href="#/access">Import one on Microsoft access</a>{" "}
+            to see them here.
+          </p>
+          {groupMailboxNote}
+        </>
+      );
+    const stale = isStaleExport(stored.exportedAt);
+    const mailboxes = byMailbox(mailbox.grants);
+    return (
+      <>
+        <Source>
+          {stale ? (
+            <>
+              <SeverityDot
+                severity="medium"
+                label={`Older than ${MAILBOX_ACCESS_STALE_DAYS} days`}
+              />{" "}
+            </>
+          ) : null}
+          From the export of {day(stored.exportedAt)}, imported{" "}
+          <RelativeTime value={stored.importedAt} />
+        </Source>
+        {mailboxes.length === 0 ? (
+          <p className="empty-data">
+            The export gives this account no Full Access, Send As or Send on Behalf on any{" "}
+            {stored.includeUserMailboxes ? "mailbox" : "shared mailbox"}
+            {mailbox.groups.status === "ok" ? "" : " directly"}.
+          </p>
+        ) : (
+          <ul className="person-access__list">
+            {mailboxes.map(({ mailbox: shared, rights }) => (
+              <li key={shared.id}>
+                <strong>{shared.name || shared.address}</strong>
+                {shared.name ? <span className="person-muted"> {shared.address}</span> : null}
+                {shared.type === "UserMailbox" ? (
+                  <span className="person-access__tag">User mailbox</span>
+                ) : null}
+                <div className="person-access__why">{rights.join(", ")}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {mailbox.grantsTruncated ? (
+          <p className="signin-coverage">
+            Showing the first {number.format(mailbox.grants.length)} rights.
+          </p>
+        ) : null}
+        <GroupsNote groups={mailbox.groups} />
+        {stored.includeUserMailboxes ? null : (
+          // A shared-only export says nothing about user mailboxes, this account's own included.
+          <p className="signin-coverage">
+            The export covers shared mailboxes only, so this account's own mailbox and other user
+            mailboxes are not in it. Run the script with -IncludeUserMailboxes to include them.
+          </p>
+        )}
+        {mailbox.holders.length > 0 ? (
+          <>
+            <h4>Who can use this mailbox</h4>
+            <ul className="person-access__list">
+              {mailbox.holders.map((holder) => (
+                <HolderItem
+                  key={`${holder.right}:${holder.trustee.id ?? holder.trustee.name}`}
+                  holder={holder}
+                />
+              ))}
+            </ul>
+            {mailbox.holdersTruncated ? (
+              <p className="signin-coverage">
+                Showing the first {number.format(mailbox.holders.length)} holders.
+              </p>
+            ) : null}
+          </>
+        ) : null}
+        {stored.unresolved > 0 ? (
+          <p className="signin-coverage">
+            {number.format(stored.unresolved)}{" "}
+            {stored.unresolved === 1
+              ? "grant in the export names a trustee"
+              : "grants in the export name trustees"}{" "}
+            the script could not resolve, so access through{" "}
+            {stored.unresolved === 1 ? "it" : "them"} is not shown here.
+          </p>
+        ) : null}
+        <p className="signin-coverage">
+          This is what the export says. Prism365 cannot check it against Exchange.
+          {stale
+            ? " Access may have changed since; run the export again for a current picture."
+            : ""}
+        </p>
+        {groupMailboxNote}
+      </>
+    );
+  })();
+  return (
+    <section className="panel person-access" aria-label="Shared mailboxes">
+      <h3>Shared mailboxes</h3>
+      {body}
+    </section>
+  );
+}
+
 // The whole tab as a function of what has loaded. It holds no state, so a test can draw it with an
 // answer in hand.
 export function PersonAccessView({
   access,
   error,
+  mailbox = null,
+  mailboxError = "",
 }: {
   // null while the answer loads.
   access: PersonAccessData | null;
   error: string;
+  // The Shared mailboxes section's own answer, null while it loads.
+  mailbox?: PersonMailboxAccess | null;
+  mailboxError?: string;
 }) {
   if (error) return <p className="empty-data">{error}</p>;
   if (!access)
@@ -479,14 +683,7 @@ export function PersonAccessView({
           )}
         </section>
       ))}
-      <section className="panel person-access" aria-label="Shared mailboxes">
-        <h3>Shared mailboxes</h3>
-        <p className="empty-data">
-          Full Access and Send As on shared mailboxes cannot be read through Microsoft's read-only
-          APIs. The Microsoft 365 group mailboxes this account can use are listed under Groups and
-          roles.
-        </p>
-      </section>
+      <SharedMailboxesSection mailbox={mailbox} error={mailboxError} />
     </>
   );
 }
@@ -504,11 +701,37 @@ export function PersonAccess({
   const [opened, setOpened] = useState(false);
   const [access, setAccess] = useState<PersonAccessData | null>(null);
   const [error, setError] = useState("");
+  const [mailbox, setMailbox] = useState<PersonMailboxAccess | null>(null);
+  const [mailboxError, setMailboxError] = useState("");
   const live = session.mode === "live" && session.authenticated;
 
   useEffect(() => {
     if (active) setOpened(true);
   }, [active]);
+
+  // The shared mailbox answer is its own request, so a slow or failed one never holds up the rest.
+  useEffect(() => {
+    if (!live || !opened) return;
+    const controller = new AbortController();
+    readJson(
+      `/api/v1/people/${encodeURIComponent(userId)}/mailbox-access`,
+      (value) => personMailboxAccessSchema.parse(value),
+      { signal: controller.signal },
+    )
+      .then((value) => {
+        setMailbox(value);
+        setMailboxError("");
+      })
+      .catch((loadError: unknown) => {
+        if (controller.signal.aborted) return;
+        setMailboxError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Shared mailbox access could not be loaded.",
+        );
+      });
+    return () => controller.abort();
+  }, [live, opened, userId]);
 
   useEffect(() => {
     if (!live || !opened) return;
@@ -530,5 +753,7 @@ export function PersonAccess({
   }, [live, opened, userId]);
 
   if (!live || !opened) return null;
-  return <PersonAccessView access={access} error={error} />;
+  return (
+    <PersonAccessView access={access} error={error} mailbox={mailbox} mailboxError={mailboxError} />
+  );
 }

@@ -106,6 +106,22 @@ packs are added only when named or with `--features all`, and `directory.permiss
 - `Mail.Send` or any other `*.Send` permission. Alerts go through the operator's own mail relay or
   a webhook (ADR-0011, `docs/alerts.md`), so they need no Microsoft permission at all.
 
+## Shared mailbox access needs no Graph permission
+
+Full Access, Send As and Send on Behalf have no read-only Microsoft API, so Prism365 asks for
+nothing to read them (ADR-0012). An administrator exports them with `Export-MailboxAccess.ps1` in
+their own Exchange Online session and imports the file; Prism365 never calls Exchange and holds no
+Exchange credential. The `Exchange.ManageV2` scope of the Exchange Online Admin API stays out:
+it can manage, and the API has no permission cmdlets anyway.
+
+The administrator who runs the export needs an Exchange Online role that can run
+`Get-MailboxPermission`, `Get-RecipientPermission` and `Get-Recipient` (the `Get-EXO*` cmdlets the
+script calls check the same roles). Microsoft does not document which roles those are; Global
+Reader maps to View-Only Organization Management, and `Get-ManagementRole -Cmdlet
+Get-MailboxPermission` lists the roles that can. The person page matches grants made to groups
+through `directory.users.read` (`transitiveMemberOf`), which it already has; without that pack it
+matches direct grants only.
+
 ## Write permissions
 
 Prism365 is read-only (ROADMAP Milestone 6): the running app asks for no write permission and has
