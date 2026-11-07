@@ -11,6 +11,7 @@ import {
 import { GraphHttpClient } from "@prism365/graph";
 import { scopeGraph } from "@prism365/modules";
 import { beforeAll, describe, expect, it } from "vitest";
+import { combinedRisksFor } from "../../../apps/api/src/person-access.ts";
 import { createSyntheticGraph, SYNTHETIC_TENANT_ID } from "../tenant.ts";
 
 // The synthetic tenant through the real input audits and then Combined risks, the way the recorder
@@ -113,5 +114,26 @@ describe("Combined risks on the synthetic tenant", () => {
     expect(combined.rows[0]?.cells.severity).toBe("Critical");
     expect(sources.length).toBeGreaterThan(0);
     expect(combined.complete).toBe(true);
+  });
+
+  it("shows Tobias Vance his critical combination on the person page, and a clean account none", () => {
+    const run = {
+      finishedAt: now.toISOString(),
+      complete: combined.complete,
+      notes: combined.notes,
+      scope: null,
+      rows: combined.rows,
+    };
+    const tobias = combined.rows.find(
+      (row) => (row.cells.person as { name: string | null }).name === "Tobias Vance",
+    );
+    expect(tobias?.personId).toBeTruthy();
+    const his = combinedRisksFor(run, tobias?.personId ?? "");
+    expect(his.severity).toBe("critical");
+    expect(his.rules.map((rule) => rule.id)).toContain("admin-unprotected");
+    expect(his.reasons).toContain("Global Administrator");
+    // An account the run does not list trips nothing.
+    const clean = combinedRisksFor(run, "ffffffff-0000-4000-8000-00000000ffff");
+    expect(clean).toMatchObject({ severity: null, rules: [], reasons: "" });
   });
 });

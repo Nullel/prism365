@@ -1,8 +1,9 @@
-import { HASHED, joinKey } from "@prism365/audits";
+import { HASHED, joinKey, RULES } from "@prism365/audits";
 import {
   type AccessMembership,
   type AccessMembershipKind,
   type AuditRow,
+  type CombinedRisksOk,
   cleanText,
   MAX_ACCESS_AUDIT_ROWS,
   MAX_ACCESS_OWNED,
@@ -205,3 +206,47 @@ export function rowsFor(
 }
 
 export const auditRowLimit = MAX_ACCESS_AUDIT_ROWS;
+
+// The part of a Combined risks run the person page needs.
+export interface CombinedRun extends StoredRun {
+  complete: boolean;
+  notes: readonly string[];
+}
+
+const SEVERITY_RANK = { critical: 3, high: 2, medium: 1 } as const;
+
+// The run's notes that say an input was missing or too old, or a rule was not checked. They are
+// the audit's own sentences; the other notes describe coverage, not gaps.
+const isGapNote = (note: string) =>
+  note.startsWith("Not used:") || note.includes(" was not checked");
+
+// One person's answer from a Combined risks run. The rules come from the row's tags, in the rule
+// list's order, so a tag this version does not know is ignored rather than guessed at.
+export function combinedRisksFor(run: CombinedRun, personId: string): CombinedRisksOk {
+  const row = run.rows.find((candidate) => candidate.personId === personId);
+  const tags = new Set(row?.tags ?? []);
+  const rules = RULES.filter((rule) => tags.has(rule.id)).map((rule) => ({
+    id: rule.id,
+    label: rule.label,
+    severity: rule.severity,
+  }));
+  const severity = rules.reduce<CombinedRisksOk["severity"]>(
+    (best, rule) =>
+      best === null || SEVERITY_RANK[rule.severity] > SEVERITY_RANK[best] ? rule.severity : best,
+    null,
+  );
+  const reasons = row?.cells.reasons;
+  return {
+    status: "ok",
+    finishedAt: run.finishedAt,
+    severity,
+    rules,
+    reasons:
+      rules.length > 0 && typeof reasons === "string" ? cleanText(reasons.slice(0, 2_000)) : "",
+    gaps: run.notes
+      .filter(isGapNote)
+      .slice(0, 10)
+      .map((note) => cleanText(note.slice(0, 500))),
+    complete: run.complete,
+  };
+}

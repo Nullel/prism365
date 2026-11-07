@@ -394,3 +394,83 @@ describe("the Access tab, empty audit wording", () => {
     expect(words).not.toContain("License to reclaim");
   });
 });
+
+describe("the Combined risks section", () => {
+  const ok = {
+    status: "ok",
+    finishedAt: "2026-10-20T10:00:00.000Z",
+    severity: null,
+    rules: [],
+    reasons: "",
+    gaps: [],
+    complete: true,
+  };
+  const drawn = (combinedRisks: unknown) => draw(answer({ combinedRisks }));
+
+  it("comes first on the tab, above Groups and roles", () => {
+    const words = drawn(ok);
+    expect(words.indexOf("Combined risks")).toBeGreaterThan(-1);
+    expect(words.indexOf("Combined risks")).toBeLessThan(words.indexOf("Groups and roles"));
+  });
+
+  it("shows the highest severity, each rule, the reasons and where they came from", () => {
+    const html = renderToStaticMarkup(
+      createElement(PersonAccessView, {
+        access: answer({
+          combinedRisks: {
+            ...ok,
+            severity: "critical",
+            rules: [
+              { id: "admin-unprotected", label: "Administrator without MFA", severity: "critical" },
+              { id: "dormant-admin", label: "Dormant administrator", severity: "high" },
+            ],
+            reasons: "Holds Global Administrator and has no MFA registered.",
+          },
+        }),
+        error: "",
+      }),
+    );
+    const words = text(html);
+    expect(words).toContain("From the Combined risks audit, Oct 20, 2026");
+    expect(words).toContain("Administrator without MFA Critical");
+    expect(words).toContain("Dormant administrator High");
+    expect(words).toContain("Holds Global Administrator and has no MFA registered.");
+    expect(words).not.toContain("No combined risks in the latest run");
+    expect(html).toContain('href="#/audits/identity.combined-risks"');
+    expect(html).toContain('<span class="sev sev--critical">');
+  });
+
+  it("says plainly when the latest run has nothing for this person", () => {
+    expect(drawn(ok)).toContain("No combined risks in the latest run.");
+  });
+
+  it("points to a full review when the audit has never run", () => {
+    const html = renderToStaticMarkup(
+      createElement(PersonAccessView, {
+        access: answer({ combinedRisks: { status: "no_run" } }),
+        error: "",
+      }),
+    );
+    expect(text(html)).toContain("Run a full review");
+    expect(html).toContain('href="#/audits"');
+  });
+
+  it("repeats the run's notes about inputs it could not use, even when nothing was found", () => {
+    const words = drawn({
+      ...ok,
+      complete: false,
+      gaps: ["Not used: MFA registration has never run."],
+    });
+    expect(words).toContain("No combined risks in the latest run.");
+    expect(words).toContain("That run could not check everything:");
+    expect(words).toContain("Not used: MFA registration has never run.");
+    expect(drawn(ok)).not.toContain("could not check everything");
+  });
+
+  it("says why it cannot be shown, and shows nothing for an older recording", () => {
+    expect(drawn({ status: "failed", message: "The stored result could not be read." })).toContain(
+      "The stored result could not be read.",
+    );
+    expect(draw(answer())).not.toContain("Combined risks");
+  });
+});
