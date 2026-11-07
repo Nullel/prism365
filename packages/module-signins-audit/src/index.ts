@@ -1,6 +1,6 @@
 import type { PrismModule } from "@prism365/modules";
 import { CANARY_SETTING } from "./canaries.ts";
-import { collectSignins, MODULE_ID } from "./collector.ts";
+import { type CollectSigninsOptions, collectSignins, MODULE_ID } from "./collector.ts";
 import { defaultSigninsAuditConfig, type SigninsAuditConfig } from "./config.ts";
 import { signinsAuditMigrations } from "./migrations.ts";
 
@@ -18,6 +18,7 @@ export * from "./summary.ts";
 // failure patterns break that. Security evidence only; see docs/modules/signins-audit.md.
 export function createSigninsAuditModule(
   config: SigninsAuditConfig = defaultSigninsAuditConfig,
+  options: CollectSigninsOptions = {},
 ): PrismModule {
   return {
     id: MODULE_ID,
@@ -36,7 +37,7 @@ export function createSigninsAuditModule(
         title: "Sign-in logs",
         cadenceSeconds: 300,
         timeoutSeconds: 240,
-        run: (context) => collectSignins(context, config),
+        run: (context) => collectSignins(context, config, options),
       },
     ],
     retention: [
