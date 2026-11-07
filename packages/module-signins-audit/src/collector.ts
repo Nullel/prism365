@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { GraphBoundaryError } from "@prism365/graph";
+import { GraphBoundaryError, monotonicClock } from "@prism365/graph";
 import { type CollectorContext, type FindingInput, FindingPolicyError } from "@prism365/modules";
 import type { SqlClient } from "@prism365/storage";
 import { z } from "zod";
@@ -38,6 +38,13 @@ export const MODULE_ID = "signins.audit";
 export const UNFAMILIAR_RULE = "signins.unfamiliar_signin";
 export const COLLECTION_GAP_RULE = "signins.collection_gap";
 
+export interface CollectSigninsOptions {
+  // Milliseconds on a monotonic clock, for the run budget and every elapsed-time check. A test
+  // moves it itself so a run means the same on any machine. The Graph client must measure its
+  // deadlines on the same clock.
+  clock?: () => number;
+}
+
 const PAGE_SIZE = 100;
 const DETECTION_BATCH = 2_000;
 
@@ -52,6 +59,8 @@ class RunBudgetSpentError extends Error {
 }
 
 interface Budget {
+  // The run's clock, so every elapsed-time check in a run reads the same one.
+  clock: () => number;
   deadline: number;
   startedAt: number;
   // True while a pass reads its first window. If that window cannot be finished, the next run
@@ -107,9 +116,9 @@ async function readWindow(
   config: SigninsAuditConfig,
   from: Date,
   to: Date,
-  options: { deadline: number; before?: boolean },
+  options: { deadline: number; clock: () => number; before?: boolean },
 ): Promise<WindowResult> {
-  if (Date.now() > options.deadline) throw new RunBudgetSpentError();
+  if (options.clock() > options.deadline) throw new RunBudgetSpentError();
   // `before`: up to but not including `to`, used to read under a millisecond already given up on.
   const query = new URLSearchParams({
     $filter: `createdDateTime ge ${iso(from)} and createdDateTime ${options.before ? "lt" : "le"} ${iso(to)}`,
@@ -166,7 +175,10 @@ async function fetchWindow(
   const minimum = to.getTime() - from.getTime() <= MIN_SPLIT_MS;
   let first: WindowResult;
   try {
-    first = await readWindow(context, config, from, to, { deadline: budget.deadline });
+    first = await readWindow(context, config, from, to, {
+      deadline: budget.deadline,
+      clock: budget.clock,
+    });
   } catch (error) {
     if (
       !(error instanceof GraphBoundaryError && error.reason === "timeout") ||
@@ -201,13 +213,14 @@ async function fetchWindow(
   let upper = floor ? new Date(floor.getTime() + 1) : to;
   let before = false;
   for (let round = 0; floor; round += 1) {
-    if (round >= MAX_WALK_ROUNDS || Date.now() > budget.deadline) {
+    if (round >= MAX_WALK_ROUNDS || budget.clock() > budget.deadline) {
       if (minimum && budget.whole)
         return { events, complete: false, skipped, gaps: [...gaps, { from, to }] };
       throw new RunBudgetSpentError();
     }
     const next = await readWindow(context, config, from, upper, {
       deadline: budget.deadline,
+      clock: budget.clock,
       before,
     });
     events.push(...next.events);
@@ -1064,8 +1077,10 @@ function windowFailed(lane: Lane, from: Date, end: Date): "retry" | "give_up" {
 export async function collectSignins(
   context: CollectorContext,
   config: SigninsAuditConfig,
+  options: CollectSigninsOptions = {},
 ): Promise<SigninsRunResult> {
-  const startedAt = Date.now();
+  const clock = options.clock ?? monotonicClock.now;
+  const startedAt = clock();
   const totalDeadline = startedAt + config.runBudgetSeconds * 1_000;
   const now = context.now;
   const lateMs = config.lateArrivalMinutes * 60_000;
@@ -1149,13 +1164,13 @@ export async function collectSignins(
   ): Promise<boolean> => {
     lane.place = max(lane.place, oldestAllowed);
     while (lane.place.getTime() < until.getTime()) {
-      if (Date.now() > budget.deadline) return false;
+      if (clock() > budget.deadline) return false;
       const from = lane.place;
       const end = min(new Date(from.getTime() + lane.span), until);
       // Saved before reading, so a run stopped mid-window is visible to the next one.
       lane.trying = iso(from);
       await persist();
-      const began = Date.now();
+      const began = clock();
       let read: boolean;
       try {
         read = await collectRange(context, config, canaries, from, end, backfilled, budget);
@@ -1195,7 +1210,7 @@ export async function collectSignins(
       if (read) afterRead?.(from, end);
       if (lane.hold && lane.place.getTime() >= lane.hold.getTime()) lane.hold = null;
       // Grow back toward full windows once past the busy stretch and windows are quick again.
-      if (!lane.hold && Date.now() - began < (budget.deadline - budget.startedAt) / 4)
+      if (!lane.hold && clock() - began < (budget.deadline - budget.startedAt) / 4)
         lane.span = Math.min(WINDOW_MS, lane.span * 2);
       if (lane.strikes && lane.strikes.at !== iso(lane.place)) lane.strikes = undefined;
       await persist();
@@ -1207,7 +1222,7 @@ export async function collectSignins(
     const done = await walk(
       main,
       now,
-      { deadline: totalDeadline, startedAt, first: true, whole: true },
+      { clock, deadline: totalDeadline, startedAt, first: true, whole: true },
       true,
     );
     if (!done) return { complete, more: true };
@@ -1238,7 +1253,7 @@ export async function collectSignins(
   const share = startedAt + Math.floor(((totalDeadline - startedAt) * 2) / 3);
   const readSettle = async (whole: boolean) => {
     if (settle.place.getTime() >= settleTo().getTime()) return;
-    if (Date.now() > totalDeadline) {
+    if (clock() > totalDeadline) {
       settle.owed = true;
       await persist();
       return;
@@ -1247,7 +1262,7 @@ export async function collectSignins(
       await walk(
         settle,
         settleTo(),
-        { deadline: totalDeadline, startedAt: Date.now(), first: true, whole },
+        { clock, deadline: totalDeadline, startedAt: clock(), first: true, whole },
         false,
       );
     } catch (error) {
@@ -1267,6 +1282,7 @@ export async function collectSignins(
     main,
     now,
     {
+      clock,
       deadline: totalDeadline,
       startedAt,
       first: true,
@@ -1291,12 +1307,13 @@ export async function collectSignins(
   const freshFloor = max(settle.place, oldestAllowed);
   let freshTo = min(savedThrough, main.place);
   const freshBudget: Budget = {
+    clock,
     deadline: totalDeadline,
-    startedAt: Date.now(),
+    startedAt: clock(),
     first: false,
     whole: false,
   };
-  while (freshTo.getTime() > freshFloor.getTime() && Date.now() <= totalDeadline) {
+  while (freshTo.getTime() > freshFloor.getTime() && clock() <= totalDeadline) {
     const from = max(freshFloor, new Date(freshTo.getTime() - FRESH_WINDOW_MS));
     try {
       await collectRange(context, config, canaries, from, freshTo, false, freshBudget, false);

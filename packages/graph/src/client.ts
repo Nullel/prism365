@@ -6,6 +6,21 @@ import { type GraphFeatureId, type GraphPermission, getPermissionPack } from "./
 type FetchImplementation = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type Sleep = (milliseconds: number) => Promise<void>;
 
+// The time a client measures request limits and callers' deadlines with. Production uses the
+// real monotonic clock; a test can supply one it moves itself, so what a request or a run
+// manages never depends on how fast the machine is.
+export interface GraphClock {
+  now(): number;
+  setTimeout(callback: () => void, milliseconds: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+export const monotonicClock: GraphClock = {
+  now: () => performance.now(),
+  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 export interface GraphRequestContext {
   feature: GraphFeatureId;
   permission: GraphPermission;
@@ -15,6 +30,7 @@ export interface GraphClientOptions {
   getAccessToken: () => Promise<string>;
   fetchImplementation?: FetchImplementation;
   sleep?: Sleep;
+  clock?: GraphClock;
   maxRetries?: number;
   cloud?: MicrosoftCloud;
   requestTimeoutMilliseconds?: number;
@@ -25,7 +41,8 @@ export interface GraphClientOptions {
 export interface CollectionOptions {
   maxPages?: number;
   maxRecords?: number;
-  // Epoch milliseconds after which no further page is requested.
+  // Milliseconds on the client's clock (the monotonic clock unless one was supplied) after which
+  // no further page is requested.
   deadline?: number;
   // Stops paging, and the request in flight, when aborted.
   signal?: AbortSignal;
@@ -218,6 +235,7 @@ export class GraphHttpClient {
   readonly #getAccessToken: () => Promise<string>;
   readonly #fetch: FetchImplementation;
   readonly #sleep: Sleep;
+  readonly #clock: GraphClock;
   readonly #maxRetries: number;
   readonly #timeout: number;
   readonly #maxResponseBytes: number;
@@ -229,6 +247,7 @@ export class GraphHttpClient {
     this.#getAccessToken = options.getAccessToken;
     this.#fetch = options.fetchImplementation ?? globalThis.fetch.bind(globalThis);
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#clock = options.clock ?? monotonicClock;
     this.#maxRetries = boundedInteger(options.maxRetries ?? 2, 0, 5, "maxRetries");
     this.#timeout = boundedInteger(
       options.requestTimeoutMilliseconds ?? 10_000,
@@ -402,7 +421,7 @@ export class GraphHttpClient {
       // A page is not started past the caller's deadline, so one slow collection cannot carry a
       // run past the point where it can still save its place. What was read is returned, marked
       // as stopped, so the caller can keep it.
-      if (pageNumber > 0 && options.deadline !== undefined && Date.now() > options.deadline)
+      if (pageNumber > 0 && options.deadline !== undefined && this.#clock.now() > options.deadline)
         return { items, complete: false, stopped: "deadline" };
       const target = this.#resolveTarget(next).href;
       if (seen.has(target))
@@ -534,7 +553,7 @@ export class GraphHttpClient {
       const controller = new AbortController();
       const forward = () => controller.abort(external?.reason);
       external?.addEventListener("abort", forward, { once: true });
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let timer: unknown;
       const operation = async (): Promise<
         { answered: true; value: T } | { answered: false; response: Response }
       > => {
@@ -563,7 +582,7 @@ export class GraphHttpClient {
         result = await Promise.race([
           operation(),
           new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => {
+            timer = this.#clock.setTimeout(() => {
               controller.abort();
               reject(new GraphBoundaryError("Graph request exceeded its time budget.", "timeout"));
             }, this.#timeout);
@@ -573,7 +592,7 @@ export class GraphHttpClient {
         if (external?.aborted) throw external.reason;
         throw error;
       } finally {
-        if (timer !== undefined) clearTimeout(timer);
+        if (timer !== undefined) this.#clock.clearTimeout(timer);
         external?.removeEventListener("abort", forward);
       }
       if (result.answered) return result.value;
@@ -602,7 +621,7 @@ export class GraphHttpClient {
     const controller = new AbortController();
     const forward = () => controller.abort(external?.reason);
     external?.addEventListener("abort", forward, { once: true });
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: unknown;
     const operation = async () => {
       try {
         const response = await this.#fetch(url, {
@@ -636,7 +655,7 @@ export class GraphHttpClient {
       return await Promise.race([
         operation(),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => {
+          timer = this.#clock.setTimeout(() => {
             controller.abort();
             reject(
               new GraphBoundaryError(
@@ -651,7 +670,7 @@ export class GraphHttpClient {
       if (external?.aborted) throw external.reason;
       throw error;
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
+      if (timer !== undefined) this.#clock.clearTimeout(timer);
       external?.removeEventListener("abort", forward);
     }
   }

@@ -99,7 +99,8 @@ export interface ScopedGraph {
       schema: z.ZodType<T>;
       maxPages?: number;
       maxRecords?: number;
-      // Epoch milliseconds after which no further page is requested.
+      // Milliseconds on the Graph client's clock (the monotonic clock in production) after which
+      // no further page is requested; take it from the same clock, never from Date.now().
       deadline?: number;
     },
   ): Promise<{ items: T[]; complete: boolean; stopped?: "deadline" }>;

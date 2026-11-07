@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { GraphHttpClient } from "@prism365/graph";
+import { type GraphClock, GraphHttpClient } from "@prism365/graph";
 import {
   type CollectionCredential,
   latestRuns,
@@ -28,6 +28,41 @@ const tenantId = randomUUID();
 const actorId = randomUUID();
 const start = new Date("2026-10-22T12:00:00Z");
 
+// The monotonic clock the collector and the Graph client measure time with in these tests. Only
+// the fake Microsoft moves it: a slow answer advances it by the answer's delay instead of
+// sleeping, and a request's time limit is a timer on it. What a run manages therefore depends on
+// the scenario alone, never on how fast the machine is.
+class TestClock implements GraphClock {
+  time = 1_000;
+  #timers = new Map<number, { at: number; callback: () => void }>();
+  #next = 0;
+  now = () => this.time;
+  setTimeout(callback: () => void, milliseconds: number): number {
+    this.#next += 1;
+    this.#timers.set(this.#next, { at: this.time + milliseconds, callback });
+    return this.#next;
+  }
+  clearTimeout(handle: unknown) {
+    this.#timers.delete(handle as number);
+  }
+  // Moves time forward, running each timer when its moment comes. Stops early once `stop` says so,
+  // as a request does when its time limit aborts it.
+  advance(milliseconds: number, stop: () => boolean = () => false) {
+    const target = this.time + milliseconds;
+    for (;;) {
+      if (stop()) return;
+      const due = [...this.#timers.entries()]
+        .filter(([, timer]) => timer.at <= target)
+        .sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+      if (!due) break;
+      this.#timers.delete(due[0]);
+      this.time = Math.max(this.time, due[1].at);
+      due[1].callback();
+    }
+    if (!stop()) this.time = target;
+  }
+}
+
 interface FakeSignIn {
   id: string;
   createdDateTime: string;
@@ -37,6 +72,9 @@ interface FakeSignIn {
 let records: FakeSignIn[];
 let graphStatus: number | null;
 let clock: Date;
+let testClock: TestClock;
+// Set by the one test that proves the defaults: no clock is injected anywhere.
+let productionClocks = false;
 let database: PGliteModuleDatabase;
 let scheduler: ModuleScheduler;
 
@@ -81,7 +119,14 @@ function signIn(at: Date, overrides: Record<string, unknown> = {}): FakeSignIn {
 
 const minutesAgo = (minutes: number) => new Date(clock.getTime() - minutes * 60_000);
 
-async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
+// Microsoft taking `milliseconds` to answer, on the test clock. A request whose time limit passes
+// first is aborted there, so the time spent is the limit, not the whole delay.
+function answerSlowly(milliseconds: number, signal?: AbortSignal | null) {
+  testClock.advance(milliseconds, () => signal?.aborted === true);
+  if (signal?.aborted) throw new DOMException("The request was aborted.", "AbortError");
+}
+
+async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   if (graphStatus)
     return new Response("{}", {
       status: graphStatus,
@@ -101,11 +146,11 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
   requested.push({ from: match[1], to: match[3] });
   // Simulates Microsoft answering wide ranges too slowly.
   if (slowFrom !== null && Number((to - from) / 10_000n) > slowFrom)
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    answerSlowly(400, init?.signal);
 
   // Simulates one moment Microsoft can never answer in time, at any window size.
   if (slowAt !== null && Number(from / 10_000n) <= slowAt && Number(to / 10_000n) >= slowAt)
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    answerSlowly(400, init?.signal);
   const value = records
     .filter((record) => {
       const at = ticks(record.createdDateTime);
@@ -122,7 +167,7 @@ async function fakeFetch(input: RequestInfo | URL): Promise<Response> {
   const top = Number(url.searchParams.get("$top") ?? "100");
   const skip = Number(url.searchParams.get("$skiptoken") ?? "0");
   if (requestDelay > 0 && (delayEmptyPages || value.length > 0))
-    await new Promise((resolve) => setTimeout(resolve, requestDelay));
+    answerSlowly(requestDelay, init?.signal);
   await onRequest?.();
   const next = new URL(url);
   next.searchParams.set("$skiptoken", String(skip + top));
@@ -159,7 +204,9 @@ async function setup(
     backfillDays: 3,
     ...overrides,
   };
-  const registry = new ModuleRegistry().register(decorate(createSigninsAuditModule(config)));
+  const registry = new ModuleRegistry().register(
+    decorate(createSigninsAuditModule(config, productionClocks ? {} : { clock: testClock.now })),
+  );
   database = await PGliteModuleDatabase.open({ scopes: registry.migrationScopes() });
   scheduler = new ModuleScheduler({
     enabledPacks: registry.list().flatMap((module) => [...module.packs]),
@@ -171,6 +218,7 @@ async function setup(
         getAccessToken,
         fetchImplementation: fakeFetch,
         sleep: async () => {},
+        ...(productionClocks ? {} : { clock: testClock }),
         ...graphOptions,
       }),
   });
@@ -227,6 +275,8 @@ const count = async (where = "true") =>
 
 beforeEach(() => {
   clock = start;
+  testClock = new TestClock();
+  productionClocks = false;
   records = [];
   graphStatus = null;
   slowFrom = null;
@@ -431,6 +481,19 @@ describe("sign-in audit collector", () => {
     expect((await runs())[0]?.status).toBe("succeeded");
   });
 
+  it("measures its run with the real monotonic clock unless one is injected", async () => {
+    productionClocks = true;
+    const reads = vi.spyOn(performance, "now");
+    try {
+      await setup();
+      await poll();
+      expect(reads).toHaveBeenCalled();
+    } finally {
+      reads.mockRestore();
+    }
+    expect(await count()).toBe(18);
+  });
+
   it("summarizes by country and masks failing networks", async () => {
     await setup();
     for (let minute = 10; minute >= 4; minute -= 1)
@@ -553,10 +616,6 @@ describe("sign-in audit collector", () => {
       expect(through >= previous, `round ${round}: ${through} < ${previous}`).toBe(true);
       previous = through;
     }
-    // Each run has a real time budget, so on a slow machine the last round can leave part of its
-    // window for the next run. Moving forward means the backlog clears, not that every run
-    // finishes inside its budget: a few more runs with no new sign-ins must collect the rest.
-    for (let round = 0; round < 20 && ((await count()) ?? 0) < added; round += 1) await poll();
     expect(await count()).toBe(added);
   }, 60_000);
 
@@ -708,8 +767,7 @@ describe("sign-in audit collector", () => {
     for (let index = 0; index < 400; index += 1)
       records.push(signIn(new Date(burst + index * 400), { userId: `user-${index % 11}` }));
     // Each page of 100 takes 150 ms and a run may spend 250 ms: no run can page through 400.
-    // The ratio is what matters (one or two pages a run); the scale is large enough that a slow
-    // runner's own overhead per run cannot use up a budget before the first page.
+    // The ratio is what matters (one or two pages a run), and the test clock makes it exact.
     requestDelay = 150;
     delayEmptyPages = false;
     await setup({ backfillDays: 1, windowRecordLimit: 500, runBudgetSeconds: 0.25 });
