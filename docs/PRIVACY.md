@@ -62,6 +62,13 @@ people does not. Stored sign-in tables are encrypted at rest only by the host's 
 encryption (FileVault, BitLocker or LUKS); Prism365 does not encrypt those columns itself.
 Backups made with `scripts/docker-live.sh backup` are plain `pg_dump` files outside retention.
 
+A person page's Access tab shows that account's group and role memberships, the objects it owns,
+the Conditional Access policies that apply to it or leave it out, and its rows from the latest
+stored audit runs. The memberships, ownership and policies are read live with the administrator's
+own session and are not stored; the audit rows are read from results the audits already stored,
+so the tab stores nothing new. Opening it writes an access-ledger entry (`person.access.viewed`)
+that names the datasets read and how many, not the person, a group or a policy.
+
 "Check Have I Been Pwned" in a person page's Actions menu opens haveibeenpwned.com with that person's
 address in the link, so the administrator's browser, not Prism365, sends it to HIBP, only when
 the button is pressed. The address also lands in that browser's history.
@@ -130,6 +137,22 @@ deleted, receipt items included, a batch at a time after each new handoff or rec
 a handoff stays while a kept receipt answers it.
 Exporting, importing and reading them each write an access-ledger entry with ids and counts, not
 names or the tool's text.
+
+## Shared mailbox access
+
+A mailbox access export (ADR-0012) is a file an administrator writes with
+`Export-MailboxAccess.ps1` in their own Exchange Online session and imports. Prism365 stores, for
+each grant in it, the mailbox's id, address, display name and type, the right (Full Access, Send
+As, Send on Behalf), and the trustee's id, address, display name and kind; a trustee the script
+could not resolve is kept as the text Exchange returned, such as a deleted account's SID. With it
+the import keeps when the export was taken, when it was imported and by whom, and its counts.
+
+Only the latest import is kept, until another import replaces it or an administrator clears it on
+the Microsoft access page; there is no other retention. Importing, clearing, and viewing the
+import or a person's shared mailboxes each write an access-ledger entry with ids and counts, never
+names or addresses. The person page reads the account's groups live from Microsoft to match grants
+made to groups, and does not store them. The file itself stays wherever the administrator saved
+it, outside Prism365's retention, and should be handled like an audit export.
 
 ## Alerts
 

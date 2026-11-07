@@ -99,12 +99,21 @@ const severityNames: Record<Severity, string> = {
 // The one way severity looks outside a finding's own card: a dot in the severity's colour and
 // its name, so the colour never carries the meaning alone. With a count it reads "2 critical",
 // for a tile. Info shares low's colour.
-export function SeverityDot({ severity, count }: { severity: Severity; count?: number }) {
-  const name = severityNames[severity];
+export function SeverityDot({
+  severity,
+  count,
+  label,
+}: {
+  severity: Severity;
+  count?: number;
+  // Words to show instead of the severity's name, for a state that is not a rating ("Excluded").
+  label?: string;
+}) {
+  const name = label ?? severityNames[severity];
   return (
     <span className={`sev sev--${severity === "info" ? "low" : severity}`}>
       <span className="sev__dot" aria-hidden="true" />
-      {count === undefined ? name : `${number.format(count)} ${name.toLowerCase()}`}
+      {count === undefined || label ? name : `${number.format(count)} ${name.toLowerCase()}`}
     </span>
   );
 }

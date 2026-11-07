@@ -25,7 +25,7 @@ This table groups the intended scope for review.
 
 | Packs | Source | Permission(s) | Phase | Important prerequisite |
 |---|---|---|---|---|
-| `profile`, `directory.users.read` | Graph | `User.Read`, `User.Read.All` | MVP | Work/school tenant; delegated access is bounded by the user's privileges; `directory.users.read` also reads one user's direct memberships (`/users/{id}/memberOf`, not transitive), for which `User.Read.All` is Microsoft's documented least privilege; the Account activity audit reads them for up to 2,000 accounts a run |
+| `profile`, `directory.users.read` | Graph | `User.Read`, `User.Read.All` | MVP | Work/school tenant; delegated access is bounded by the user's privileges; `directory.users.read` also reads one user's direct and nested memberships (`/users/{id}/memberOf`, `/users/{id}/transitiveMemberOf`) and the objects that user owns (`/users/{id}/ownedObjects`), for which `User.Read.All` is Microsoft's documented permission when reading another user; the Account activity audit reads direct memberships for up to 2,000 accounts a run, and the person page reads all three for one person. Without `Directory.Read.All`, Microsoft may return some of those objects with only their type and ID |
 | `tenant.licenses.read` | Graph | `LicenseAssignment.Read.All` | MVP | Delegated caller needs an allowed directory role |
 | `user.licenses.read` | Graph | `LicenseAssignment.Read.All` | Pilot implemented | `/users/{id}/licenseDetails` supports delegated access only, plus an allowed Entra role |
 | `service.health.read` | Graph | `ServiceHealth.Read.All` | MVP | Service health available for tenant services |
@@ -105,6 +105,22 @@ packs are added only when named or with `--features all`, and `directory.permiss
 - A permission added only because it makes an implementation simpler.
 - `Mail.Send` or any other `*.Send` permission. Alerts go through the operator's own mail relay or
   a webhook (ADR-0011, `docs/alerts.md`), so they need no Microsoft permission at all.
+
+## Shared mailbox access needs no Graph permission
+
+Full Access, Send As and Send on Behalf have no read-only Microsoft API, so Prism365 asks for
+nothing to read them (ADR-0012). An administrator exports them with `Export-MailboxAccess.ps1` in
+their own Exchange Online session and imports the file; Prism365 never calls Exchange and holds no
+Exchange credential. The `Exchange.ManageV2` scope of the Exchange Online Admin API stays out:
+it can manage, and the API has no permission cmdlets anyway.
+
+The administrator who runs the export needs an Exchange Online role that can run
+`Get-MailboxPermission`, `Get-RecipientPermission` and `Get-Recipient` (the `Get-EXO*` cmdlets the
+script calls check the same roles). Microsoft does not document which roles those are; Global
+Reader maps to View-Only Organization Management, and `Get-ManagementRole -Cmdlet
+Get-MailboxPermission` lists the roles that can. The person page matches grants made to groups
+through `directory.users.read` (`transitiveMemberOf`), which it already has; without that pack it
+matches direct grants only.
 
 ## Write permissions
 

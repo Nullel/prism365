@@ -777,10 +777,36 @@ describe("the usage report and membership paths", () => {
       expect(await users(path), path).toBe(true);
   });
 
-  it("refuses transitive memberships, deeper paths and encoded separators", async () => {
+  it("allows nested memberships and owned objects, and nothing below them", async () => {
     for (const path of [
       "users/u-1/transitiveMemberOf",
       "users('ada%40lab.example')/transitiveMemberOf",
+      "users/u-1/transitiveMemberOf?$select=id,displayName",
+      "users/u-1/ownedObjects",
+      "users('ada%40lab.example')/ownedObjects?$select=id,displayName",
+    ])
+      expect(await users(path), path).toBe(true);
+    for (const path of [
+      "users/u-1/transitiveMemberOf/$count",
+      "users/u-1/transitiveMemberOf/microsoft.graph.group",
+      "users/u-1/ownedObjects/extra",
+      "users/u-1/ownedObjects/microsoft.graph.application",
+      "users/u-1/ownedDevices",
+      "users/u-1/registeredDevices",
+      "users/u-1/createdObjects",
+      "users/u-1/transitiveReports",
+      "users/u-1/directReports",
+      "users/u-1/oauth2PermissionGrants",
+      "users/u-1/appRoleAssignments",
+      "users/u-1/mailboxSettings",
+      "users/u-1/authentication/methods",
+      "users/u%2FownedObjects",
+    ])
+      expect(await users(path), path).toBe(false);
+  });
+
+  it("refuses deeper paths and encoded separators", async () => {
+    for (const path of [
       "users/u-1/memberOf/extra",
       "users/u-1/memberOf/microsoft.graph.group",
       "users/u-1/memberOf/$count",
@@ -793,7 +819,6 @@ describe("the usage report and membership paths", () => {
       "users/u%2/memberOf",
       "users/u+1/memberOf",
       "groups/g-1/memberOf",
-      "users/u-1/ownedObjects",
     ])
       expect(await users(path), path).toBe(false);
     // The paths the user pack already had stay as they were.

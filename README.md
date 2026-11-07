@@ -29,6 +29,26 @@ One page per account: where they signed in from, with full addresses and devices
 the apps they use, their manager and licenses from the live directory, open findings, and every
 stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator's own browser.
 
+#### Access tab
+
+The person page's Access tab answers "what can this account reach?" in one place. It opens only
+when you select it, and shows each section with where it came from and when. Groups and roles
+lists the groups the account is in, direct or nested, by kind, with Microsoft 365 groups marked
+"Group mailbox", the directory roles it holds now and its administrative units; objects Microsoft
+hides from the signed-in administrator are listed as "Hidden by Microsoft" with their id. The
+eligible and time-bound roles come from the Privileged roles audit. Owns lists the groups, teams
+and applications the account owns, so ownership can be handed over before the account is removed.
+Conditional Access lists the policies that apply to the account and the ones that leave it out,
+each with its state and what it requires, and the ones that leave it out come first when any of
+them is on. Whether a policy applies at a given sign-in still depends on its apps, platforms and
+locations, which the tab does not evaluate. Sign-in methods, Devices, Mailbox, Password, Risk and
+Activity show the account's rows from the latest stored run of those audits, so they are as new
+as that run; an audit that has not run says so and links to it. The mailbox report names mailboxes
+by sign-in name only, so its row is matched on the account's sign-in name, and never when
+Microsoft hides names in its reports. Full Access and Send As on shared mailboxes are not
+readable through Microsoft's read-only APIs and are not shown. The live sections need the
+directory users and Conditional Access read packs; a section that cannot be read says which one.
+
 ### Audits
 
 Checks you run when you need them: inactive accounts by days since the last

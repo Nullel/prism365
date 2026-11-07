@@ -153,14 +153,15 @@ function boundedInteger(value: number, min: number, max: number, label: string):
 // links do not always keep the casing of the request (auditLogs/signIns comes back as signins).
 const allowedPaths: Record<GraphFeatureId, RegExp> = {
   profile: /^\/v1\.0\/me\/?$/i,
-  // The user list, one user, one user's manager, or one user's direct memberships (groups,
-  // directory roles and administrative units; not transitiveMemberOf), in the /users/{id} or the
-  // users('upn') form. The key takes only what the path builders (person.ts, investigation.ts)
+  // The user list, one user, one user's manager, its direct or nested memberships (groups,
+  // directory roles and administrative units), or the objects it owns (groups, applications,
+  // service principals), in the /users/{id} or the users('upn') form. All of them are
+  // User.Read.All reads; nothing below them (no /$count, no casts, no deeper segment) is. The key takes only what the path builders (person.ts, investigation.ts)
   // produce from an id or a principal name: what encodeURIComponent leaves as it is (letters,
   // digits and - _ . ! ~ * ' ( )), the : and @ of raw ids, and well-formed percent escapes other
   // than an encoded slash, backslash or question mark, which no id or principal name holds.
   "directory.users.read":
-    /^\/v1\.0\/users(?:(?:\/(?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+|\((?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+\))(?:\/manager|\/memberOf)?)?\/?$/i,
+    /^\/v1\.0\/users(?:(?:\/(?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+|\((?:[A-Za-z0-9._:@!~*'()-]|%(?!2f|5c|3f)[0-9a-f]{2})+\))(?:\/manager|\/memberOf|\/transitiveMemberOf|\/ownedObjects)?)?\/?$/i,
   "user.licenses.read": /^\/v1\.0\/users(?:\/[^/]+|\([^/]+\))\/licenseDetails\/?$/i,
   "tenant.licenses.read": /^\/v1\.0\/subscribedSkus\/?$/i,
   "service.health.read":

@@ -647,18 +647,19 @@ describe("the tab in the address", () => {
     expect(parsePersonTab("signins")).toBe("signins");
     expect(parsePersonTab("Sign-ins")).toBeNull();
     expect(parsePersonTab(undefined)).toBeNull();
-    expect(personTabs).toEqual(["overview", "signins", "licenses", "changes"]);
+    expect(personTabs).toEqual(["overview", "signins", "licenses", "changes", "access"]);
   });
 });
 
 describe("the tab list keys", () => {
   it("steps right and left and wraps, with Home and End", () => {
     expect(tabKeyTarget("ArrowRight", "overview")).toBe("signins");
-    expect(tabKeyTarget("ArrowRight", "changes")).toBe("overview");
-    expect(tabKeyTarget("ArrowLeft", "overview")).toBe("changes");
+    expect(tabKeyTarget("ArrowRight", "changes")).toBe("access");
+    expect(tabKeyTarget("ArrowRight", "access")).toBe("overview");
+    expect(tabKeyTarget("ArrowLeft", "overview")).toBe("access");
     expect(tabKeyTarget("ArrowLeft", "licenses")).toBe("signins");
     expect(tabKeyTarget("Home", "licenses")).toBe("overview");
-    expect(tabKeyTarget("End", "overview")).toBe("changes");
+    expect(tabKeyTarget("End", "overview")).toBe("access");
     expect(tabKeyTarget("ArrowDown", "overview")).toBeNull();
     expect(tabKeyTarget("Tab", "overview")).toBeNull();
   });
@@ -680,6 +681,7 @@ const noCounts: Record<PersonTab, TabCount | null> = {
   signins: null,
   licenses: null,
   changes: null,
+  access: null,
 };
 
 describe("the tab list markup", () => {
@@ -694,9 +696,21 @@ describe("the tab list markup", () => {
     const tablist = findAll(tree, (host) => host.props.role === "tablist");
     expect(tablist).toHaveLength(1);
     const tabs = findAll(tree, (host) => host.props.role === "tab");
-    expect(tabs.map((tab) => tab.props["aria-selected"])).toEqual([false, false, true, false]);
-    expect(tabs.map((tab) => tab.props.tabIndex)).toEqual([-1, -1, 0, -1]);
-    expect(tabs.map((tab) => textOf(tab))).toEqual(["Overview", "Sign-ins", "Licenses", "Changes"]);
+    expect(tabs.map((tab) => tab.props["aria-selected"])).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+    ]);
+    expect(tabs.map((tab) => tab.props.tabIndex)).toEqual([-1, -1, 0, -1, -1]);
+    expect(tabs.map((tab) => textOf(tab))).toEqual([
+      "Overview",
+      "Sign-ins",
+      "Licenses",
+      "Changes",
+      "Access",
+    ]);
   });
 
   it("points each tab at its own panel, and the panel back at the tab", () => {
@@ -738,7 +752,7 @@ describe("the tab list markup", () => {
     onKeyDown({ key: "ArrowRight", preventDefault: () => (prevented += 1) });
     onKeyDown({ key: "End", preventDefault: () => (prevented += 1) });
     onKeyDown({ key: "Tab", preventDefault: () => (prevented += 1) });
-    expect(chosen).toEqual(["licenses", "changes"]);
+    expect(chosen).toEqual(["licenses", "access"]);
     expect(prevented).toBe(2);
   });
 
@@ -749,6 +763,7 @@ describe("the tab list markup", () => {
         signins: { value: 1234 },
         licenses: { value: 0 },
         changes: { value: 20, more: true },
+        access: null,
       }),
       (host) => host.props.role === "tab",
     );
@@ -757,6 +772,8 @@ describe("the tab list markup", () => {
       "Sign-ins1,234",
       "Licenses0",
       "Changes20+",
+      // The tab carries no count.
+      "Access",
     ]);
     expect(
       findAll(list("overview"), (host) => host.props.className === "person-tab__count"),
@@ -770,7 +787,7 @@ describe("the tab list markup", () => {
       )[0];
       return typeof panel === "object" ? panel.props.hidden : null;
     });
-    expect(hidden).toEqual([true, true, true, false]);
+    expect(hidden).toEqual([true, true, true, false, true]);
   });
 });
 
@@ -788,6 +805,7 @@ describe("the counts on the tabs", () => {
       signins: { value: 42 },
       licenses: { value: 2 },
       changes: { value: 20, more: true },
+      access: null,
     });
   });
 
@@ -800,6 +818,7 @@ describe("the counts on the tabs", () => {
       signins: { value: 0 },
       licenses: { value: 0 },
       changes: null,
+      access: null,
     });
   });
 });

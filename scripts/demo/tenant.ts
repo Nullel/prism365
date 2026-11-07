@@ -2027,7 +2027,8 @@ const notFound = (message = "Resource not found for the segment requested.") =>
 
 function project<T extends object>(item: T, select: string | null): Partial<T> {
   if (!select) return item;
-  const wanted = new Set(["id", ...select.split(",").map((field) => field.trim())]);
+  // Graph returns the type of an object in a directory collection whatever is selected.
+  const wanted = new Set(["id", "@odata.type", ...select.split(",").map((field) => field.trim())]);
   return Object.fromEntries(Object.entries(item).filter(([key]) => wanted.has(key))) as Partial<T>;
 }
 

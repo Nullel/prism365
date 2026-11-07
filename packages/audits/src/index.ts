@@ -33,6 +33,7 @@ export {
   verdictOf,
 } from "./account-activity.ts";
 export { MAX_MEMBERSHIP_ACCOUNTS, MEMBERSHIP_CONCURRENCY } from "./activity-groups.ts";
+export { joinKey } from "./activity-reports.ts";
 export {
   appConsentsAudit,
   HIGH_RISK_PERMISSIONS,
@@ -49,7 +50,14 @@ export {
 export { INPUT_IDS, INPUTS } from "./combined-risks-inputs.ts";
 export { mfaPolicies, mfaReach } from "./combined-risks-reach.ts";
 export { RULES } from "./combined-risks-rules.ts";
-export { conditionalAccessAudit, createConditionalAccessAudit } from "./conditional-access.ts";
+export {
+  conditionalAccessAudit,
+  createConditionalAccessAudit,
+  grantText,
+  type Policy,
+  policyContext,
+  policySchema,
+} from "./conditional-access.ts";
 export * from "./definition.ts";
 export {
   checkInOf,
@@ -66,8 +74,8 @@ export {
   GROUP_KINDS,
   GROUP_STATUSES,
   type GroupKind,
-  type GroupsTeamsLimits,
   type GroupStatus,
+  type GroupsTeamsLimits,
   groupsTeamsAudit,
   kindOf,
   MAX_GROUPS,
@@ -76,6 +84,7 @@ export {
 } from "./groups-teams.ts";
 export {
   createM365AppUsageAudit,
+  HASHED,
   lastActivityOf,
   MAX_USAGE_ACCOUNTS,
   m365AppUsageAudit,
@@ -91,6 +100,7 @@ export {
 } from "./mailbox-storage.ts";
 export { methodLabel, strongestMethod } from "./mfa.ts";
 export * from "./paced-read.ts";
+export { policyReach, type Reach, type ReachPerson, type ReachReason } from "./policy-reach.ts";
 export { createRiskyUsersAudit, riskyUsersAudit } from "./risky-users.ts";
 export * from "./schedule.ts";
 export * from "./scope.ts";

@@ -672,7 +672,7 @@ const ROLES = new Map<string, string[]>([
 
 // What GET /users/{id}/memberOf returns: groups and directory roles, each with the type Microsoft
 // puts on every directory object. Direct memberships only.
-function membershipsOf(user: DirectoryUser) {
+export function membershipsOf(user: DirectoryUser) {
   const groups = [
     ...(user.userType === "Member" && user.accountEnabled ? [STAFF] : []),
     ...(user.userType === "Member" && user.department === "Laboratory" ? [LABORATORY] : []),
