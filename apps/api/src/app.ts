@@ -14,6 +14,7 @@ import {
   findAudit,
   getRun,
   latestRuns as latestAuditRuns,
+  latestSucceededRun,
   listRuns,
   readAuditSettings,
   writeAuditScope,
@@ -38,6 +39,7 @@ import {
   auditStartSchema,
   capabilitySummarySchema,
   collectionStatusSchema,
+  COMBINED_RISKS_AUDIT_ID,
   findingListSchema,
   findingStateRequestSchema,
   findingStateSchema,
@@ -120,6 +122,7 @@ import {
   LoginRejectedError,
 } from "./identity.ts";
 import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
+import { combinedRisksFor } from "./person-access.ts";
 import { registerAuditInsightRoutes } from "./routes/audit-insights.ts";
 import { registerAuditReviewRoutes } from "./routes/audit-review.ts";
 import { registerCanaryRoutes } from "./routes/canaries.ts";
@@ -811,18 +814,25 @@ export function createApp(options: AppOptions = {}) {
     if (!params.success)
       return reply.status(400).send({ error: "invalid_request", message: "Unknown account." });
     const { userId } = params.data;
-    const record = await modules.database.tenant(session.tenantId, async (sql) => ({
-      history: await personHistory(sql, session.tenantId, userId),
-      findings: await listFindings(sql, session.tenantId, {
-        module: SIGNINS_MODULE,
-        personId: userId,
-        limit: 200,
-      }),
-    }));
+    // The ledger entry comes first, before anything is read.
     await store.appendAudit(session.tenantId, session.actorId, {
       type: "person.viewed",
-      datasets: ["signIns", "findings"],
+      datasets: ["signIns", "findings", "combinedRisks"],
       occurredAt: new Date().toISOString(),
+    });
+    const record = await modules.database.tenant(session.tenantId, async (sql) => {
+      // The header chip's data: this account's answer from the latest Combined risks run, kept
+      // out of the record when that audit has never finished a run.
+      const combined = await latestSucceededRun(sql, session.tenantId, COMBINED_RISKS_AUDIT_ID);
+      return {
+        history: await personHistory(sql, session.tenantId, userId),
+        findings: await listFindings(sql, session.tenantId, {
+          module: SIGNINS_MODULE,
+          personId: userId,
+          limit: 200,
+        }),
+        ...(combined ? { combinedRisks: combinedRisksFor(combined, userId) } : {}),
+      };
     });
     return personRecordSchema.parse(record);
   });

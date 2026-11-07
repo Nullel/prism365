@@ -196,7 +196,12 @@ async function harness(
   const ledger = () => store.audit.map((entry) => entry.event as Record<string, unknown>);
   // A finished run of one audit, as the audit store keeps it.
   let runs = 0;
-  const storeRun = async (auditId: string, rows: AuditRow[], scope: string[] | null = null) => {
+  const storeRun = async (
+    auditId: string,
+    rows: AuditRow[],
+    scope: string[] | null = null,
+    outcome: { notes?: string[]; complete?: boolean } = {},
+  ) => {
     runs += 1;
     const id = `00000000-0000-4000-8000-${String(runs).padStart(12, "0")}`;
     await database.tenant(tenantId, async (sql) => {
@@ -210,9 +215,9 @@ async function harness(
       });
       await finishRun(sql, tenantId, id, new Date("2026-10-20T10:05:00Z"), {
         status: "succeeded",
-        complete: true,
+        complete: outcome.complete ?? true,
         summary: [],
-        notes: [],
+        notes: outcome.notes ?? [],
         rows,
       });
     });
@@ -604,6 +609,122 @@ describe("person access API, limits", () => {
     expect(byId.get("bare-1")).toMatchObject({ kind: "hidden", name: null });
     expect(byId.get("typed-1")).toMatchObject({ kind: "security", name: null });
     expect(byId.get("named-1")).toMatchObject({ kind: "hidden" });
+    await h.app.close();
+  }, 60_000);
+});
+
+describe("person access API, combined risks", () => {
+  const combinedRow = (personId: string, tags: string[], reasons: string): AuditRow => ({
+    key: personId,
+    personId,
+    tags,
+    cells: { person: { name: "Pat Pell", principal: "pat@example.invalid" }, reasons },
+  });
+
+  it("gives the person's rules, highest severity, reasons and the run's time", async () => {
+    const h = await harness();
+    await h.storeRun("identity.combined-risks", [
+      combinedRow(
+        "aaaaaaaa-0000-4000-8000-0000000000ff",
+        ["critical", "admin-unprotected"],
+        "Not me.",
+      ),
+      combinedRow(
+        person,
+        ["critical", "dormant-admin", "admin-unprotected", "privileged"],
+        "Holds Global Administrator (permanent) and has no MFA registered. Has not signed in for 90 days.",
+      ),
+    ]);
+    const { combinedRisks } = await body(h);
+    expect(combinedRisks).toEqual({
+      status: "ok",
+      finishedAt: "2026-10-20T10:05:00.000Z",
+      severity: "critical",
+      // In the rule list's order, whatever order the tags came in.
+      rules: [
+        { id: "admin-unprotected", label: "Administrator without MFA", severity: "critical" },
+        { id: "dormant-admin", label: expect.any(String), severity: "high" },
+      ],
+      reasons:
+        "Holds Global Administrator (permanent) and has no MFA registered. Has not signed in for 90 days.",
+      gaps: [],
+      complete: true,
+    });
+    await h.app.close();
+  }, 60_000);
+
+  it("says the person trips nothing when the run has no row for them", async () => {
+    const h = await harness();
+    await h.storeRun("identity.combined-risks", [
+      combinedRow("aaaaaaaa-0000-4000-8000-0000000000ff", ["high", "dormant-admin"], "Not me."),
+    ]);
+    const { combinedRisks } = await body(h);
+    expect(combinedRisks).toMatchObject({ status: "ok", severity: null, rules: [], reasons: "" });
+    await h.app.close();
+  }, 60_000);
+
+  it("says there is no run when the audit has never finished one", async () => {
+    const h = await harness();
+    expect((await body(h)).combinedRisks).toEqual({ status: "no_run" });
+    await h.app.close();
+  }, 60_000);
+
+  it("carries the run's notes about missing or stale inputs, and that it was incomplete", async () => {
+    const h = await harness();
+    await h.storeRun("identity.combined-risks", [], null, {
+      complete: false,
+      notes: [
+        "Inputs used, with the date each audit ran: Privileged roles (20 Oct 2026).",
+        "Not used: MFA registration last ran 1 Aug 2026, more than 14 days ago. Two audits are never joined across such a gap.",
+        "Administrator without MFA was not checked. Run MFA registration.",
+        "Conditional Access: 2 enabled policies require MFA.",
+      ],
+    });
+    const { combinedRisks } = await body(h);
+    expect(combinedRisks.complete).toBe(false);
+    expect(combinedRisks.gaps).toEqual([
+      "Not used: MFA registration last ran 1 Aug 2026, more than 14 days ago. Two audits are never joined across such a gap.",
+      "Administrator without MFA was not checked. Run MFA registration.",
+    ]);
+    await h.app.close();
+  }, 60_000);
+
+  it("reads only the stored run, and leaves names and addresses out of the ledger", async () => {
+    const h = await harness();
+    await h.storeRun("identity.combined-risks", [
+      combinedRow(person, ["medium", "paying-for-nothing"], "Pays for a license."),
+    ]);
+    const before = h.requests.length;
+    await body(h);
+    const entry = h.ledger().find((event) => event.type === "person.access.viewed");
+    expect(JSON.stringify(entry)).not.toContain("Pat Pell");
+    expect(JSON.stringify(entry)).not.toContain("pat@example.invalid");
+    expect(h.requests.slice(before).some((path) => path.includes("combined"))).toBe(false);
+    await h.app.close();
+  }, 60_000);
+
+  it("explains that audit results need module storage", async () => {
+    const h = await harness({ modules: false });
+    expect((await body(h)).combinedRisks.status).toBe("failed");
+    await h.app.close();
+  }, 60_000);
+
+  it("puts the same answer on the person record for the header, only when a run exists", async () => {
+    const h = await harness();
+    const none = await body(h, `/v1/people/${person}`);
+    expect(none).not.toHaveProperty("combinedRisks");
+    await h.storeRun("identity.combined-risks", [
+      combinedRow(person, ["critical", "admin-unprotected"], "Holds Global Administrator."),
+    ]);
+    const record = await body(h, `/v1/people/${person}`);
+    expect(record.combinedRisks).toMatchObject({
+      status: "ok",
+      severity: "critical",
+      rules: [{ id: "admin-unprotected" }],
+    });
+    expect(h.ledger().find((event) => event.type === "person.viewed")).toMatchObject({
+      datasets: ["signIns", "findings", "combinedRisks"],
+    });
     await h.app.close();
   }, 60_000);
 });

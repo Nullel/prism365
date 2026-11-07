@@ -26,6 +26,7 @@ import type { PersonCanary } from "../src/Canary.tsx";
 import { People, PersonProfileView, type PersonProfileViewProps } from "../src/People.tsx";
 import { PersonChanges } from "../src/PersonChanges.tsx";
 import {
+  combinedRiskChip,
   entraUserLink,
   hibpLink,
   initials,
@@ -1143,6 +1144,61 @@ describe("a person's page", () => {
     expect(head).toContain("Stop treating as canary");
     expect(head).toContain('href="https://haveibeenpwned.com/account/avery.stone@example.invalid"');
     expect(head).toContain(`userId/${personId}`);
+  });
+
+  it("shows a combined risk chip in the header, in the tone of the highest rule", () => {
+    const combined = (severity: "critical" | "high" | "medium" | null, count: number) => ({
+      status: "ok" as const,
+      finishedAt: "2026-10-20T10:00:00.000Z",
+      severity,
+      rules: Array.from({ length: count }, (_value, index) => ({
+        id: `rule-${index}`,
+        label: `Rule ${index}`,
+        severity: severity ?? "medium",
+      })),
+      reasons: "",
+      gaps: [],
+      complete: true,
+    });
+    const head = (record: PersonProfileViewProps["record"]) => {
+      const html = page({ record });
+      return html.slice(0, html.indexOf("person-tabs-strip"));
+    };
+    // None: no run, a run without this person, and a record from before the field existed.
+    expect(head({ history, findings })).not.toContain("combined risk");
+    expect(head({ history, findings, combinedRisks: combined(null, 0) })).not.toContain(
+      "combined risk",
+    );
+    const one = head({ history, findings, combinedRisks: combined("critical", 1) });
+    expect(one).toMatch(/person-tag--alert person-tag--button"[^>]*>1 combined risk</);
+    const several = head({ history, findings, combinedRisks: combined("high", 3) });
+    expect(several).toMatch(/person-tag--alert person-tag--button"[^>]*>3 combined risks</);
+    const medium = head({ history, findings, combinedRisks: combined("medium", 2) });
+    expect(medium).toMatch(/person-tag--notice person-tag--button"[^>]*>2 combined risks</);
+    expect(combinedRiskChip(null)).toBeNull();
+  });
+
+  it("opens the Access tab from the combined risk chip", () => {
+    let opened = 0;
+    const tree = hostTree(
+      createElement(PersonStatusChips, {
+        account,
+        openSeverities: null,
+        canary: false,
+        combined: {
+          severity: "high",
+          rules: [{ id: "dormant-admin", label: "Dormant administrator", severity: "high" }],
+        },
+        onOpenAccess: () => {
+          opened += 1;
+        },
+      }),
+    );
+    const chip = findAll(tree, (host) => host.tag === "button")[0];
+    if (!chip) throw new Error("No chip");
+    expect(textOf(chip)).toBe("1 combined risk");
+    (chip.props.onClick as () => void)();
+    expect(opened).toBe(1);
   });
 
   it("shows the canary question under the header while one is waiting", () => {

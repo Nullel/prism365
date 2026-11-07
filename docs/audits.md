@@ -1105,7 +1105,11 @@ stored result of the others, joins them by account and flags nine combinations. 
 that trips at least one: the account, its highest severity, the combinations, the reason for each in
 a sentence, the audits and dates behind them, whether the account is enabled and whether it holds a
 privileged role. It uses the account scope (section 9) and has the Domain column. It can be handed
-off ([Handoffs](handoff.md)), because its rows are accounts.
+off ([Handoffs](handoff.md)), because its rows are accounts. The person page shows the same answer
+for one account: a chip in the header ("2 combined risks", in the tone of the highest rule) and a
+Combined risks section first on the Access tab, both read from the latest successful run without
+checking anything again. Whether a Conditional Access policy reaches an account is decided by the
+same function the Access tab uses for its policy list, so the two cannot disagree.
 
 ### What it reads
 

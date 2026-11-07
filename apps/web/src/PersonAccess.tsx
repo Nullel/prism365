@@ -3,6 +3,8 @@ import {
   type AccessMembership,
   type AccessMembershipKind,
   type AccessPolicy,
+  type CombinedRisks,
+  COMBINED_RISKS_AUDIT_ID,
   isStaleExport,
   MAILBOX_ACCESS_STALE_DAYS,
   type MailboxHolder,
@@ -201,6 +203,63 @@ export function AuditSummary({
         <p className="signin-coverage">Showing the first {result.rows.length} rows.</p>
       ) : null}
     </div>
+  );
+}
+
+const combinedAuditHref = `#/audits/${encodeURIComponent(COMBINED_RISKS_AUDIT_ID)}`;
+
+// What the latest Combined risks run said about this account, first on the tab because it is the
+// one answer that already weighs several audits together. Stored, so it is as new as the run.
+export function CombinedRisksSection({ section }: { section: CombinedRisks | undefined }) {
+  // An answer recorded before the section existed has nothing to show.
+  if (!section) return null;
+  return (
+    <section className="panel person-access" aria-label="Combined risks">
+      <h3>Combined risks</h3>
+      {section.status === "failed" ? (
+        <p className="empty-data">{section.message}</p>
+      ) : section.status === "no_run" ? (
+        <p className="empty-data">
+          Combined risks has not run yet. <a href="#/audits">Run a full review</a> to see them here.
+        </p>
+      ) : (
+        <>
+          <Source>
+            From the <a href={combinedAuditHref}>Combined risks</a> audit,{" "}
+            <RelativeTime value={section.finishedAt} />
+          </Source>
+          {section.severity === null ? (
+            <p className="empty-data">No combined risks in the latest run.</p>
+          ) : (
+            <>
+              <p>
+                <SeverityDot severity={section.severity} />
+              </p>
+              <ul className="person-access__list">
+                {section.rules.map((rule) => (
+                  <li key={rule.id}>
+                    <strong>{rule.label}</strong> <SeverityDot severity={rule.severity} />
+                  </li>
+                ))}
+              </ul>
+              {section.reasons ? <p>{section.reasons}</p> : null}
+            </>
+          )}
+          {section.gaps.length > 0 || !section.complete ? (
+            <>
+              <p className="person-muted">
+                That run could not check everything{section.gaps.length > 0 ? ":" : "."}
+              </p>
+              <ul className="person-access__list person-muted">
+                {section.gaps.map((gap) => (
+                  <li key={gap}>{gap}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -667,6 +726,7 @@ export function PersonAccessView({
   const byId = new Map(results.map((result) => [result.auditId, result]));
   return (
     <>
+      <CombinedRisksSection section={access.combinedRisks} />
       <GroupsSection memberships={access.memberships} results={byId} />
       <OwnsSection owned={access.owned} />
       <ConditionalAccessSection section={access.conditionalAccess} />

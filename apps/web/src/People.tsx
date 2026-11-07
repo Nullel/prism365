@@ -552,6 +552,8 @@ export function PersonProfileView({
         }
         openSeverities={record ? openFindings.map((finding) => finding.severity) : null}
         canary={canary.active}
+        combined={record?.combinedRisks ?? null}
+        onOpenAccess={() => onTab("access")}
         actions={<PersonActions userId={userId} address={address} canary={canary} />}
         below={
           canary.confirming || canary.error ? (

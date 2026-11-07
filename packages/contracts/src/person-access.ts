@@ -196,7 +196,42 @@ export const accessAuditsSchema = z.discriminatedUnion("status", [
   accessFailedSchema,
 ]);
 
+// What the latest Combined risks run said about one account: the rules it trips, the highest
+// severity among them, and the run's own sentences about why. Nothing is computed again here, and
+// the run's reasons are kept as the one text it stored.
+export const combinedRiskSeveritySchema = z.enum(["critical", "high", "medium"]);
+export type CombinedRiskSeverity = z.infer<typeof combinedRiskSeveritySchema>;
+export const combinedRiskRuleSchema = z.object({
+  id: z.string().min(1).max(60),
+  label: text,
+  severity: combinedRiskSeveritySchema,
+});
+export type CombinedRiskRule = z.infer<typeof combinedRiskRuleSchema>;
+export const combinedRisksOkSchema = z.object({
+  status: z.literal("ok"),
+  finishedAt: time.nullable(),
+  // null when the account trips no rule in that run.
+  severity: combinedRiskSeveritySchema.nullable(),
+  rules: z.array(combinedRiskRuleSchema).max(20),
+  reasons: z.string().max(2_000),
+  // The run's own notes about inputs that were missing or too old, so a clean answer is not
+  // mistaken for a complete one.
+  gaps: z.array(text).max(10),
+  // False when the run could not check everything.
+  complete: z.boolean(),
+});
+export const combinedRisksSchema = z.discriminatedUnion("status", [
+  combinedRisksOkSchema,
+  // The audit has never finished a run.
+  z.object({ status: z.literal("no_run") }),
+  accessFailedSchema,
+]);
+export type CombinedRisks = z.infer<typeof combinedRisksSchema>;
+export type CombinedRisksOk = z.infer<typeof combinedRisksOkSchema>;
+
 export const personAccessSchema = z.object({
+  // Absent in an answer recorded before the section existed.
+  combinedRisks: combinedRisksSchema.optional(),
   memberships: accessMembershipsSchema,
   owned: accessOwnedSchema,
   conditionalAccess: accessConditionalAccessSchema,
