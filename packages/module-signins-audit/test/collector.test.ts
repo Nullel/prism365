@@ -782,7 +782,10 @@ describe("sign-in audit collector", () => {
 
   it("moves the live position past a burst no run can page through, keeping what it read", async () => {
     await setup({ backfillDays: 1, windowRecordLimit: 300, runBudgetSeconds: 0.2 });
-    await poll();
+    // The test measures from the live position, so reach it first: on a slow runner the empty
+    // backfill can take more than one run's budget.
+    for (let round = 0; round < 40 && (await cursor()).phase !== "live"; round += 1) await poll();
+    expect((await cursor()).phase).toBe("live");
     // A thousand sign-ins in the next five minutes: each request pages 100 at a time, 40 ms a
     // page, and a run may spend 200 ms, so every run stops partway through its page sequence.
     requestDelay = 40;
