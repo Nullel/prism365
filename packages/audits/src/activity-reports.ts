@@ -227,6 +227,10 @@ const specs: readonly ReportSpec[] = [
   },
 ];
 
+// How many report downloads one Account activity run starts at most. The review order budgets
+// Microsoft's report limit with it.
+export const ACTIVITY_REPORT_COUNT = specs.length;
+
 export interface ReportOutcome {
   id: ReportId;
   name: string;

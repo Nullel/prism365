@@ -119,10 +119,64 @@ describe("the columns it reads", () => {
     }
   });
 
-  it("finds no owner IDs in Groups and Teams, so ownership is not checked yet", () => {
+  it("finds the hidden owner IDs column in Groups and Teams, which the join reads", () => {
     const groups = builtInAudits.find((item) => item.definition.id === INPUTS.groups.auditId);
-    const keys = auditDefinition(groups as never).columns.map((column) => column.key);
-    expect(keys).not.toContain("ownerIds");
+    const column = auditDefinition(groups as never).columns.find((item) => item.key === "ownerIds");
+    expect(column?.hidden).toBe(true);
+    expect(INPUTS.groups.columns).toContain("ownerIds");
+  });
+});
+
+describe("group ownership", () => {
+  const groups = (over: Record<string, string[] | null> = {}): NonNullable<Runs["groups"]> => ({
+    rows: [
+      row("g-wiki", null, { group: "Wiki owners", ownerIds: over.wiki ?? [ids.ed, ids.cy] }),
+      row("g-lab", null, { group: "Lab", ownerIds: over.lab ?? [ids.cy, ids.cy] }),
+      row("g-unread", null, { group: "Unread", ownerIds: null }),
+    ],
+  });
+  const withGroups = (runs: Runs, groupRuns = groups()): Runs => ({ ...runs, groups: groupRuns });
+
+  it("joins the owners of each group to the accounts it already knows", () => {
+    const stored = fixture();
+    const inputs = {} as Parameters<typeof joinInputs>[0];
+    // joinInputs takes freshness records; readInputs builds them from the stored runs.
+    return readInputs(fakeStored(withGroups(stored)), now).then((read) => {
+      Object.assign(inputs, read);
+      const joined = joinInputs(inputs, null, new Set(INPUT_IDS));
+      expect(joined.people.get(ids.cy)?.ownedGroups).toEqual(["g-wiki", "g-lab"]);
+      expect(joined.people.get(ids.ed)?.ownedGroups).toEqual(["g-wiki"]);
+      expect(joined.people.get(ids.ada)?.ownedGroups).toEqual([]);
+      // An owner no other input mentions gets no record of their own.
+      expect(joined.people.size).toBe(
+        joinInputs(read, null, new Set(INPUT_IDS.filter((id) => id !== "groups"))).people.size,
+      );
+    });
+  });
+
+  it("does not use ownership from Groups and Teams when that input is not usable", async () => {
+    const read = await readInputs(fakeStored(withGroups(fixture())), now);
+    const usable = new Set(INPUT_IDS.filter((id) => id !== "groups"));
+    expect(joinInputs(read, null, usable).people.get(ids.cy)?.ownedGroups).toEqual([]);
+  });
+
+  it("adds ownership to the reasons for a disabled account and a guest", async () => {
+    const runs = withGroups(fixture(), groups({ wiki: [ids.cy, ids.bo], lab: [ids.bo] }));
+    const { result } = await run({ runs });
+    expect(rowFor(result.rows, ids.cy).cells.reasons).toContain("1 license, ownership of 1 group");
+    expect(rowFor(result.rows, ids.bo).cells.reasons).toContain("and owns 2 groups.");
+  });
+
+  it("flags a guest whose only power is owning a group", async () => {
+    const runs = fixture();
+    runs.roles = { rows: (runs.roles?.rows ?? []).filter((item) => item.personId !== ids.bo) };
+    const without = await run({ runs: structuredClone(runs) });
+    expect(ruleLabels(ids.bo, without.result)).not.toContain(label("guest-with-power"));
+    const { result } = await run({ runs: withGroups(runs, groups({ wiki: [ids.bo] })) });
+    expect(ruleLabels(ids.bo, result)).toContain(label("guest-with-power"));
+    expect(rowFor(result.rows, ids.bo).cells.reasons).toContain(
+      "Is a guest account that owns 1 group.",
+    );
   });
 });
 
@@ -519,9 +573,18 @@ describe("scope and notes", () => {
     expect(scoped.result.domains?.map((item) => item.domain)).toEqual(["a.example", "b.example"]);
   });
 
-  it("says that group ownership is not checked", async () => {
+  it("says that group ownership was not checked while Groups and Teams is missing", async () => {
     const { result } = await run();
-    expect(result.notes.join("\n")).toContain("Owning a group is not checked");
+    expect(result.notes.join("\n")).toContain("Owning a group was not checked");
+  });
+
+  it("says which groups it can see ownership of once Groups and Teams is used", async () => {
+    const { result } = await run({
+      runs: { ...fixture(), groups: { rows: [row("g1", null, { group: "G", ownerIds: [] })] } },
+    });
+    const text = result.notes.join("\n");
+    expect(text).toContain("Owning a group is checked against Groups and Teams");
+    expect(text).not.toContain("Owning a group was not checked");
   });
 
   it("says when an input was limited to some domains or only partly read", async () => {

@@ -33,7 +33,7 @@ export {
   verdictOf,
 } from "./account-activity.ts";
 export { MAX_MEMBERSHIP_ACCOUNTS, MEMBERSHIP_CONCURRENCY } from "./activity-groups.ts";
-export { joinKey } from "./activity-reports.ts";
+export { ACTIVITY_REPORT_COUNT, joinKey } from "./activity-reports.ts";
 export {
   appConsentsAudit,
   HIGH_RISK_PERMISSIONS,
@@ -101,6 +101,7 @@ export {
 export { methodLabel, strongestMethod } from "./mfa.ts";
 export * from "./paced-read.ts";
 export { policyReach, type Reach, type ReachPerson, type ReachReason } from "./policy-reach.ts";
+export * from "./review-order.ts";
 export { createRiskyUsersAudit, riskyUsersAudit } from "./risky-users.ts";
 export * from "./schedule.ts";
 export * from "./scope.ts";

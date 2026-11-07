@@ -3,7 +3,11 @@ import {
   type AuditCatalogEntry,
   type AuditCell,
   type AuditColumn,
+  type AuditFamilyEntry,
   type AuditDefinition,
+  type AuditReview,
+  type AuditReviewSchedule,
+  type AuditReviewScheduleSettings,
   type AuditRow,
   type AuditRun,
   type AuditRunDetail,
@@ -18,18 +22,23 @@ import {
   type AuditTrendTile,
   auditCatalogSchema,
   auditFacetOptions,
+  auditReviewResponseSchema,
+  auditReviewScheduleSettingsSchema,
+  auditReviewStartSchema,
   auditRunDetailSchema,
   auditRunListSchema,
   auditScheduleSettingsSchema,
   auditSettingsSchema,
   auditStartSchema,
   auditTrendSchema,
+  groupByFamily,
   MAX_AUDIT_SCOPE_DOMAINS,
   nextScheduledRun,
   type PrismSession,
   queryAuditRows,
 } from "@prism365/contracts";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { AuditReviewPanel, reviewIsActive } from "./AuditReview.tsx";
 import { CopyButton, useCopy } from "./CopyButton.tsx";
 import {
   AccountName,
@@ -505,6 +514,7 @@ function ResultCell({
 
 function AuditTableRow({
   entry,
+  family,
   busy,
   demo,
   frequency,
@@ -513,6 +523,8 @@ function AuditTableRow({
   onRun,
 }: {
   entry: AuditCatalogEntry;
+  // Where the audit sits in its family: the main audit, a narrower view of it, or neither.
+  family?: AuditFamilyEntry;
   busy: string | null;
   demo: boolean;
   // How often it runs on its own; null when the page has not loaded the schedule.
@@ -526,8 +538,9 @@ function AuditTableRow({
     Boolean(entry.runningId) || busy === definition.id || lastRun?.status === "running";
   const state: AuditResultState = running ? "running" : auditResultState(lastRun);
   const tag = scheduleTag(frequency ?? undefined);
+  const narrower = family?.role === "narrower";
   return (
-    <tr className="catalog-table__row">
+    <tr className={`catalog-table__row${narrower ? " catalog-table__row--narrower" : ""}`}>
       <th scope="row" className="catalog-table__name">
         <a
           className="catalog-table__link"
@@ -542,6 +555,9 @@ function AuditTableRow({
         >
           {definition.title}
         </a>
+        {family?.role === "main" && family.note ? (
+          <span className="catalog-table__main">{family.note}</span>
+        ) : null}
         <span className="catalog-table__purpose" title={definition.description}>
           {definition.description}
         </span>
@@ -585,6 +601,7 @@ export function AuditCatalogList({
   onOpen,
   onRun,
   scope,
+  review,
   schedule = null,
   now = Date.now(),
 }: {
@@ -592,6 +609,8 @@ export function AuditCatalogList({
   busy: string | null;
   onOpen: (auditId: string) => void;
   onRun: (auditId: string) => void;
+  // The full review, shown above the table when the page has loaded it.
+  review?: ReactNode;
   // The audit scope bar, shown above the table when the page has loaded it.
   scope?: ReactNode;
   // How often each audit runs on its own, when the page has loaded it.
@@ -600,7 +619,7 @@ export function AuditCatalogList({
   now?: number;
 }) {
   const demo = catalog.mode === "demo";
-  const categories = [...new Set(catalog.audits.map((entry) => entry.definition.category))];
+  const families = groupByFamily(catalog.audits);
   return (
     <div className="audits">
       {demo ? (
@@ -609,6 +628,7 @@ export function AuditCatalogList({
           tenant live.
         </p>
       ) : null}
+      {review}
       {scope}
       <section className="panel catalog-table" aria-label="Audits">
         <table>
@@ -624,27 +644,26 @@ export function AuditCatalogList({
               </th>
             </tr>
           </thead>
-          {categories.map((category) => (
-            <tbody key={category}>
+          {families.map(({ family, entries }) => (
+            <tbody key={family.id}>
               <tr className="catalog-table__group">
                 <th scope="colgroup" colSpan={5}>
-                  {category}
+                  {family.title}
                 </th>
               </tr>
-              {catalog.audits
-                .filter((entry) => entry.definition.category === category)
-                .map((entry) => (
-                  <AuditTableRow
-                    key={entry.definition.id}
-                    entry={entry}
-                    busy={busy}
-                    demo={demo}
-                    frequency={schedule ? (schedule[entry.definition.id] ?? "off") : null}
-                    now={now}
-                    onOpen={onOpen}
-                    onRun={onRun}
-                  />
-                ))}
+              {entries.map(({ item, entry }) => (
+                <AuditTableRow
+                  key={item.definition.id}
+                  entry={item}
+                  family={entry}
+                  busy={busy}
+                  demo={demo}
+                  frequency={schedule ? (schedule[item.definition.id] ?? "off") : null}
+                  now={now}
+                  onOpen={onOpen}
+                  onRun={onRun}
+                />
+              ))}
             </tbody>
           ))}
         </table>
@@ -664,6 +683,7 @@ export function AuditCatalogPage({
   onRun,
   schedule,
   scope,
+  review,
   now,
 }: {
   catalog: AuditCatalog | null;
@@ -674,6 +694,7 @@ export function AuditCatalogPage({
   onRun: (auditId: string) => void;
   schedule: Readonly<Record<string, AuditScheduleFrequency>> | null;
   scope?: ReactNode;
+  review?: ReactNode;
   now?: number;
 }) {
   return (
@@ -696,6 +717,7 @@ export function AuditCatalogPage({
           onRun={onRun}
           schedule={schedule}
           scope={scope}
+          {...(review === undefined ? {} : { review })}
           {...(now === undefined ? {} : { now })}
         />
       ) : error ? null : (
@@ -1915,6 +1937,15 @@ export function Audits({
   // A plain note about the last Run, such as having joined a scheduled run.
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  // The full review: the current or last one, whether the server answered, and its weekly
+  // schedule. A server that cannot answer (an old recording) leaves the panel out.
+  const [review, setReview] = useState<AuditReview | null>(null);
+  const [reviewKnown, setReviewKnown] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewSchedule, setReviewSchedule] = useState<AuditReviewScheduleSettings | null>(null);
+  const [reviewSaving, setReviewSaving] = useState(false);
+  const [reviewScheduleError, setReviewScheduleError] = useState("");
   const live = session.mode === "live";
 
   const refresh = useCallback(async () => {
@@ -1950,12 +1981,62 @@ export function Audits({
     }
   }, [live]);
 
+  const loadReview = useCallback(async () => {
+    try {
+      setReview((await readJson("/api/v1/audits/review", auditReviewResponseSchema.parse)).review);
+      setReviewKnown(true);
+    } catch {
+      // Keep what was loaded, if anything.
+    }
+  }, []);
+
+  const loadReviewSchedule = useCallback(async () => {
+    try {
+      setReviewSchedule(
+        await readJson("/api/v1/settings/audit-review", auditReviewScheduleSettingsSchema.parse),
+      );
+    } catch {
+      // The control stays hidden where the server cannot answer.
+    }
+  }, []);
+
   useEffect(() => {
     if (live && !session.authenticated) return;
     void refresh();
     void loadSettings();
     void loadSchedule();
-  }, [live, session.authenticated, refresh, loadSettings, loadSchedule]);
+    void loadReview();
+    void loadReviewSchedule();
+  }, [
+    live,
+    session.authenticated,
+    refresh,
+    loadSettings,
+    loadSchedule,
+    loadReview,
+    loadReviewSchedule,
+  ]);
+
+  // While a review runs, follow it, and bring the catalog up to date each time an audit ends and
+  // once more when the review does.
+  const reviewActive = reviewIsActive(review);
+  const reviewEnded = review
+    ? review.audits.filter((item) => item.state !== "waiting" && item.state !== "running").length
+    : 0;
+  useEffect(() => {
+    if (!reviewActive || selected) return;
+    const timer = setInterval(() => void loadReview(), POLL_MILLISECONDS);
+    return () => clearInterval(timer);
+  }, [reviewActive, selected, loadReview]);
+  const reviewMark = useRef<string | null>(null);
+  useEffect(() => {
+    const mark = `${review?.id ?? ""}:${reviewEnded}:${review?.state ?? ""}`;
+    if (reviewMark.current !== null && reviewMark.current !== mark) {
+      void refresh();
+      if (!reviewActive) void loadSettings();
+    }
+    reviewMark.current = mark;
+  }, [review?.id, review?.state, reviewEnded, reviewActive, refresh, loadSettings]);
 
   // While any audit runs, keep the catalog's status lines current.
   const anyRunning = Boolean(catalog?.audits.some((entry) => entry.runningId));
@@ -1988,6 +2069,66 @@ export function Audits({
       setError(problem instanceof Error ? problem.message : "The audit could not be started.");
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function startReview() {
+    setReviewBusy(true);
+    setReviewError("");
+    try {
+      const started = await readJson(
+        "/api/v1/audits/review",
+        auditReviewStartSchema.parse,
+        post(session),
+      );
+      setReview(started.review);
+      setReviewKnown(true);
+      await refresh();
+    } catch (problem) {
+      setReviewError(
+        problem instanceof Error ? problem.message : "The full review could not be started.",
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function stopReview() {
+    setReviewBusy(true);
+    setReviewError("");
+    try {
+      const stopped = await readJson(
+        "/api/v1/audits/review/stop",
+        auditReviewResponseSchema.parse,
+        post(session),
+      );
+      setReview(stopped.review);
+    } catch (problem) {
+      setReviewError(
+        problem instanceof Error ? problem.message : "The full review could not be stopped.",
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function saveReviewSchedule(schedule: AuditReviewSchedule) {
+    setReviewSaving(true);
+    setReviewScheduleError("");
+    try {
+      setReviewSchedule(
+        await readJson(
+          "/api/v1/settings/audit-review",
+          auditReviewScheduleSettingsSchema.parse,
+          post(session, schedule),
+        ),
+      );
+    } catch (problem) {
+      setReviewScheduleError(
+        problem instanceof Error ? problem.message : "The schedule could not be saved.",
+      );
+    } finally {
+      setReviewSaving(false);
     }
   }
 
@@ -2042,6 +2183,31 @@ export function Audits({
       onOpen={onSelect}
       onRun={(id) => void run(id)}
       schedule={schedule?.audits ?? null}
+      review={
+        catalog && reviewKnown ? (
+          <AuditReviewPanel
+            review={review}
+            titleOf={(auditId) =>
+              catalog.audits.find((item) => item.definition.id === auditId)?.definition.title ??
+              auditId
+            }
+            busy={reviewBusy}
+            error={reviewError}
+            canRun={catalog.mode !== "demo"}
+            note={
+              catalog.mode === "demo"
+                ? "Demo mode cannot run a full review, because every audit reads a connected tenant live."
+                : null
+            }
+            schedule={reviewSchedule}
+            scheduleSaving={reviewSaving}
+            scheduleError={reviewScheduleError}
+            onRun={() => void startReview()}
+            onStop={() => void stopReview()}
+            onSchedule={(next) => void saveReviewSchedule(next)}
+          />
+        ) : null
+      }
       scope={
         catalog && settings ? (
           <AuditScopeSection

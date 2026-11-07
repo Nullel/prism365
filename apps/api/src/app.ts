@@ -100,6 +100,7 @@ import { MemoryStateStore, type SqlClient, type StateStore } from "@prism365/sto
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { auditExportParamsSchema, auditExportQuery } from "./audit-export.ts";
+import { AuditReviewer, type AuditReviewerOptions } from "./audit-review.ts";
 import { AuditScheduler, type AuditSchedulerOptions } from "./audit-schedule.ts";
 import { AuditRunner, auditUnavailableMessage } from "./audits.ts";
 import {
@@ -120,6 +121,7 @@ import {
 } from "./identity.ts";
 import { DelegatedSessionCredential, type ModuleRuntime } from "./modules.ts";
 import { registerAuditInsightRoutes } from "./routes/audit-insights.ts";
+import { registerAuditReviewRoutes } from "./routes/audit-review.ts";
 import { registerCanaryRoutes } from "./routes/canaries.ts";
 import { registerChangeRoutes } from "./routes/changes.ts";
 import { RouteBoundaryError, type RouteContext } from "./routes/context.ts";
@@ -140,6 +142,8 @@ export interface AppOptions {
   modules?: ModuleRuntime;
   // Defaults to a runner on the module database. Tests pass one with a short time limit.
   audits?: AuditRunner;
+  // The clock and the waits of the full review. Tests pass their own.
+  auditReview?: Pick<AuditReviewerOptions, "now" | "pause">;
   // Timing for scheduled audits. Tests pass their own clock and timers.
   auditSchedule?: Pick<
     AuditSchedulerOptions,
@@ -199,6 +203,16 @@ export function createApp(options: AppOptions = {}) {
   const audits = modules
     ? (options.audits ?? new AuditRunner({ database: modules.database }))
     : null;
+  // The full review runs the audits one after another through the runner above.
+  const reviewer =
+    audits && modules
+      ? new AuditReviewer({
+          runner: audits,
+          database: modules.database,
+          audits: builtInAudits,
+          ...options.auditReview,
+        })
+      : null;
   // Read packs this installation enabled, as Microsoft permission names. Background collection
   // never uses a consented scope the operator did not enable here.
   const enabledPermissions = () => [
@@ -1238,6 +1252,9 @@ export function createApp(options: AppOptions = {}) {
           availability: auditAvailabilityFor,
           graphClient: auditGraphClient,
           ledger: (tenantId, actorId, event) => store.appendAudit(tenantId, actorId, event),
+          ...(reviewer
+            ? { review: { reviewer, timeZone: config.signinsAudit?.timeZone ?? "UTC" } }
+            : {}),
           ...options.auditSchedule,
         })
       : null;
@@ -1552,6 +1569,7 @@ export function createApp(options: AppOptions = {}) {
       durableStorage: Boolean(config.databaseUrl || config.moduleDataDir),
       durableSessions: store.durable,
       handoffRetentionDays: config.handoffRetentionDays ?? DEFAULT_HANDOFF_RETENTION_DAYS,
+      timeZone: config.signinsAudit?.timeZone ?? "UTC",
     },
     store,
     modules: modules
@@ -1562,16 +1580,19 @@ export function createApp(options: AppOptions = {}) {
         }
       : null,
     audits,
+    reviewer,
     sessionFor,
     sessionHandle: (request) => readCookie(request, cookieName),
     enabledPermissions,
     sessionGraph: routeGraph,
     auditAvailability,
+    auditClient: auditGraph,
     collectingAdmin: () => (collecting ? { actorId: collecting.actorId } : null),
     delivery,
   };
   registerChangeRoutes(app, routes);
   registerAuditInsightRoutes(app, routes);
+  registerAuditReviewRoutes(app, routes);
   registerDigestRoutes(app, routes);
   registerSetupRoutes(app, routes);
   registerHandoffRoutes(app, routes);
@@ -1817,7 +1838,9 @@ export function createApp(options: AppOptions = {}) {
     await delivery?.stop();
     // No scheduled audit starts from here on.
     auditSchedule?.stop();
-    // Audits first: an interrupted run is recorded before the database closes.
+    // A review first, so it starts no further audit; then the audits: an interrupted run is
+    // recorded before the database closes.
+    await reviewer?.close();
     await audits?.close();
     // A scheduled pass waiting on a run sees it stopped and returns.
     await auditSchedule?.settled();

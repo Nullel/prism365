@@ -1,9 +1,10 @@
 import type { Audit } from "@prism365/audits";
 import type { AuditAvailability } from "@prism365/contracts";
-import type { GraphFeatureId } from "@prism365/graph";
+import type { GraphFeatureId, GraphHttpClient } from "@prism365/graph";
 import type { CollectionStatus, ModuleRegistry, ScopedGraph } from "@prism365/modules";
 import type { ModuleDatabase, StateStore } from "@prism365/storage";
 import type { FastifyRequest } from "fastify";
+import type { AuditReviewer } from "../audit-review.ts";
 import type { AuditRunner } from "../audits.ts";
 import type { SupportedReadFeature } from "../config.ts";
 import type { DeliveryService } from "../delivery.ts";
@@ -35,6 +36,8 @@ export interface RouteSettings {
   readonly durableSessions: boolean;
   // How long handoffs and receipts are kept, in days (HANDOFF_RETENTION_DAYS).
   readonly handoffRetentionDays: number;
+  // The time zone weekly jobs run in (SIGNINS_TIME_ZONE). UTC when unset.
+  readonly timeZone?: string;
 }
 
 // Module storage for reading what was collected, and the collection status. Starting, stopping
@@ -59,6 +62,8 @@ export interface RouteContext {
   // Live mode with module storage only; null in demo mode.
   readonly modules: RouteModules | null;
   readonly audits: AuditRunner | null;
+  // The full review; live mode with module storage only.
+  readonly reviewer: AuditReviewer | null;
   sessionFor(request: FastifyRequest): Promise<IdentitySession | null>;
   // The opaque session handle from the cookie, for sessionGraph on that same session.
   sessionHandle(request: FastifyRequest): string | undefined;
@@ -73,6 +78,12 @@ export interface RouteContext {
     packs: readonly GraphFeatureId[],
   ): { graph: ScopedGraph; granted: string[] };
   auditAvailability(audit: Audit, session: IdentitySession): AuditAvailability;
+  // A read-only Graph client on the requesting administrator's session with the audits' budgets,
+  // and the permissions among the session's that this installation enabled. For the audit runner.
+  auditClient(
+    session: IdentitySession,
+    handle: string,
+  ): { client: GraphHttpClient; scopes: string[] };
   // Who is collecting, or null when nothing is. Never the credential itself.
   collectingAdmin(): { actorId: string } | null;
   // Alert destinations, rules and deliveries; live mode with module storage only. It holds the

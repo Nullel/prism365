@@ -2,6 +2,7 @@ import { z } from "zod";
 import { personHistorySchema } from "./people.ts";
 
 export * from "./attention.ts";
+export * from "./audit-review.ts";
 export * from "./audits.ts";
 export * from "./canaries.ts";
 export * from "./changes.ts";

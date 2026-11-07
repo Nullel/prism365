@@ -98,6 +98,16 @@ describe("Combined risks on the synthetic tenant", () => {
     expect(combined.summary.find((item) => item.label === "Rules not checked")?.value).toBe(0);
   });
 
+  it("counts the group a disabled account still owns, from Groups and Teams", () => {
+    const moss = combined.rows.find(
+      (row) => (row.cells.person as { name: string | null }).name === "Harriet Moss",
+    );
+    expect(moss?.cells.reasons).toContain("ownership of 1 group");
+    expect(combined.notes.join("\n")).toContain(
+      "Owning a group is checked against Groups and Teams",
+    );
+  });
+
   it("lists the worst accounts first, with the audits behind each", () => {
     const sources = (combined.rows[0]?.cells.sources ?? []) as string[];
     expect(combined.rows[0]?.cells.severity).toBe("Critical");

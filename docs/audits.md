@@ -184,8 +184,8 @@ every boundary, and the Conditional Access reach check), `combined-risks.test.ts
 synthetic stored results: freshness, matching, notes, the column names it reads checked against the
 audits that publish them), `stored.test.ts` (the stored accessor on a real database),
 `apps/api/test/audit-stored-results.test.ts` (the runner gives it only to an audit that declares it
-uses it), `scripts/demo/graph/combined-risks.test.ts` (the synthetic tenant through the real audits)
-and `scripts/demo/order.test.ts` (the recorder runs it last).
+uses it) and `scripts/demo/graph/combined-risks.test.ts` (the synthetic tenant through the real
+audits). The recorder runs it last by running a full review (section 22).
 
 ## 9. Scope
 
@@ -998,8 +998,10 @@ counted in both. The Teams report lags by 24 to 72 hours and sometimes by severa
 ### Columns
 
 Group, Kind, Status, Visibility, Owners, Enabled owners, Owner names, Created, Expires, Role-assignable,
-Last activity, Active users, Guests and Active channels, and hidden by default Renewed and Synced from
-on-premises. Kind, Status and Visibility can be used as filters.
+Last activity, Active users, Guests and Active channels, and hidden by default Renewed, Synced from
+on-premises and Owner IDs. Kind, Status and Visibility can be used as filters. Owner IDs holds the
+directory IDs of every owner read (up to 200 a group), which Combined risks matches to accounts
+(section 21); it is null for a group whose owners were not read.
 
 ### Views and tiles
 
@@ -1128,7 +1130,7 @@ Inputs, and how each is matched to an account:
 | Passwords | account ID | never expires, strong password not required, age |
 | Managed devices | account ID (the device owner) | compliance and encryption of each device |
 | Mailbox storage | sign-in name, in any letter case | whether the mailbox is shared, a room or equipment |
-| Groups and Teams | owner IDs | owning a group (see below) |
+| Groups and Teams | owner IDs | owning a group (see "What is not checked") |
 | Sign-in findings | account ID (the subject) | open findings of medium severity or above |
 
 A hashed mailbox name is never matched to anyone. Rows with no account ID, such as an app holding a
@@ -1185,10 +1187,12 @@ direction.
 
 ### What is not checked
 
-- Owning a group. Groups and Teams lists up to five owner names, not their directory IDs, and a name
-  is not an account. Until it carries owner IDs, "owns a group" is left out of Guest with directory
-  power and Disabled but still holding access, which look at roles (and licenses) only. A note says
-  so, and a test fails when the audit gains an owner ID column.
+- Owning a group, beyond what Groups and Teams reads. Its hidden Owner IDs column carries the
+  directory IDs of the owners it read, so Guest with directory power and Disabled but still holding
+  access also count the groups an account owns. Owners are read for Microsoft 365 groups, teams and
+  groups that can be given a directory role, and not for the rest; a note says so, and says when
+  Groups and Teams has not run in the last seven days and ownership was not checked at all. Groups
+  and Teams is an optional input: without it the two rules look at roles (and licenses) only.
 - Roles that are neither privileged nor built-in, for Conditional Access matching.
 - Anything older than seven days.
 
@@ -1200,3 +1204,103 @@ Tiles: Critical combined risks, High combined risks and Medium combined risks (a
 severity it is), Accounts affected, and Rules not checked. The Overview shows the first two as its
 Combined risks tile, or "Not run yet". An alert rule on the audit number "Critical combined risks"
 above 0 sends an alert when a critical combination appears ([Alerts](alerts.md)).
+
+## 22. Full review
+
+One action, Run full review at the top of the Audits page, runs every audit the signed-in
+administrator can run and finishes with Combined risks, so its correlations always use fresh results
+that were read together. It is the audits' ordinary runs, one after another through the same runner,
+not a new kind of read: each run has its own history entry, its own access-ledger entry
+(`audit.run.started`, with `review: true`) and the same failure handling. No new permission, read
+pack or table.
+
+### What runs, and the order
+
+Every built-in audit whose read packs are enabled and whose permissions the session granted (the
+rule the Run button uses). The others are listed as skipped with the same reason the Run button
+gives. If only Combined risks could run, nothing starts (HTTP 403), because it would join old results
+and read nothing new.
+
+The order is fixed in `packages/audits/src/review-order.ts`, and a test fails when an audit is missing
+from it or sits in the wrong stage:
+
+1. Directory audits: Inactive accounts, Licenses to reclaim, MFA registration, Guest accounts,
+   Passwords, Privileged roles, App consents, Managed devices and License capacity. Their endpoints
+   have generous limits of their own.
+2. The paced audits: Conditional Access policies, then Risky users. Microsoft allows one request a
+   second for the tenant on these endpoints, so each audit spaces its own requests, and the review
+   waits 1.1 seconds after one ends before the next audit that reads such an endpoint (Risky users,
+   and Combined risks, which reads the Conditional Access policies).
+3. The usage-report audits: Account activity, Microsoft 365 app usage, Mailbox storage, and Groups
+   and Teams.
+4. Combined risks, last.
+
+An audit that fails does not stop the review. Combined risks still runs and uses the newest result
+it has for that input, with its usual freshness note.
+
+### Microsoft's report limit
+
+Microsoft allows 14 usage-report downloads in ten minutes. A review starts no more than 12, which
+leaves room for a download an administrator starts from an audit's own page. Each report audit is
+charged the most downloads one run can start (Account activity 7, Microsoft 365 app usage 2, Mailbox
+storage 1, Groups and Teams 1; 11 in all), when it ends. An audit starts only when the audits that
+ended in the last ten minutes, with its own charge, come to no more than 12; otherwise the review
+waits until the oldest of them is ten minutes old. One review fits, so the first review never waits.
+A second review straight after the first waits for the first one's reports to age. The count is kept
+in memory per tenant, and does not count a report audit someone ran by hand.
+
+### Starting, watching and stopping
+
+- `POST /v1/audits/review` starts a review (202 with its first state). One review runs per tenant at
+  a time: a second request answers 409 `review_running`. The access ledger gets `audit.review.started`
+  before anything runs, with the number of audits that will run and the number left out, and no names.
+- `GET /v1/audits/review` returns the review in progress or the last one: its state (running,
+  stopping, finished, stopped), who started it and how (by hand or on the schedule), its start and
+  finish times, and for each audit in order its state (waiting, running, done, failed or skipped), the
+  reason for a skipped or failed one, and the run it made. Reading it is not a ledger event: it holds
+  states and reasons, not tenant data.
+- `POST /v1/audits/review/stop` stops it (409 when none runs). The ledger gets `audit.review.stopped`
+  first. The audit reading now is stopped through the runner the way a scheduled run is when
+  collection ends, and closes as failed with the code `review_stopped`; the audits after it are
+  skipped, so Combined risks does not run.
+
+The review is kept in the preference store as `audits.review.last` (updated as each audit ends), so
+the page can show the last review after a restart. A review that was still running when the process
+stopped is shown as stopped, its running audit as failed and its waiting audits as skipped.
+
+### The weekly schedule
+
+`GET` and `POST /v1/settings/audit-review` read and save the schedule (`audits.review.schedule` in the
+preference store): off, or weekly on a day (Monday to Sunday) and an hour (0 to 23) in the installation's
+time zone (`SIGNINS_TIME_ZONE`, UTC when unset). Saving writes `audits.review.schedule.changed` to the
+ledger first.
+
+A scheduled review is run by the audit scheduler (section 15), while collection is on, ahead of the
+single scheduled audits, on the collecting administrator's sign-in. Like a scheduled single audit it
+reads each audit with no more than the permissions the administrator who saved the schedule had
+granted for that audit, and a note on the page names that administrator. It is due when the latest slot
+(the chosen day and hour) at or before now came after the newest review of any kind started and after
+the schedule was saved, so a review an administrator started that week counts as the week's, and saving
+a schedule on a Wednesday does not run Monday's review at once. It is skipped while a review is already
+running, and stops with the others when collection stops or passes to another administrator. Its ledger
+entries are the same, with `trigger: "schedule"` and `scheduledBy`.
+
+### The page
+
+Above the table: Run full review (Stop while one runs), a progress bar and "n of m audits finished or
+skipped" with the audit running, the audits that failed by name, when the last review finished, a
+list of what happened to each audit with the reasons, and the schedule control.
+
+The table below is grouped into families, listed in `packages/contracts/src/audit-review.ts` and
+checked by a test that fails when an audit is in no family or in two: Summary (Combined risks), Account
+lifecycle (Account activity as the main audit, with Inactive accounts, Licenses to reclaim and Microsoft
+365 app usage indented under it as narrower views), Identity protection, Access and ownership, Devices
+and mail, and Tenant setup. An audit no family lists is shown in a last group, not hidden.
+
+### Tests
+
+`apps/api/test/audit-review.test.ts` (the order, skipped audits, one review per tenant, the ledger
+before anything runs, stopping, failures, the paced gap, the report spacing across reviews on a fake
+clock, the stored state, the schedule and the scheduler), `report-budget.test.ts`,
+`audit-review-api.test.ts` (the routes), `packages/audits/test/review-order.test.ts` (the order and the
+families), and `apps/web/test/audit-review.test.ts` (the panel in each state).

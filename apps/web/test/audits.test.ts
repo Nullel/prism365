@@ -283,12 +283,14 @@ describe("audit catalog table", () => {
     ]);
   });
 
-  it("groups the audits by category under header rows, in the order the categories appear", () => {
+  it("groups the audits by family under header rows, in the order the families are listed", () => {
     const groups = [...html.matchAll(/<th scope="colgroup" colSpan="5">([^<]+)</g)];
-    expect(groups.map((match) => match[1])).toEqual(["Accounts", "Licenses"]);
-    // MFA registration was listed after Licenses to reclaim but belongs under Accounts.
-    expect(html.indexOf("MFA registration")).toBeLessThan(html.indexOf("Licenses to reclaim"));
-    expect(html.match(/catalog-table__row/g)).toHaveLength(3);
+    expect(groups.map((match) => match[1])).toEqual(["Account lifecycle", "Identity protection"]);
+    // The catalog lists MFA registration before Licenses to reclaim, but a family keeps its own
+    // order: the two account audits first, then the identity one.
+    expect(html.indexOf("Inactive accounts")).toBeLessThan(html.indexOf("Licenses to reclaim"));
+    expect(html.indexOf("Licenses to reclaim")).toBeLessThan(html.indexOf("MFA registration"));
+    expect(html.match(/<tr class="catalog-table__row/g)).toHaveLength(3);
   });
 
   it("makes the audit's name the link to its results and cuts the purpose to one line", () => {
@@ -325,7 +327,7 @@ describe("audit catalog table", () => {
     // A run with nothing to flag has a total and no coloured part at all.
     expect(html).toContain('<span class="audit-result__total">9 licenses</span></span>');
     const licenses = html
-      .split('<tr class="catalog-table__row">')
+      .split(/<tr class="catalog-table__row[^"]*">/)
       .find((row) => row.includes("Licenses to reclaim"));
     expect(licenses).toBeDefined();
     expect(licenses).not.toContain("audit-result__issue");
@@ -374,7 +376,7 @@ describe("audit catalog table", () => {
     };
     const rows = [
       ...renderTable(many, { "accounts.inactive": "daily" }).matchAll(
-        /<tr class="catalog-table__row">(.*?)<\/tr>/g,
+        /<tr class="catalog-table__row[^"]*">(.*?)<\/tr>/g,
       ),
     ].map((match) =>
       [...(match[1] ?? "").matchAll(/<(th|td)([^>]*)>/g)].map(
@@ -454,7 +456,79 @@ describe("audit catalog table", () => {
     const last = buttons[2];
     expect(last).toBeDefined();
     (last?.props.onClick as (() => void) | undefined)?.();
-    expect(ran).toEqual(["licenses.reclaim"]);
+    expect(ran).toEqual(["mfa.registration"]);
+  });
+});
+
+describe("audit families on the catalog", () => {
+  const entryFor = (id: string, title: string) => ({
+    definition: auditDefinitionSchema.parse({ ...definition, id, title, category: "Accounts" }),
+    availability: available,
+    lastRun: null,
+    runningId: null,
+  });
+  const family: AuditCatalog = {
+    mode: "live",
+    audits: [
+      entryFor("licenses.reclaim", "Licenses to reclaim"),
+      entryFor("identity.combined-risks", "Combined risks"),
+      entryFor("accounts.inactive", "Inactive accounts"),
+      entryFor("accounts.activity", "Account activity"),
+      entryFor("licenses.capacity", "License capacity"),
+      entryFor("some.new-audit", "A new audit"),
+    ],
+  };
+  const html = renderTable(family);
+
+  it("puts Combined risks on its own at the top, as the summary of the rest", () => {
+    const groups = [...html.matchAll(/<th scope="colgroup" colSpan="5">([^<]+)</g)].map(
+      (match) => match[1],
+    );
+    expect(groups).toEqual(["Summary", "Account lifecycle", "Tenant setup", "Other audits"]);
+    expect(html.indexOf("Combined risks")).toBeLessThan(html.indexOf("Account activity"));
+  });
+
+  it("shows Account activity first and marks it as the main audit with what it gives", () => {
+    expect(html.indexOf("Account activity")).toBeLessThan(html.indexOf("Inactive accounts"));
+    expect(html).toContain(
+      '<span class="catalog-table__main">The full picture of each account.</span>',
+    );
+    expect(html.match(/catalog-table__main/g)).toHaveLength(1);
+  });
+
+  it("indents the narrower views under the main audit and nothing else", () => {
+    const rows = [
+      ...html.matchAll(/<tr class="(catalog-table__row[^"]*)">.*?<a [^>]*>([^<]+)<\/a>/g),
+    ];
+    expect(
+      rows.map((match) => [match[2], (match[1] ?? "").includes("catalog-table__row--narrower")]),
+    ).toEqual([
+      ["Combined risks", false],
+      ["Account activity", false],
+      ["Inactive accounts", true],
+      ["Licenses to reclaim", true],
+      ["License capacity", false],
+      ["A new audit", false],
+    ]);
+  });
+
+  it("keeps an audit no family lists, in a last group, so a new audit is never hidden", () => {
+    expect(html).toContain("A new audit");
+    expect(html.lastIndexOf("Other audits")).toBeGreaterThan(html.indexOf("License capacity"));
+  });
+
+  it("draws a review above the table when the page has one", () => {
+    const withReview = renderToStaticMarkup(
+      createElement(AuditCatalogList, {
+        catalog: family,
+        busy: null,
+        onOpen: () => {},
+        onRun: () => {},
+        review: createElement("section", { id: "review-slot" }),
+        now: NOW,
+      }),
+    );
+    expect(withReview.indexOf("review-slot")).toBeLessThan(withReview.indexOf("<table"));
   });
 });
 
