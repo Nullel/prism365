@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { GraphHttpClient, GraphRequestError, GraphRetryDeferredError } from "../src/client.ts";
+import {
+  GraphHttpClient,
+  GraphRequestError,
+  GraphRetryDeferredError,
+  monotonicClock,
+} from "../src/client.ts";
 
 const context = {
   feature: "audit.signins.read",
@@ -516,9 +521,27 @@ describe("GraphHttpClient deadlines and cancellation", () => {
     });
     // The first page always runs; the deadline only stops later ones, and what was read is kept.
     await expect(
-      client.getCollection("users", userContext, { maxPages: 5, deadline: Date.now() - 1 }),
+      client.getCollection("users", userContext, {
+        maxPages: 5,
+        deadline: monotonicClock.now() - 1,
+      }),
     ).resolves.toEqual({ items: [{ id: "0" }], complete: false, stopped: "deadline" });
     expect(requests).toBe(1);
+  });
+
+  it("judges the deadline on the clock it was given", async () => {
+    let now = 100;
+    const client = new GraphHttpClient({
+      getAccessToken: async () => "synthetic",
+      fetchImplementation: paging(() => {
+        now += 10;
+      }),
+      clock: { ...monotonicClock, now: () => now },
+    });
+    // Each page moves the injected clock 10 ms: the deadline at 115 stops the read after two.
+    const result = await client.getCollection("users", userContext, { maxPages: 5, deadline: 115 });
+    expect(result).toMatchObject({ complete: false, stopped: "deadline" });
+    expect(result.items).toHaveLength(2);
   });
 
   it("aborts the request in flight, not just the next page, when the caller's signal aborts", async () => {
