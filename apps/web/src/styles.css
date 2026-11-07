@@ -2547,6 +2547,81 @@ a.button {
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
+.person-access {
+  padding: 14px 16px;
+}
+.person-access h3 {
+  margin: 0 0 4px;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.person-access h4 {
+  margin: 14px 0 4px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.person-access__source {
+  margin: 0 0 8px;
+}
+.person-access__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.person-access__list > li {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.person-access__list > li:first-child {
+  border-top: 0;
+}
+.person-access__tag {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.person-access__good {
+  color: var(--success);
+}
+.person-access__part {
+  color: var(--text-2);
+}
+.person-access__why {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.person-access__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 20px;
+  margin: 0 0 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+}
+.person-access__facts:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+.person-access__facts div {
+  min-width: 0;
+}
+.person-access__facts dt {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.person-access__facts dd {
+  margin: 1px 0 0;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
 .person-licenses {
   display: grid;
   margin: 0;
