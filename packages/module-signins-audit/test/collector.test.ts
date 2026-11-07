@@ -707,10 +707,12 @@ describe("sign-in audit collector", () => {
     const burst = start.getTime() - 5 * 3_600_000;
     for (let index = 0; index < 400; index += 1)
       records.push(signIn(new Date(burst + index * 400), { userId: `user-${index % 11}` }));
-    // Each page of 100 takes 60 ms and a run may spend 100 ms: no run can page through 400.
-    requestDelay = 60;
+    // Each page of 100 takes 150 ms and a run may spend 250 ms: no run can page through 400.
+    // The ratio is what matters (one or two pages a run); the scale is large enough that a slow
+    // runner's own overhead per run cannot use up a budget before the first page.
+    requestDelay = 150;
     delayEmptyPages = false;
-    await setup({ backfillDays: 1, windowRecordLimit: 500, runBudgetSeconds: 0.1 });
+    await setup({ backfillDays: 1, windowRecordLimit: 500, runBudgetSeconds: 0.25 });
     for (let round = 0; round < 60 && (await cursor()).phase !== "live"; round += 1) {
       await poll();
     }
