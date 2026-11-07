@@ -208,6 +208,8 @@ interface Owners {
   enabled: number;
   disabled: number;
   names: string[];
+  // Directory object IDs of every owner read, for the Combined risks audit to join on.
+  ids: string[];
 }
 
 interface OwnerRead {
@@ -224,7 +226,7 @@ interface OwnerRead {
 }
 
 function ownersOf(items: readonly unknown[]): { owners: Owners; unreadable: number } {
-  const owners: Owners = { count: 0, enabled: 0, disabled: 0, names: [] };
+  const owners: Owners = { count: 0, enabled: 0, disabled: 0, names: [], ids: [] };
   let unreadable = 0;
   for (const raw of items) {
     const parsed = ownerSchema.safeParse(raw);
@@ -234,6 +236,7 @@ function ownersOf(items: readonly unknown[]): { owners: Owners; unreadable: numb
     }
     const owner = parsed.data;
     owners.count += 1;
+    owners.ids.push(owner.id);
     // A service principal or a record that does not carry the field is unknown, not enabled.
     if (owner.accountEnabled === true) owners.enabled += 1;
     else if (owner.accountEnabled === false) owners.disabled += 1;
@@ -507,6 +510,14 @@ const columns: Column[] = [
     empty: "Not read",
     help: "The first five by name.",
   },
+  {
+    key: "ownerIds",
+    label: "Owner IDs",
+    kind: "list",
+    hidden: true,
+    empty: "Not read",
+    help: "The directory IDs of the owners, which Combined risks matches to accounts.",
+  },
   { key: "created", label: "Created", kind: "date", empty: "Not recorded" },
   {
     key: "expires",
@@ -686,6 +697,7 @@ export function createGroupsTeamsAudit(limits: GroupsTeamsLimits = {}): Audit {
             owners: ownerList?.count ?? null,
             enabledOwners: ownerList?.enabled ?? null,
             ownerNames: ownerList?.names ?? null,
+            ownerIds: ownerList?.ids ?? null,
             created: group.created,
             expires: group.expires,
             renewed: group.renewed,

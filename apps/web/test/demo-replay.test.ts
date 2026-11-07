@@ -1020,3 +1020,90 @@ describe("canary accounts in the demo", () => {
     expect(send(state, "POST", { add: ["u-2"] }).status).toBe(404);
   });
 });
+
+describe("the full review in the demo", () => {
+  const reviewed: Fixtures = {
+    recordedAt,
+    responses: {
+      "GET /api/v1/settings/audit-review": {
+        status: 200,
+        body: {
+          frequency: "weekly",
+          weekday: 0,
+          hour: 6,
+          timeZone: "UTC",
+          collecting: true,
+          by: "Demo administrator",
+        },
+      },
+      "GET /api/v1/audits/review": {
+        status: 200,
+        body: {
+          review: {
+            id: "66666666-6666-4666-8666-666666666666",
+            state: "finished",
+            trigger: "manual",
+            startedAt: "2026-10-20T09:00:00.000Z",
+            finishedAt: "2026-10-20T09:30:00.000Z",
+            startedBy: { id: "22222222-2222-4222-8222-222222222222", name: "Demo administrator" },
+            audits: [],
+          },
+        },
+      },
+    },
+  };
+  const send = (state: DemoState, method: string, path: string, body?: unknown) =>
+    handleRequest(state, { method, url: `/api/v1${path}`, body });
+
+  it("answers the recorded review and schedule, with its times moved to today", () => {
+    const state = createDemoState(reviewed, now("2026-10-22T10:00:00.000Z"));
+    expect(send(state, "GET", "/settings/audit-review").body).toMatchObject({
+      frequency: "weekly",
+    });
+    const review = send(state, "GET", "/audits/review").body as {
+      review: { finishedAt: string };
+    };
+    expect(review.review.finishedAt).toBe("2026-10-22T09:30:00.000Z");
+  });
+
+  it("saves the schedule for this page only, and refuses one that does not exist", () => {
+    const state = createDemoState(reviewed, now("2026-10-22T10:00:00.000Z"));
+    const saved = send(state, "POST", "/settings/audit-review", {
+      frequency: "weekly",
+      weekday: 3,
+      hour: 22,
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({ weekday: 3, hour: 22, timeZone: "UTC" });
+    expect(
+      send(state, "POST", "/settings/audit-review", { frequency: "daily", weekday: 1, hour: 1 })
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        send(
+          createDemoState(reviewed, now("2026-10-22T10:00:00.000Z")),
+          "GET",
+          "/settings/audit-review",
+        ).body as { weekday: number }
+      ).weekday,
+    ).toBe(0);
+  });
+
+  it("says plainly that it cannot start or stop a review", () => {
+    const state = createDemoState(reviewed, now("2026-10-22T10:00:00.000Z"));
+    for (const path of ["/audits/review", "/audits/review/stop"]) {
+      const answer = send(state, "POST", path);
+      expect(answer.status).toBe(409);
+      expect((answer.body as { message: string }).message).toContain(
+        "demo cannot run a full review",
+      );
+    }
+  });
+
+  it("has nothing to answer from a recording made before the review existed", () => {
+    const state = createDemoState({ recordedAt, responses: {} }, now(recordedAt));
+    expect(send(state, "GET", "/audits/review").status).toBe(404);
+    expect(send(state, "GET", "/settings/audit-review").status).toBe(404);
+  });
+});

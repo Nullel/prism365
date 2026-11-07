@@ -144,7 +144,7 @@ export function createCombinedRisksAudit(options: CombinedRisksOptions = {}): Au
       defaultView: "all",
       defaultSort: { column: "severity", direction: "asc" },
       requirements: [
-        "Run the audits it joins first: Account activity, MFA registration, Privileged roles, Risky users, Guest accounts, Passwords, Managed devices and Mailbox storage. A result older than seven days is not used.",
+        "Run the audits it joins first: Account activity, MFA registration, Privileged roles, Risky users, Guest accounts, Passwords, Managed devices, Mailbox storage and Groups and Teams. A result older than seven days is not used.",
         "Conditional Access policies are read when the Conditional Access read pack is enabled and granted. Without them only MFA registration is checked.",
       ],
       handoff: true,
@@ -354,7 +354,9 @@ export function createCombinedRisksAudit(options: CombinedRisksOptions = {}): Au
             : "The Conditional Access read pack is not enabled or granted for this session, so the rules about MFA looked at MFA registration only.",
         );
       notes.push(
-        "Owning a group is not checked: Groups and Teams lists owner names, not directory IDs. Guest with directory power looks at roles and Disabled but still holding access at roles and licenses.",
+        usable.has("groups")
+          ? "Owning a group is checked against Groups and Teams, which reads owners for Microsoft 365 groups, teams and groups that can be given a directory role. Ownership of any other group is not seen."
+          : `Owning a group was not checked, because Groups and Teams has not run in the last ${FRESH_DAYS} days. Guest with directory power then looks at roles only, and Disabled but still holding access at roles and licenses.`,
       );
       if (joined.hashedMailboxes > 0)
         notes.push(

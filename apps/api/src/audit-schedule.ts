@@ -14,7 +14,13 @@ import type { AuditAvailability } from "@prism365/contracts";
 import { type GraphFeatureId, type GraphHttpClient, permissionPacks } from "@prism365/graph";
 import { CredentialUnavailableError } from "@prism365/modules";
 import type { ModuleDatabase } from "@prism365/storage";
-import type { AuditRunner } from "./audits.ts";
+import {
+  type AuditReviewer,
+  readReviewSchedule,
+  ReviewRunningError,
+  reviewDue,
+} from "./audit-review.ts";
+import { type AuditRunner, auditUnavailableMessage } from "./audits.ts";
 
 // Scheduled audits (docs/audits.md, section 15). An administrator can set an audit to run daily
 // or weekly; this runs the audits that are due, one at a time, on the sign-in that background
@@ -25,6 +31,11 @@ import type { AuditRunner } from "./audits.ts";
 // A scheduled run reads only while the credential it started with is still the one collecting:
 // every token request checks, and a run in progress is stopped the moment collection stops or
 // passes to another administrator (collectionEnded), so Stop stops scheduled reads too.
+//
+// The full review (docs/audits.md, section 22) is scheduled the same way: once a week at the
+// chosen hour, on the collecting sign-in, narrowed to the permissions of the administrator who set
+// it. It runs ahead of the single audits, which it brings up to date, and is skipped while a
+// review an administrator started is running. Stopping collection stops it like any scheduled run.
 //
 // Nothing here retries. An audit is due a day (a week) after its newest run of any outcome
 // started, so a failed run waits for its next turn and a manual run counts as this period's.
@@ -141,6 +152,11 @@ export interface AuditSchedulerOptions {
   timers?: ScheduleTimers;
   // Categories and audit ids only: never a tenant value, an account or a provider message.
   log?: (message: string) => void;
+  // The full review and the time zone its hour is in. Without it no review is scheduled.
+  review?: {
+    reviewer: Pick<AuditReviewer, "start" | "lastStartedAt" | "stopScheduled">;
+    timeZone: string;
+  };
 }
 
 const errorName = (error: unknown) => (error instanceof Error ? error.name : typeof error);
@@ -159,8 +175,11 @@ export class AuditScheduler {
   readonly #startDelay: number;
   readonly #timers: ScheduleTimers;
   readonly #log: (message: string) => void;
+  readonly #review: AuditSchedulerOptions["review"] | null;
   // Scheduled runs this scheduler started that are still in progress.
   readonly #active = new Set<string>();
+  // Tenants whose scheduled review this scheduler started and that is still in progress.
+  readonly #reviewing = new Set<string>();
   // The reason each skipped audit was last logged with, so an audit that stays unavailable is
   // logged once, not on every tick.
   readonly #skipped = new Map<string, string>();
@@ -183,6 +202,7 @@ export class AuditScheduler {
     this.#startDelay = options.startDelayMilliseconds ?? SCHEDULE_START_DELAY_MILLISECONDS;
     this.#timers = options.timers ?? systemTimers;
     this.#log = options.log ?? ((message) => console.log(message));
+    this.#review = options.review ?? null;
   }
 
   start(): void {
@@ -203,6 +223,7 @@ export class AuditScheduler {
   // stopped now, its request in flight included. Manual runs are not touched.
   collectionEnded(): void {
     for (const runId of this.#active) this.#runner.stopRun(runId);
+    for (const tenantId of this.#reviewing) this.#review?.reviewer.stopScheduled(tenantId);
   }
 
   // Clears both timers and starts nothing more. A run in progress is stopped by the runner's
@@ -241,6 +262,7 @@ export class AuditScheduler {
   async #pass(): Promise<void> {
     const first = this.#credential();
     if (!first) return;
+    if (!(await this.#reviewIfDue(first))) return;
     const schedule = await this.#database.tenant(first.tenantId, (sql) =>
       readAuditSchedule(sql, first.tenantId, this.#audits),
     );
@@ -254,6 +276,103 @@ export class AuditScheduler {
       if (!credential) return;
       if (!(await this.#runIfDue(audit, credential))) return;
     }
+  }
+
+  // Starts the full review when it is due and waits for it to end. false when the pass should end:
+  // the credential is gone, stopped collecting or refused, or the scheduler has stopped.
+  async #reviewIfDue(credential: ScheduleCredential): Promise<boolean> {
+    const review = this.#review;
+    if (!review) return true;
+    const { tenantId, actorId } = credential;
+    const stored = await this.#database.tenant(tenantId, (sql) =>
+      readReviewSchedule(sql, tenantId),
+    );
+    const lastStart = await review.reviewer.lastStartedAt(tenantId);
+    if (!reviewDue(stored, lastStart, this.#now(), review.timeZone)) return true;
+    if (credential.refused) return this.#paused();
+    let scopes: readonly string[];
+    try {
+      scopes = await credential.grantedPermissions();
+    } catch {
+      return this.#paused();
+    }
+    // Each audit reads with the collecting sign-in's grants, narrowed to what the administrator
+    // who scheduled the review had granted then, as a scheduled single audit does.
+    const kept = { audits: {}, scheduledBy: {}, names: {}, grants: stored.grants };
+    const readFor = (audit: Audit) => scheduledReadScope(audit, this.#enabledPacks, scopes, kept);
+    let unavailable = false;
+    const getAccessToken = (granted: readonly string[]) => async () => {
+      if (!this.#live(credential)) {
+        unavailable = true;
+        throw new CredentialUnavailableError("Collection stopped.");
+      }
+      try {
+        return await credential.accessToken(granted);
+      } catch (error) {
+        if (error instanceof CredentialUnavailableError) unavailable = true;
+        throw error;
+      }
+    };
+    if (!this.#live(credential)) return false;
+    let started: Awaited<ReturnType<NonNullable<typeof review>["reviewer"]["start"]>>;
+    try {
+      started = await review.reviewer.start({
+        tenantId,
+        actor: { id: actorId, name: credential.displayName },
+        trigger: "schedule",
+        unavailable: (audit) => {
+          const availability = this.#availability(audit, readFor(audit).scopes);
+          return availability.state === "available" ? null : auditUnavailableMessage(availability);
+        },
+        reading: async (audit) => {
+          if (!this.#live(credential)) return null;
+          const read = readFor(audit);
+          const definition = auditDefinition(audit);
+          const datasets = [
+            ...definition.permissions,
+            ...definition.optionalPermissions.filter((permission) =>
+              read.granted.includes(permission),
+            ),
+          ];
+          return {
+            client: this.#graphClient(getAccessToken(read.granted)),
+            packs: read.packs,
+            granted: read.granted,
+            beforeRead: (run) =>
+              this.#ledger(tenantId, actorId, {
+                type: "audit.run.started",
+                auditId: audit.definition.id,
+                runId: run.id,
+                datasets,
+                trigger: "schedule",
+                review: true,
+                scheduledBy: stored.scheduledBy,
+                occurredAt: this.#now().toISOString(),
+              }),
+          };
+        },
+        ledger: (event) =>
+          this.#ledger(tenantId, actorId, {
+            ...event,
+            scheduledBy: stored.scheduledBy,
+          }),
+      });
+    } catch (error) {
+      // An administrator's review is running: this one is skipped, not queued behind it.
+      if (error instanceof ReviewRunningError) return true;
+      this.#log(`Prism365 scheduled review did not start (${errorName(error)}).`);
+      return !this.#stopped;
+    }
+    this.#reviewing.add(tenantId);
+    this.#log("Prism365 scheduled review started.");
+    try {
+      await started.done;
+    } finally {
+      this.#reviewing.delete(tenantId);
+    }
+    if (!this.#live(credential)) return false;
+    if (unavailable || credential.refused) return this.#paused();
+    return true;
   }
 
   // Starts the audit when it is due and waits for it to be recorded. false when the pass should

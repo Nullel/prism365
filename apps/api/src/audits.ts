@@ -62,9 +62,9 @@ function cleaned(value: unknown): unknown {
   return value;
 }
 
-// Why a run was stopped before it finished: its time limit, the process stopping, or (for a
-// scheduled run only) collection stopping or passing to another administrator.
-type StopReason = "timeout" | "shutdown" | "collection";
+// Why a run was stopped before it finished: its time limit, the process stopping, collection
+// stopping or passing to another administrator (a scheduled run only), or Stop on a full review.
+export type StopReason = "timeout" | "shutdown" | "collection" | "review";
 
 class AuditStoppedError extends Error {
   readonly reason: StopReason;
@@ -74,7 +74,9 @@ class AuditStoppedError extends Error {
         ? "The audit exceeded its time limit."
         : reason === "collection"
           ? "Collection stopped."
-          : "Prism365 is stopping.",
+          : reason === "review"
+            ? "The review was stopped."
+            : "Prism365 is stopping.",
     );
     this.name = "AuditStoppedError";
     this.reason = reason;
@@ -107,10 +109,15 @@ export function describeAuditFailure(
             code: "collection_stopped",
             message: "Collection stopped while this scheduled run was reading.",
           }
-        : {
-            code: "interrupted",
-            message: "Prism365 stopped while this audit was running. Run it again.",
-          };
+        : error.reason === "review"
+          ? {
+              code: "review_stopped",
+              message: "The full review was stopped while this audit was reading.",
+            }
+          : {
+              code: "interrupted",
+              message: "Prism365 stopped while this audit was running. Run it again.",
+            };
   const reference = (requestId: string | undefined) =>
     requestId ? ` Microsoft request ID: ${requestId}.` : "";
   // A usage report's download link (ADR-0010). The host is printable ASCII of at most 253
@@ -465,14 +472,15 @@ export class AuditRunner {
     );
   }
 
-  // Stops one scheduled run because collection stopped or passed to another administrator: the
-  // cancel reaches the request in flight and the run closes as failed. Only the audit scheduler
-  // calls this, with ids of runs it started itself, so a manual run is never stopped this way.
-  // false when the run is no longer in progress.
-  stopRun(runId: string): boolean {
+  // Stops one run because collection stopped or passed to another administrator, or because Stop
+  // was pressed on the full review that started it: the cancel reaches the request in flight and
+  // the run closes as failed. Only the audit scheduler and the full review call this, with ids of
+  // runs they started themselves, so a single manual run is never stopped this way. false when
+  // the run is no longer in progress.
+  stopRun(runId: string, reason: "collection" | "review" | "shutdown" = "collection"): boolean {
     for (const entry of this.#running.values())
       if (entry.runId === runId) {
-        entry.controller.abort(new AuditStoppedError("collection"));
+        entry.controller.abort(new AuditStoppedError(reason));
         return true;
       }
     return false;

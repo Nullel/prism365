@@ -482,6 +482,25 @@ describe("the owners of a group", () => {
     });
   });
 
+  it("carries every owner's directory ID in a hidden column, and null where owners were not read", async () => {
+    const result = await runWith({
+      groups: [team(1), group(2)],
+      owners: { [gid(1)]: [owner(2), owner(1), owner(3, { displayName: null })] },
+    });
+    expect(cells(result, 1).ownerIds).toEqual([gid(9_002), gid(9_001), gid(9_003)]);
+    expect(cells(result, 2).ownerIds).toBeNull();
+    const column = auditDefinition(groupsTeamsAudit).columns.find(
+      (item) => item.key === "ownerIds",
+    );
+    expect(column).toMatchObject({ hidden: true, kind: "list" });
+    for (const item of result.rows) auditRowSchema.parse(item);
+  });
+
+  it("gives an ownerless group an empty list, not null", async () => {
+    const result = await runWith({ groups: [team(1)], owners: { [gid(1)]: [] } });
+    expect(cells(result, 1).ownerIds).toEqual([]);
+  });
+
   it("names an owner by sign-in name when it has no display name, and leaves out one with neither", async () => {
     const result = await runWith({
       groups: [team(1)],

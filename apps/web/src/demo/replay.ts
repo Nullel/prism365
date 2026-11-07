@@ -5,12 +5,14 @@ import {
   type AuditQuery,
   type AuditRun,
   type AuditRunDetail,
+  type AuditReviewScheduleSettings,
   type AuditScheduleSettings,
   type ChangeEvent,
   type ChangeFeed,
   type AuditSettings,
   attentionPreferencesSchema,
   auditCsv,
+  auditReviewScheduleSchema,
   auditScheduleSchema,
   auditScopeSchema,
   buildHandoff,
@@ -192,6 +194,8 @@ export interface DemoState {
   settings: AttentionSettings | null;
   auditSettings: AuditSettings | null;
   auditSchedule: AuditScheduleSettings | null;
+  // The weekly full review's schedule as recorded; null for a recording made before it existed.
+  reviewSchedule: AuditReviewScheduleSettings | null;
   canaries: CanaryList | null;
   collection: CollectionStatus | null;
   runs: SimulatedRun[];
@@ -236,6 +240,10 @@ export function createDemoState(fixtures: Fixtures, now: () => Date = () => new 
     settings: bodyOf<AttentionSettings>(responses, "GET /api/v1/settings/attention"),
     auditSettings: bodyOf<AuditSettings>(responses, "GET /api/v1/settings/audits"),
     auditSchedule: bodyOf<AuditScheduleSettings>(responses, "GET /api/v1/settings/audit-schedule"),
+    reviewSchedule: bodyOf<AuditReviewScheduleSettings>(
+      responses,
+      "GET /api/v1/settings/audit-review",
+    ),
     canaries: bodyOf<CanaryList>(responses, "GET /api/v1/settings/canaries"),
     collection: modules ? { ...modules.collection } : null,
     runs: [],
@@ -734,6 +742,17 @@ function scheduleAnswer(state: DemoState): AuditScheduleSettings | null {
   };
 }
 
+// The weekly full review's schedule, saying collection is on or off as the page last left it.
+function reviewScheduleAnswer(state: DemoState): AuditReviewScheduleSettings | null {
+  if (!state.reviewSchedule) return null;
+  return {
+    ...clone(state.reviewSchedule),
+    collecting: state.collection
+      ? state.collection.state === "collecting"
+      : state.reviewSchedule.collecting,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Handoffs
 // ---------------------------------------------------------------------------------------------
@@ -930,6 +949,8 @@ function handleGet(state: DemoState, path: string, url: URL, request: DemoReques
     answer = json(200, clone(state.auditSettings));
   else if (path === "/settings/audit-schedule" && state.auditSchedule)
     answer = json(200, scheduleAnswer(state));
+  else if (path === "/settings/audit-review" && state.reviewSchedule)
+    answer = json(200, reviewScheduleAnswer(state));
   else if (path === "/settings/canaries" && state.canaries)
     answer = json(200, clone(state.canaries));
   else if (path === "/audits") answer = listCatalog(state);
@@ -1029,6 +1050,23 @@ function handlePost(state: DemoState, path: string, body: unknown): DemoResponse
     };
     return json(200, scheduleAnswer(state));
   }
+  if (path === "/settings/audit-review" && state.reviewSchedule) {
+    // Saved for this page; nothing runs on its own in the demo.
+    const parsed = auditReviewScheduleSchema.safeParse(payload);
+    if (!parsed.success)
+      return json(400, {
+        error: "invalid_request",
+        message: "Choose off or weekly, a day of the week and an hour from 0 to 23.",
+      });
+    state.reviewSchedule = { ...state.reviewSchedule, ...parsed.data };
+    return json(200, reviewScheduleAnswer(state));
+  }
+  if (path === "/audits/review" || path === "/audits/review/stop")
+    return json(409, {
+      error: "demo_review",
+      message:
+        "The demo cannot run a full review. Open an audit and run it on its own to see a result.",
+    });
   if (first === "findings" && second && third === "state" && segments.length === 3) {
     const next = findingStateSchema.safeParse(payload.state);
     if (!next.success)

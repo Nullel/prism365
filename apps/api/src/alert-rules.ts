@@ -319,25 +319,27 @@ function zonedTime(
   return new Date(guess);
 }
 
-// The latest Monday 07:00 in the time zone at or before `now`: when this week's summary is due.
-export function weeklySummarySlot(now: Date, timeZone: string): Date {
+// The latest time at or before `now` that falls on the weekday (0 for Monday through 6 for Sunday)
+// at the hour (0 to 23), in the time zone: when that week's weekly job is due.
+export function weeklySlot(now: Date, timeZone: string, weekday: number, hour: number): Date {
   const local = zonedParts(now, timeZone);
   for (const back of [0, 7]) {
-    const monday = new Date(
-      Date.UTC(local.year, local.month - 1, local.day - local.weekday - back),
+    const day = new Date(
+      Date.UTC(local.year, local.month - 1, local.day - local.weekday + weekday - back),
     );
     const slot = zonedTime(
-      {
-        year: monday.getUTCFullYear(),
-        month: monday.getUTCMonth() + 1,
-        day: monday.getUTCDate(),
-      },
-      7,
+      { year: day.getUTCFullYear(), month: day.getUTCMonth() + 1, day: day.getUTCDate() },
+      hour,
       timeZone,
     );
     if (slot.getTime() <= now.getTime()) return slot;
   }
   return new Date(now.getTime() - 7 * 86_400_000);
+}
+
+// The latest Monday 07:00 in the time zone at or before `now`: when this week's summary is due.
+export function weeklySummarySlot(now: Date, timeZone: string): Date {
+  return weeklySlot(now, timeZone, 0, 7);
 }
 
 const total = (counts: Record<string, number>) =>

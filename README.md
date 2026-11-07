@@ -63,8 +63,10 @@ close to their quotas), Microsoft 365 app usage and account activity (is an acco
 unused, and does anyone still open its files) and combined risks (the accounts that trip several
 of the others at once, such as an administrator with no MFA, each with the audits and dates behind
 it). Results are kept, filterable, sortable and exportable as CSV, each audit's
-numbers are kept as a trend, and any audit can run daily or weekly on its own. Each audit runs
-only when its own read pack is enabled, and says what it needs when it is not.
+numbers are kept as a trend, and any audit can run daily or weekly on its own. One Run full review
+button runs every audit you can run in an order that keeps Microsoft's limits, ends with combined
+risks, and can repeat weekly. Each audit runs only when its own read pack is enabled, and says what
+it needs when it is not.
 
 ![The license capacity audit: products with no seats left, more assigned than owned, or an expired subscription](docs/images/license-capacity.jpg)
 

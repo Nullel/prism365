@@ -23,7 +23,6 @@ import { IdentityService, type MicrosoftIdentityProvider } from "../../apps/api/
 import { createModuleRegistry } from "../../apps/api/src/modules.ts";
 import { type Fixtures, normalizeKey } from "../../apps/web/src/demo/replay.ts";
 import { demoMailboxAccessExport } from "./mailbox-access.ts";
-import { auditRecordingOrder } from "./order.ts";
 import {
   assertSynthetic,
   buildSyntheticTenant,
@@ -174,12 +173,16 @@ async function main() {
   let auditClock: Date | null = null;
   let auditGraph = graph;
   const auditRunner = new AuditRunner({ database, now: () => auditClock ?? new Date() });
+  // The full review stamps its times on the audits' clock, and does not wait out Microsoft's
+  // spacing: the synthetic tenant has no limits to keep.
+  const auditReview = { now: () => auditClock ?? new Date(), pause: async () => {} };
   const app = createApp({
     config,
     store,
     identity,
     graphFetch: ((input, init) => auditGraph(input, init)) as typeof fetch,
     audits: auditRunner,
+    auditReview,
     modules: { registry, database, scheduler },
   });
   log("API ready on an in-memory database.");
@@ -329,31 +332,31 @@ async function main() {
   await setState(expected.burstAccount, "resolved");
   await setState(expected.burstAddress, "resolved");
 
-  // 4. Run every audit: five weeks ago, two weeks ago, a week ago and now, so each has a trend and
-  // the This week page has a result from before even its longest range to compare with.
-  const catalog = await getJson<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
+  // 4. Run a full review: five weeks ago, two weeks ago, a week ago and now, so each audit has a
+  // trend and the This week page has a result from before even its longest range to compare with.
+  // The review runs the audits in its own order, Combined risks last, and finishes before the next
+  // round starts.
   for (const daysAgo of [35, 14, 7, 0]) {
     auditClock = daysAgo === 0 ? null : new Date(anchor.getTime() - daysAgo * DAY);
     auditGraph = auditClock ? createSyntheticGraph({ now: auditClock, quietFrom: anchor }) : graph;
-    // Combined risks joins the others' stored results, so it runs after every one of them.
-    for (const id of auditRecordingOrder(catalog.audits.map((entry) => entry.definition.id))) {
-      const response = await call("POST", `/api/v1/audits/${id}/runs`);
-      if (response.statusCode !== 202)
-        throw new Error(`Audit ${id} did not start: ${response.body}`);
-      const runId = (response.json() as { run: { id: string } }).run.id;
-      const read = () =>
-        getJson<{ status: string; rowCount: number; error: unknown }>(
-          `/api/v1/audit-runs/${runId}`,
-        );
-      let detail = await read();
-      for (let poll = 0; detail.status === "running" && poll < 400; poll += 1) {
-        await new Promise((done) => setTimeout(done, 100));
-        detail = await read();
-      }
-      if (detail.status !== "succeeded")
-        throw new Error(`Audit ${id} ${detail.status}: ${JSON.stringify(detail.error)}`);
-      log(`Audit ${id}${daysAgo ? ` (${daysAgo} days ago)` : ""}: ${detail.rowCount} rows.`);
+    const response = await call("POST", "/api/v1/audits/review");
+    if (response.statusCode !== 202)
+      throw new Error(`The full review did not start: ${response.body}`);
+    type Review = {
+      state: string;
+      audits: { auditId: string; state: string; reason: string | null }[];
+    };
+    let review = response.json<{ review: Review }>().review;
+    for (let poll = 0; ["running", "stopping"].includes(review.state) && poll < 2_400; poll += 1) {
+      await new Promise((done) => setTimeout(done, 250));
+      review = (await getJson<{ review: Review }>("/api/v1/audits/review")).review;
     }
+    const problems = review.audits.filter((item) => item.state !== "done");
+    if (review.state !== "finished" || problems.length > 0)
+      throw new Error(
+        `The full review ${review.state}: ${problems.map((item) => `${item.auditId} ${item.state} ${item.reason ?? ""}`).join("; ")}`,
+      );
+    log(`Full review${daysAgo ? ` (${daysAgo} days ago)` : ""}: ${review.audits.length} audits.`);
   }
   auditClock = null;
   auditGraph = graph;
@@ -363,6 +366,15 @@ async function main() {
   });
   if (scheduled.statusCode !== 200)
     throw new Error(`The audit schedule was not saved: ${scheduled.body}`);
+  // The full review runs on its own every Monday morning. Saved after the last review, so it is
+  // not due while recording.
+  const reviewScheduled = await call("POST", "/api/v1/settings/audit-review", {
+    frequency: "weekly",
+    weekday: 0,
+    hour: 6,
+  });
+  if (reviewScheduled.statusCode !== 200)
+    throw new Error(`The full review schedule was not saved: ${reviewScheduled.body}`);
 
   // 5. Record every request the web app makes.
   const responses: Fixtures["responses"] = {};
@@ -407,6 +419,8 @@ async function main() {
   await record("/api/v1/settings/attention");
   await record("/api/v1/settings/audits");
   await record("/api/v1/settings/audit-schedule");
+  await record("/api/v1/settings/audit-review");
+  await record("/api/v1/audits/review");
   await record("/api/v1/settings/canaries");
   await record("/api/v1/modules/service.health/status");
   // The This week page, for each range it offers (the demo has no other).

@@ -77,12 +77,15 @@ export const INPUTS: Record<InputId, InputSpec> = {
     title: "Mailbox storage",
     columns: ["mailbox", "recipientType"],
   },
-  groups: { auditId: "groups.teams", title: "Groups and Teams", columns: ["group"] },
+  groups: {
+    auditId: "groups.teams",
+    title: "Groups and Teams",
+    columns: ["group", "ownerIds"],
+  },
 };
 
-// The column Groups and Teams would need to carry before ownership can be checked: the directory
-// IDs of a group's owners. It lists owner names only today, so owning a group is never checked. A
-// test asserts the column is still absent; when it appears, that test is the reminder to read it.
+// The column Groups and Teams carries for ownership: the directory IDs of a group's owners. It is
+// hidden on that audit's page and exists only for this join.
 export const OWNER_IDS_COLUMN = "ownerIds";
 
 // The module whose open findings feed the sign-in rule.
@@ -153,7 +156,8 @@ export interface Person {
   devices: DeviceFact[];
   mailboxType: string | null;
   findings: StoredFinding[];
-  // Group IDs the person owns. Always empty until Groups and Teams carries owner IDs.
+  // Group IDs the person owns, from Groups and Teams. Empty when that audit is not usable, and
+  // for groups whose owners it did not read.
   ownedGroups: string[];
 }
 
@@ -304,6 +308,13 @@ export function joinInputs(
       compliance: text(row.cells.compliance),
       encrypted: bool(row.cells.encrypted),
     });
+
+  // Group ownership: each owner ID that is a person already known from the other inputs. An owner
+  // nobody else mentions cannot trip a rule, so no record is made for them.
+  for (const row of rowsOf("groups")) {
+    const owners = strings(row.cells[OWNER_IDS_COLUMN]);
+    for (const ownerId of new Set(owners ?? [])) people.get(ownerId)?.ownedGroups.push(row.key);
+  }
 
   // Mailboxes by sign-in name. A hashed name matches nobody, however it was produced.
   let hashedMailboxes = 0;

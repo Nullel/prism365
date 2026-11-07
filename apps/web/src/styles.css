@@ -3198,6 +3198,14 @@ a.button {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.catalog-table__row--narrower .catalog-table__name {
+  padding-left: 36px;
+}
+.catalog-table__main {
+  display: block;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
 .catalog-table__purpose {
   display: block;
   overflow: hidden;
@@ -3546,6 +3554,84 @@ button.audit-tile:hover {
   color: var(--warning);
 }
 
+/* The full review above the audits table. */
+.audit-review {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.audit-review__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.audit-review__intro {
+  min-width: 0;
+  flex: 1 1 24rem;
+}
+.audit-review__intro .audit-group__title {
+  padding: 0 0 2px;
+}
+.audit-review__intro p,
+.audit-review__status p {
+  margin: 0;
+}
+.audit-review__status {
+  display: grid;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.audit-review__bar {
+  width: 100%;
+  max-width: 28rem;
+  height: 6px;
+  accent-color: var(--accent);
+}
+.audit-review__details summary {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.audit-review__list {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.audit-review__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 10px;
+  font-size: var(--text-sm);
+}
+.audit-review__name {
+  min-width: 12rem;
+  color: var(--text);
+}
+.audit-review__state {
+  min-width: 4.5rem;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.audit-review__item--failed .audit-review__state {
+  color: var(--warning);
+}
+.audit-review__reason {
+  flex: 1 1 16rem;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.audit-review__schedule {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .audit-trend {
   display: grid;
   gap: 8px;
@@ -3704,6 +3790,9 @@ button.audit-tile:hover {
   }
   .catalog-table .catalog-table__name {
     grid-area: name;
+  }
+  .catalog-table .catalog-table__row--narrower .catalog-table__name {
+    padding-left: 20px;
   }
   .catalog-table .catalog-table__run {
     grid-area: run;
