@@ -28,6 +28,7 @@ changes the tenant.
 | Passwords (`accounts.passwords`) | How old is each member account's password, which accounts are set never to expire or to skip the strong password rule, and when do passwords expire (section 18)? | `User.Read.All`; `Domain.Read.All` with a role such as Global Reader or Directory Readers adds expiry dates |
 | Groups and Teams (`groups.teams`) | Which groups and teams have no owner, only disabled owners, a single owner, no use for 90 days or an expiry date close, and who owns the rest (section 19)? | `Group.Read.All` and a role such as Global Reader or Directory Readers; `Reports.Read.All` with Reports Reader or Teams Administrator adds team usage, `ReportSettings.Read.All` tells whether names are concealed |
 | Mailbox storage (`mail.mailbox-storage`) | Which mailboxes are full or close to it, against the warning, send and send-and-receive quotas, and does the mailbox have an archive (section 20)? | `Reports.Read.All` and Reports Reader or Exchange Administrator; `ReportSettings.Read.All` tells whether names are concealed |
+| Combined risks (`identity.combined-risks`) | Which accounts trip several audits at once: an administrator without MFA, an at-risk account without MFA, a dormant administrator, a guest with a directory role, and more, each with the audits and dates behind it (section 21)? | No permission of its own: it joins the stored results of the other audits. `Policy.Read.All` with the Conditional Access read pack adds whether an MFA policy leaves someone out |
 
 `LicenseAssignment.Read.All`, when granted, also gives the account audits license names instead
 of Microsoft's product IDs.
@@ -177,6 +178,14 @@ comparability, the saved schedule and when an audit is due), `packages/storage/t
 `apps/api/test/audit-insights-api.test.ts` (the trend and schedule routes),
 `apps/api/test/audit-schedule.test.ts` (the scheduler on a fake clock, and in the app with the real
 runner) and `apps/web/test/audit-insights.test.ts` (the trend panel and the schedule control).
+
+Combined risks: `packages/audits/test/combined-risks-rules.test.ts` (each rule on both sides of
+every boundary, and the Conditional Access reach check), `combined-risks.test.ts` (the audit over
+synthetic stored results: freshness, matching, notes, the column names it reads checked against the
+audits that publish them), `stored.test.ts` (the stored accessor on a real database),
+`apps/api/test/audit-stored-results.test.ts` (the runner gives it only to an audit that declares it
+uses it), `scripts/demo/graph/combined-risks.test.ts` (the synthetic tenant through the real audits)
+and `scripts/demo/order.test.ts` (the recorder runs it last).
 
 ## 9. Scope
 
@@ -724,7 +733,7 @@ always exported): Type, Domain, the last interactive and background attempts; ma
 read; Teams chats, calls and meetings attended; OneDrive files viewed or edited, the account's
 OneDrive last file activity, active files, files and storage (gigabytes of 1,073,741,824 bytes);
 SharePoint files and pages; mailbox storage, items, last activity and whether it has an archive;
-Licenses; License groups; Group names; Directory roles; Role names; Administrative units.
+Licenses; License groups; Group names; Group IDs (the directory IDs of the same groups, which the Combined risks audit matches to Conditional Access policies); Directory roles; Role names; Administrative units.
 
 License assignment is Direct, Through groups, Both, None, or Unknown when Microsoft's assignment
 states were not read. License groups names the groups that assign a license the account holds, from
@@ -1085,3 +1094,109 @@ Total storage used in gigabytes. Under a scope they count the mailboxes in it.
 - What a Recipient Type value looks like: Microsoft's page names the column and does not list its
   values, so the audit shows whatever the report says.
 - Whether a mailbox is shared or a room when the report has no Recipient Type column.
+
+## 21. Combined risks
+
+`identity.combined-risks` answers "which accounts are in trouble in more than one way?" Each audit
+above looks at one thing, and the accounts that matter most trip several. This audit takes the latest
+stored result of the others, joins them by account and flags nine combinations. One row per account
+that trips at least one: the account, its highest severity, the combinations, the reason for each in
+a sentence, the audits and dates behind them, whether the account is enabled and whether it holds a
+privileged role. It uses the account scope (section 9) and has the Domain column. It can be handed
+off ([Handoffs](handoff.md)), because its rows are accounts.
+
+### What it reads
+
+It needs no Microsoft permission and asks Microsoft for nothing except, when the Conditional Access
+read pack is enabled and `Policy.Read.All` is granted, the list of Conditional Access policies, read
+once with the paced reader. It runs on stored results: the newest successful run of each input, and
+the open findings of the sign-in audit module, in the signed-in tenant and nothing else. The runner
+gives that read-only access (`AuditContext.stored`) to an audit that declares `usesStoredResults` and
+to no other, and the access can read but not write.
+
+Inputs, and how each is matched to an account:
+
+| Input | Matched by | Used for |
+|---|---|---|
+| Account activity | account ID | status, last successful sign-in, verdict, licenses, direct group IDs |
+| Inactive accounts | account ID | the same sign-in dates and licenses, when Account activity is not usable |
+| Licenses to reclaim | account ID | status and licenses, when neither of those is usable |
+| MFA registration | account ID | whether any strong method is registered, guest type |
+| Guest accounts | account ID | whether the account is a guest |
+| Risky users | account ID | risk level and state |
+| Privileged roles | account ID (the holder) | every role the account holds, active or eligible |
+| Passwords | account ID | never expires, strong password not required, age |
+| Managed devices | account ID (the device owner) | compliance and encryption of each device |
+| Mailbox storage | sign-in name, in any letter case | whether the mailbox is shared, a room or equipment |
+| Groups and Teams | owner IDs | owning a group (see below) |
+| Sign-in findings | account ID (the subject) | open findings of medium severity or above |
+
+A hashed mailbox name is never matched to anyone. Rows with no account ID, such as an app holding a
+role, are left out.
+
+### Freshness
+
+An input whose newest successful run finished more than seven days before this run, or that never
+ran, is treated as missing. Exactly seven days is still fresh. Mailbox storage must also have listed
+mailboxes: with names hidden it lists none, and then a shared mailbox cannot be told from any other.
+A rule that needs a missing input is not checked for anyone, and two inputs are never combined
+across that gap: a fresh MFA report says nothing about administrators without a fresh Privileged
+roles result. The notes name each rule not checked and say "Run" and the audit to run, the "Rules
+not checked" tile counts them, and the run is marked partial. A rule with alternatives (sign-in dates
+from Account activity or Inactive accounts) is checked when any one of them is usable, taking the
+first in the order above.
+
+An input that was limited to some domains, or only partly read, is still used, and a note says so.
+A rule trips only on something an input says; an account missing from an input is not read as
+having or lacking anything.
+
+### The rules
+
+| Rule | Severity | Trips when | Inputs |
+|---|---|---|---|
+| Administrator without MFA (`admin-unprotected`) | Critical | holds a privileged role, active or eligible, and has no MFA registered or is left out of an enabled policy that requires MFA | Privileged roles, MFA registration; Conditional Access policies |
+| At-risk account without MFA (`risky-unprotected`) | Critical | at high or medium risk, not remediated or dismissed, and no MFA registered or left out of an enabled MFA policy | Risky users, MFA registration; Conditional Access policies |
+| Administrator with a sign-in finding (`admin-signin-finding`) | Critical | an open sign-in finding of medium severity or above on an account that holds a privileged role | Privileged roles; sign-in findings |
+| Dormant administrator (`dormant-admin`) | High | holds a privileged role and has had no successful sign-in for 30 days or more, or none on record for an account at least 30 days old | Privileged roles; Account activity or Inactive accounts |
+| Guest with directory power (`guest-with-power`) | High | a guest that holds any directory role, privileged or not | Privileged roles; Guest accounts, Account activity, Inactive accounts or MFA registration |
+| Weak password, no MFA (`weak-password-no-mfa`) | High | the password never expires, or a strong password is not required, or it is more than 365 days old, and no MFA is registered | Passwords, MFA registration |
+| Administrator on a weak device (`admin-weak-device`) | High | holds a privileged role and has a managed device that is not compliant or not encrypted | Privileged roles, Managed devices |
+| Disabled but still holding access (`disabled-still-holding`) | Medium | the account is disabled and still holds a role or licenses | Privileged roles; Account activity, Inactive accounts or Licenses to reclaim |
+| Paying for an unused account (`paying-for-nothing`) | Medium | licensed, and Account activity says quiet everywhere or never signed in, and Mailbox storage does not say shared, room or equipment | Account activity, Mailbox storage |
+
+Each rule is a pure function with a test on both sides of every boundary.
+
+### Conditional Access
+
+An enabled policy that requires MFA (the MFA grant or an authentication strength; a policy in
+report-only mode protects nobody and is left out) reaches an account when it includes them by "all
+users", their ID, a direct group or a role, and does not exclude them the same way. An account is left
+out when a policy would include it but names it in an exclusion and no other policy covers it. An
+account no MFA policy is aimed at is a different finding, the Conditional Access audit's, and is not
+flagged here.
+
+Only direct group memberships are matched, from Account activity, and nested groups are not followed.
+Roles are matched by role template ID for the privileged built-in roles. Apps, locations, platforms
+and risk levels are not weighed, as in the Conditional Access audit. Guests are matched by the
+policy's guest and external user selection without regard to its types. With no policy list (the pack
+is off, not granted or refused) the two MFA rules look at MFA registration alone and a note says so.
+Everything that is not known counts for the account: unknown groups match no policy in either
+direction.
+
+### What is not checked
+
+- Owning a group. Groups and Teams lists up to five owner names, not their directory IDs, and a name
+  is not an account. Until it carries owner IDs, "owns a group" is left out of Guest with directory
+  power and Disabled but still holding access, which look at roles (and licenses) only. A note says
+  so, and a test fails when the audit gains an owner ID column.
+- Roles that are neither privileged nor built-in, for Conditional Access matching.
+- Anything older than seven days.
+
+### Views and tiles
+
+Views: All accounts (the default), Critical, High, Medium, Privileged accounts, and one for each rule.
+
+Tiles: Critical combined risks, High combined risks and Medium combined risks (accounts whose highest
+severity it is), Accounts affected, and Rules not checked. The Overview shows the first two as its
+Combined risks tile, or "Not run yet". An alert rule on the audit number "Critical combined risks"
+above 0 sends an alert when a critical combination appears ([Alerts](alerts.md)).

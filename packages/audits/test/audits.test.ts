@@ -301,6 +301,8 @@ const ownTenant = new Set([
   "directory.privileged-roles",
   "groups.teams",
   "mail.mailbox-storage",
+  // Reads stored results, not Microsoft; combined-risks.test.ts holds it to the same table checks.
+  "identity.combined-risks",
 ]);
 
 describe("audit definitions", () => {

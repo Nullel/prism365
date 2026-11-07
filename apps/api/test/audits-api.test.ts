@@ -194,6 +194,7 @@ describe("audits API", () => {
       "accounts.passwords",
       "groups.teams",
       "mail.mailbox-storage",
+      "identity.combined-risks",
     ]);
     // Reads this installation has not enabled are named, so the page says what to add.
     expect(by("devices.managed")).toMatchObject({

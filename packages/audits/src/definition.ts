@@ -1,10 +1,46 @@
-import type { AuditDefinitionInput, AuditRow, AuditSummaryItem } from "@prism365/contracts";
+import type {
+  AuditDefinitionInput,
+  AuditRow,
+  AuditSummaryItem,
+  Severity,
+} from "@prism365/contracts";
 import type { GraphFeatureId } from "@prism365/graph";
 import type { ScopedGraph } from "@prism365/modules";
 
 // The audit contract. An audit reads the tenant once, on demand, and returns rows for a table it
 // describes itself. It sees a Graph client narrowed to the read packs it declares and nothing
 // else: no credentials, no storage, no tenant choice. The runner stores what it returns.
+
+// A module finding as an audit may see it: what it is about and how serious it is, nothing more.
+export interface StoredFinding {
+  ruleId: string;
+  severity: Severity;
+  // "person" for a finding about an account; the subject id is then the account's directory ID.
+  subjectKind: string;
+  subjectId: string;
+  title: string;
+  lastSeen: string;
+}
+
+// The newest successful run of another audit, as stored.
+export interface StoredRun {
+  finishedAt: string;
+  complete: boolean;
+  // The account domains that run was limited to; null when it covered every domain.
+  scope: readonly string[] | null;
+  rows: readonly AuditRow[];
+}
+
+// Read-only access to what the tenant's earlier audits and modules stored. Never a write, never
+// another tenant. Only an audit that declares `usesStoredResults` is given it.
+export interface StoredResults {
+  // null when the audit has never finished a run.
+  latestRun(auditId: string): Promise<StoredRun | null>;
+  // Open findings of one module, newest first, at most MAX_STORED_FINDINGS.
+  openFindings(moduleId: string): Promise<StoredFinding[]>;
+}
+
+export const MAX_STORED_FINDINGS = 5_000;
 
 export interface AuditContext {
   readonly graph: ScopedGraph;
@@ -19,6 +55,8 @@ export interface AuditContext {
   // The Microsoft tenant ID of the signed-in session, for an audit that has to tell this tenant's
   // own objects from other organisations'. Unset when the caller does not know it.
   readonly tenantId?: string;
+  // Earlier results, for an audit that joins other audits. Unset for every other audit.
+  readonly stored?: StoredResults;
 }
 
 export interface AuditResult {
@@ -39,6 +77,9 @@ export interface Audit {
   // Covers only the domains in AuditContext.scope. Such an audit filters its accounts before it
   // computes rows, tiles and notes, adds scopeNote to its notes, and has a "domain" column.
   scoped: boolean;
+  // Joins the stored results of other audits (AuditContext.stored). The runner gives them to no
+  // other audit.
+  usesStoredResults?: boolean;
   // Read packs the audit cannot run without, and packs that only add detail when granted.
   packs: readonly GraphFeatureId[];
   optionalPacks: readonly GraphFeatureId[];

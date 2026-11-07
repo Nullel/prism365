@@ -5,6 +5,8 @@ import {
   type AuditCatalog,
   type AuditRun,
   auditDefinitionSchema,
+  COMBINED_RISKS_AUDIT_ID,
+  COMBINED_RISKS_TILES,
   type Finding,
   type ModuleList,
   type PrismSession,
@@ -521,7 +523,7 @@ const tileOf = (data: OverviewData, id: string) => {
 };
 
 describe("summary tiles", () => {
-  it("are five, in order, each opening the page that owns the figure", () => {
+  it("are six, in order, each opening the page that owns the figure", () => {
     const tiles = buildTiles(everything(), NOW);
     expect(tiles.map((tile) => [tile.id, tile.view])).toEqual([
       ["findings", "signins"],
@@ -529,6 +531,7 @@ describe("summary tiles", () => {
       ["signins", "signins"],
       ["collection", "signins"],
       ["microsoft", "notifications"],
+      ["combined", "audits"],
     ]);
     const moreChanges = everything({
       changes: ready([
@@ -650,7 +653,7 @@ describe("summary tiles", () => {
 
   it("wait while a source loads, and are unavailable when one failed", () => {
     expect(buildTiles(emptyOverviewData, NOW).map((tile) => tile.status)).toEqual(
-      Array(5).fill("loading"),
+      Array(6).fill("loading"),
     );
     const broken = buildTiles(
       everything({
@@ -662,13 +665,7 @@ describe("summary tiles", () => {
       }),
       NOW,
     );
-    expect(broken.map((tile) => tile.status)).toEqual([
-      "unavailable",
-      "unavailable",
-      "unavailable",
-      "unavailable",
-      "unavailable",
-    ]);
+    expect(broken.map((tile) => tile.status)).toEqual(Array(6).fill("unavailable"));
     // One failed findings request makes the count unavailable rather than a total that is too low.
     expect(tileOf(everything({ changes: failed() }), "findings").status).toBe("unavailable");
     // A request still on its way holds the collection tile back, so it never flashes the wrong state.
@@ -690,12 +687,99 @@ const render = (data: OverviewData) =>
     createElement(OverviewView, { data, now: NOW, onNavigate: () => {}, onOpenPerson: () => {} }),
   );
 
+// The Combined risks audit's latest run, in any state, as the catalog carries it.
+function combinedCatalog(
+  state: "none" | "running" | "failed" | "ran",
+  counts = [2, 3],
+): AuditCatalog {
+  const run = auditRun(COMBINED_RISKS_AUDIT_ID, state === "failed" ? "failed" : "good");
+  const lastRun =
+    state === "none" || !run
+      ? null
+      : {
+          ...run,
+          status: state === "running" ? ("running" as const) : run.status,
+          summary:
+            state === "ran"
+              ? [
+                  {
+                    label: COMBINED_RISKS_TILES.critical,
+                    value: counts[0] ?? 0,
+                    tone: "critical" as const,
+                    view: "critical",
+                  },
+                  {
+                    label: COMBINED_RISKS_TILES.high,
+                    value: counts[1] ?? 0,
+                    tone: "warning" as const,
+                    view: "high",
+                  },
+                  { label: "Accounts affected", value: 9, tone: "neutral" as const, view: "all" },
+                ]
+              : [],
+        };
+  return {
+    mode: "live",
+    audits: [
+      {
+        definition: definition(COMBINED_RISKS_AUDIT_ID, "Combined risks"),
+        availability: { state: "available", missing: [], grantFeature: null, enable: [] },
+        lastRun,
+        runningId: null,
+      },
+    ],
+  };
+}
+
+describe("the Combined risks tile", () => {
+  const combined = (catalog: AuditCatalog | null) =>
+    tileOf(everything({ audits: catalog ? ready(catalog) : failed() }), "combined");
+
+  it("says Not run yet when the audit has no run, or the catalog does not list it", () => {
+    for (const catalog of [combinedCatalog("none"), audits("good")]) {
+      const tile = combined(catalog);
+      expect(tile).toMatchObject({ status: "ready", value: "Not run yet", muted: true });
+    }
+  });
+
+  it("shows critical and high counts from the audit's own tiles", () => {
+    const tile = combined(combinedCatalog("ran"));
+    expect(tile).toMatchObject({ value: "5", muted: false, audit: "identity.combined-risks" });
+    const html = renderToStaticMarkup(createElement("div", null, tile.detail));
+    expect(html).toContain(">2 critical<");
+    expect(html).toContain(">3 high<");
+  });
+
+  it("leaves out a level with no accounts, and says so when there are none", () => {
+    const onlyHigh = renderToStaticMarkup(
+      createElement("div", null, combined(combinedCatalog("ran", [0, 4])).detail),
+    );
+    expect(onlyHigh).toContain(">4 high<");
+    expect(onlyHigh).not.toContain("critical");
+    const none = combined(combinedCatalog("ran", [0, 0]));
+    expect(none.value).toBe("0");
+    expect(none.detail).toBe("None critical or high");
+  });
+
+  it("says Running while the audit runs and Failed when its last run failed", () => {
+    expect(combined(combinedCatalog("running"))).toMatchObject({ value: "Running", muted: true });
+    expect(combined(combinedCatalog("failed"))).toMatchObject({ value: "Failed", muted: true });
+  });
+
+  it("waits while the catalog loads and is unavailable when it failed", () => {
+    expect(tileOf(everything({ audits: emptyOverviewData.audits }), "combined").status).toBe(
+      "loading",
+    );
+    expect(combined(null).status).toBe("unavailable");
+  });
+});
+
 describe("the Overview page", () => {
   it("draws still skeleton rows while everything loads, and never says Loading", () => {
     const html = render(emptyOverviewData);
     expect(html).toContain("skeleton__row");
     expect(html).not.toContain("Loading…");
-    expect(html.match(/<button/g)).toHaveLength(5);
+    expect(html.match(/<button/g)).toHaveLength(6);
     expect(html).toContain("Needs attention");
     expect(html).toContain("From Microsoft");
   });
@@ -735,7 +819,7 @@ describe("the Overview page", () => {
         modules: failed(),
       }),
     );
-    expect(html.match(/>Unavailable</g)).toHaveLength(5);
+    expect(html.match(/>Unavailable</g)).toHaveLength(6);
     expect(html).toContain("Findings could not be loaded.");
     expect(html).toContain("Microsoft updates could not be loaded.");
     expect(html).not.toContain("skeleton");
@@ -919,9 +1003,28 @@ describe("what a click opens", () => {
   it("sends each tile to the page that owns it", () => {
     const { buttons, press, visited } = clicks(everything());
     const tiles = buttons.filter((button) => button.props.className === "overview-tile");
-    expect(tiles).toHaveLength(5);
+    expect(tiles).toHaveLength(6);
     for (const tile of tiles) press(tile);
-    expect(visited).toEqual(["signins", "audits", "signins", "signins", "notifications"]);
+    expect(visited).toEqual(["signins", "audits", "signins", "signins", "notifications", "audits"]);
+  });
+
+  it("opens the Combined risks audit itself from its tile, when the page can open an audit", () => {
+    const opened: string[] = [];
+    const visited: string[] = [];
+    const tree = hostTree(
+      createElement(OverviewView, {
+        data: everything(),
+        now: NOW,
+        onNavigate: (view: string) => visited.push(view),
+        onOpenAudit: (id: string) => opened.push(id),
+        onOpenPerson: () => {},
+      }),
+    );
+    const tiles = findAll(tree, (host) => host.props.className === "overview-tile");
+    const press = tiles[5]?.props.onClick as (() => void) | undefined;
+    press?.();
+    expect(opened).toEqual(["identity.combined-risks"]);
+    expect(visited).toEqual([]);
   });
 
   it("opens a person's page from a finding about them, and the owning page for any other", () => {

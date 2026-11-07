@@ -3,6 +3,7 @@ import { type GraphFeatureId, permissionPacks } from "@prism365/graph";
 import { accountActivityAudit } from "./account-activity.ts";
 import { appConsentsAudit } from "./app-consents.ts";
 import { licenseCapacityAudit } from "./capacity.ts";
+import { combinedRisksAudit } from "./combined-risks.ts";
 import { conditionalAccessAudit } from "./conditional-access.ts";
 import type { Audit } from "./definition.ts";
 import { managedDevicesAudit } from "./devices.ts";
@@ -41,6 +42,13 @@ export {
   MICROSOFT_TENANTS,
   ownerOf,
 } from "./app-consents.ts";
+export {
+  combinedRisksAudit,
+  createCombinedRisksAudit,
+} from "./combined-risks.ts";
+export { INPUT_IDS, INPUTS } from "./combined-risks-inputs.ts";
+export { mfaPolicies, mfaReach } from "./combined-risks-reach.ts";
+export { RULES } from "./combined-risks-rules.ts";
 export { conditionalAccessAudit, createConditionalAccessAudit } from "./conditional-access.ts";
 export * from "./definition.ts";
 export {
@@ -87,6 +95,7 @@ export { createRiskyUsersAudit, riskyUsersAudit } from "./risky-users.ts";
 export * from "./schedule.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
+export * from "./stored.ts";
 export * from "./trend.ts";
 export {
   guestAccountsAudit,
@@ -115,6 +124,7 @@ export const builtInAudits: readonly Audit[] = [
   passwordsAudit,
   groupsTeamsAudit,
   mailboxStorageAudit,
+  combinedRisksAudit,
 ];
 
 function permissionsOf(packs: readonly GraphFeatureId[]): string[] {

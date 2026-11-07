@@ -605,7 +605,12 @@ export function App() {
           {signedIn && session ? (
             <>
               {view === "overview" && !demo ? (
-                <LiveOverview session={session} onOpenPerson={openPerson} onNavigate={navigate} />
+                <LiveOverview
+                  session={session}
+                  onOpenPerson={openPerson}
+                  onNavigate={navigate}
+                  onOpenAudit={openAudit}
+                />
               ) : null}
               {view === "notifications" && !demo ? (
                 <Notifications

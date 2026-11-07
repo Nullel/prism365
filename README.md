@@ -40,7 +40,9 @@ the disabled accounts, guests and apps among the holders), passwords (age, expir
 accounts set never to expire), managed devices, app consents (high-risk and unverified apps),
 groups and Teams (no owners, only disabled owners, inactive teams), mailbox storage (mailboxes
 close to their quotas), Microsoft 365 app usage and account activity (is an account really
-unused, and does anyone still open its files). Results are kept, filterable, sortable and exportable as CSV, each audit's
+unused, and does anyone still open its files) and combined risks (the accounts that trip several
+of the others at once, such as an administrator with no MFA, each with the audits and dates behind
+it). Results are kept, filterable, sortable and exportable as CSV, each audit's
 numbers are kept as a trend, and any audit can run daily or weekly on its own. Each audit runs
 only when its own read pack is enabled, and says what it needs when it is not.
 

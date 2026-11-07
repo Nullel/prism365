@@ -22,6 +22,7 @@ import type { AppConfig, IdentityConfig } from "../../apps/api/src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../../apps/api/src/identity.ts";
 import { createModuleRegistry } from "../../apps/api/src/modules.ts";
 import { type Fixtures, normalizeKey } from "../../apps/web/src/demo/replay.ts";
+import { auditRecordingOrder } from "./order.ts";
 import {
   assertSynthetic,
   buildSyntheticTenant,
@@ -333,8 +334,8 @@ async function main() {
   for (const daysAgo of [35, 14, 7, 0]) {
     auditClock = daysAgo === 0 ? null : new Date(anchor.getTime() - daysAgo * DAY);
     auditGraph = auditClock ? createSyntheticGraph({ now: auditClock, quietFrom: anchor }) : graph;
-    for (const entry of catalog.audits) {
-      const id = entry.definition.id;
+    // Combined risks joins the others' stored results, so it runs after every one of them.
+    for (const id of auditRecordingOrder(catalog.audits.map((entry) => entry.definition.id))) {
       const response = await call("POST", `/api/v1/audits/${id}/runs`);
       if (response.statusCode !== 202)
         throw new Error(`Audit ${id} did not start: ${response.body}`);

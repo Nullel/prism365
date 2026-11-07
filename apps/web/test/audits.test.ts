@@ -942,6 +942,50 @@ describe("audit result table copy buttons", () => {
   });
 });
 
+describe("the severity column of Combined risks", () => {
+  const severityDefinition = auditDefinitionSchema.parse({
+    ...definition,
+    id: "identity.combined-risks",
+    columns: [
+      column("person", "person", { label: "Account" }),
+      column("severity", "enum", { label: "Highest severity" }),
+      column("stage", "enum", { label: "Stage" }),
+    ],
+    defaultSort: { column: "severity", direction: "asc" },
+  });
+  const render = (cells: AuditRow["cells"]) =>
+    renderToStaticMarkup(
+      createElement(ResultTable, {
+        definition: severityDefinition,
+        run: {
+          ...run,
+          summary: [],
+          rows: [{ key: "1", personId: "user-1", tags: [], cells }],
+        } as AuditRunDetail,
+        onOpenPerson: () => {},
+      }),
+    );
+
+  it("shows each severity as the dot and name a finding shows", () => {
+    for (const [name, level] of [
+      ["Critical", "critical"],
+      ["High", "high"],
+      ["Medium", "medium"],
+    ] as const)
+      expect(
+        render({ person: { name: "Ada Example", principal: null }, severity: name }),
+      ).toContain(
+        `<span class="sev sev--${level}"><span class="sev__dot" aria-hidden="true"></span>${name}</span>`,
+      );
+  });
+
+  it("leaves another enum column that happens to hold the same words as plain text", () => {
+    const html = render({ person: { name: "Ada Example", principal: null }, stage: "Critical" });
+    expect(html).not.toContain("sev--critical");
+    expect(html).toContain("Critical");
+  });
+});
+
 describe("the audit result header", () => {
   const NOW = "2026-10-22T12:00:00.000Z";
   const header = (overrides: Partial<AuditRun> = {}) =>

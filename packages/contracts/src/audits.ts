@@ -349,3 +349,12 @@ export function auditCsv(definition: AuditDefinition, rows: readonly AuditRow[])
   }
   return `﻿${lines.join("\r\n")}\r\n`;
 }
+
+// The audit that joins the others (docs/audits.md, section 21), and the labels of its two headline
+// tiles. The Overview reads the counts from these tiles and alert rules find them by label, so the
+// audit and the page share the names instead of repeating them.
+export const COMBINED_RISKS_AUDIT_ID = "identity.combined-risks";
+export const COMBINED_RISKS_TILES = {
+  critical: "Critical combined risks",
+  high: "High combined risks",
+} as const;

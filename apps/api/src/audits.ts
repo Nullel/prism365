@@ -3,6 +3,7 @@ import {
   type Audit,
   AuditError,
   cleanText,
+  createStoredResults,
   finishRun,
   insertRun,
   interruptRuns,
@@ -414,6 +415,10 @@ export class AuditRunner {
         signal: controller.signal,
         scope: input.scope,
         tenantId,
+        // Only an audit that says it joins other results gets to read them.
+        ...(audit.usesStoredResults
+          ? { stored: createStoredResults(this.#database, tenantId, controller.signal) }
+          : {}),
       });
       work.catch(() => {});
       const result = resultSchema.parse(cleaned(await Promise.race([work, stopped])));
