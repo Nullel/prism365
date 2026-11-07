@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { hibpLink, People, PersonRow } from "../src/People.tsx";
 import { runLine } from "../src/SigninAudit.tsx";
+import { at, expectSkeleton, relativeCell } from "./markup.ts";
 
 function session(overrides: Partial<PrismSession> = {}): PrismSession {
   return sessionSchema.parse({
@@ -20,6 +21,10 @@ function session(overrides: Partial<PrismSession> = {}): PrismSession {
 
 const render = (value: PrismSession, selected: string | null = null) =>
   renderToStaticMarkup(createElement(People, { session: value, selected, onSelect: () => {} }));
+
+// The run line is text with the time as a <time> element, so it is read as markup.
+const line = (...args: Parameters<typeof runLine>) =>
+  renderToStaticMarkup(createElement("p", null, runLine(...args)));
 
 const run = {
   credentialKind: "delegated" as const,
@@ -93,18 +98,18 @@ describe("people list row", () => {
 
 describe("collection run line", () => {
   it("says a run is in progress instead of showing zero counts", () => {
-    const line = runLine({ ...run, status: "running", finishedAt: null, fetched: 0, inserted: 0 });
-    expect(line).toContain("Reading sign-ins now");
-    expect(line).not.toContain("0 records");
-    const stopped = runLine({ ...run, status: "running", finishedAt: null }, false);
+    const running = line({ ...run, status: "running", finishedAt: null, fetched: 0, inserted: 0 });
+    expect(running).toContain("Reading sign-ins now");
+    expect(running).not.toContain("0 records");
+    const stopped = line({ ...run, status: "running", finishedAt: null }, false);
     expect(stopped).toContain("cut short");
   });
 
   it("separates unreadable records from a busy stretch and a restart", () => {
-    expect(runLine({ ...run, status: "partial", skipped: 2 })).toContain("2 unreadable");
-    expect(runLine({ ...run, status: "partial" })).toContain("busy stretch");
-    expect(runLine({ ...run, status: "abandoned" })).toContain("restart");
-    expect(runLine({ ...run, status: "succeeded" })).toContain("1,354 records read");
+    expect(line({ ...run, status: "partial", skipped: 2 })).toContain("2 unreadable");
+    expect(line({ ...run, status: "partial" })).toContain("busy stretch");
+    expect(line({ ...run, status: "abandoned" })).toContain("restart");
+    expect(line({ ...run, status: "succeeded" })).toContain("1,354 records read");
   });
 });
 
@@ -117,5 +122,52 @@ describe("Have I Been Pwned link", () => {
     expect(hibpLink(" a/b?c#d@example.invalid ")).toBe(
       "https://haveibeenpwned.com/account/a%2Fb%3Fc%23d@example.invalid",
     );
+  });
+});
+
+describe("the page speaks the shared visual language", () => {
+  const NOW = "2026-10-22T20:00:00.000Z";
+  const row = (lastSignIn: string | null) =>
+    at(NOW, () =>
+      renderToStaticMarkup(
+        createElement(
+          "table",
+          null,
+          createElement(
+            "tbody",
+            null,
+            createElement(PersonRow, {
+              item: {
+                userId: "44444444-4444-4444-8444-444444444444",
+                userPrincipalName: "avery@example.invalid",
+                displayName: "Avery Stone",
+                lastSignIn,
+                lastSuccess: lastSignIn,
+                signIns: 1234,
+                failures: 1,
+                countries: 2,
+                openFindings: 0,
+              },
+              onSelect: () => {},
+            }),
+          ),
+        ),
+      ),
+    );
+
+  it("shows the last sign-in as words, with the exact moment on hover", () => {
+    expect(row("2026-10-22T19:44:01.000Z")).toMatch(
+      relativeCell("2026-10-22T19:44:01.000Z", "15 min ago"),
+    );
+  });
+
+  it("says never, in muted text, for an account with no sign-in", () => {
+    const html = row(null);
+    expect(html).toContain('<span class="person-muted">never</span>');
+    expect(html).not.toContain("<time");
+  });
+
+  it("draws still skeleton rows while the list loads", () => {
+    expectSkeleton(render(session()), "Loading people");
   });
 });

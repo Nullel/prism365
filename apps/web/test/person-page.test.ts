@@ -1251,9 +1251,9 @@ describe("the person page's stylesheet", () => {
     expect(avatar).not.toContain("50%");
   });
 
-  it("uses tabular figures across the page and on the tab counts", () => {
-    expect(rule(".person")).toContain("font-variant-numeric: tabular-nums;");
-    expect(rule(".person-tab__count")).toContain("font-variant-numeric: tabular-nums;");
+  it("gets its tabular figures from the shared rule on the root, not its own", () => {
+    expect(rule(":root")).toContain("font-variant-numeric: tabular-nums;");
+    expect(rule(".person-tab__count")).not.toContain("font-variant-numeric");
   });
 
   it("keeps the focus ring inside a tab, where the scrolling strip would clip it", () => {

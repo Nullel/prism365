@@ -13,8 +13,16 @@ import {
   type PrismSession,
 } from "@prism365/contracts";
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
-import { day, FindingItem, number, post, readJson, when } from "./common.tsx";
-import { ShieldIcon } from "./icons.tsx";
+import {
+  day,
+  FindingItem,
+  number,
+  post,
+  RelativeTime,
+  readJson,
+  SkeletonRows,
+  when,
+} from "./common.tsx";
 
 // Directory changes: every Microsoft Entra directory audit event Prism365 has collected, newest
 // first, with the changes the rules flagged on top. Microsoft keeps these records 7 or 30 days;
@@ -76,9 +84,6 @@ function Result({ value }: { value: string | null }) {
     </span>
   );
 }
-
-const clock = (value: string) =>
-  new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(new Date(value));
 
 // The person a link opens: a user with a directory id.
 function personLink(
@@ -183,12 +188,10 @@ function Properties({ change }: { change: ChangeEvent }) {
 export function ChangeRow({
   change,
   onOpenPerson,
-  showDate = false,
   note,
 }: {
   change: ChangeEvent;
   onOpenPerson?: (userId: string) => void;
-  showDate?: boolean;
   note?: ReactNode;
 }) {
   const shown = change.targets
@@ -198,9 +201,9 @@ export function ChangeRow({
   return (
     <li className="change-row">
       <div className="change-row__main">
-        <time className="change-row__time" dateTime={change.activityAt}>
-          {showDate ? when(change.activityAt) : clock(change.activityAt)}
-        </time>
+        <span className="change-row__time">
+          <RelativeTime value={change.activityAt} />
+        </span>
         <span className="change-row__actor">
           <Name
             label={actorLabel(change)}
@@ -294,17 +297,32 @@ export function changesRunLine(
   run: RunView | null,
   collecting: boolean,
   gapFlagged = false,
-): string {
+): ReactNode {
   if (!run)
     return "No collection has run yet. The first run loads the 30 days Microsoft keeps, oldest first.";
+  const started = <RelativeTime value={run.startedAt} />;
   if (run.status === "running")
-    return collecting
-      ? `Reading the audit log now (started ${when(run.startedAt)}).`
-      : `The run started ${when(run.startedAt)} was cut short. Start collecting to continue where it left off.`;
+    return collecting ? (
+      <>Reading the audit log now (started {started}).</>
+    ) : (
+      <>The run started {started} was cut short. Start collecting to continue where it left off.</>
+    );
   if (run.status === "failed")
-    return `Last run ${when(run.startedAt)} failed. ${failureCopy[run.errorCategory ?? ""] ?? failureCopy[(run.errorCategory ?? "").split(".")[0] ?? ""] ?? "The next run retries; the server log has the reason."}`;
+    return (
+      <>
+        Last run {started} failed.{" "}
+        {failureCopy[run.errorCategory ?? ""] ??
+          failureCopy[(run.errorCategory ?? "").split(".")[0] ?? ""] ??
+          "The next run retries; the server log has the reason."}
+      </>
+    );
   if (run.status === "abandoned")
-    return `The run started ${when(run.startedAt)} was cut short by a restart. Collection continues where it left off.`;
+    return (
+      <>
+        The run started {started} was cut short by a restart. Collection continues where it left
+        off.
+      </>
+    );
   const note =
     run.skipped > 0
       ? `, ${number.format(run.skipped)} unreadable and left out`
@@ -313,15 +331,26 @@ export function changesRunLine(
           ? ", but some changes could not be read (see the flagged changes)"
           : ", but some reads failed and will be retried"
         : "";
-  return `Last run ${when(run.startedAt)}: ${number.format(run.fetched)} records read, ${number.format(run.inserted)} new${note}.`;
+  return (
+    <>
+      Last run {started}: {number.format(run.fetched)} records read, {number.format(run.inserted)}{" "}
+      new{note}.
+    </>
+  );
 }
 
-export function coverageLine(feed: ChangeFeed | null): string {
+export function coverageLine(feed: ChangeFeed | null): ReactNode {
   const coverage = feed?.coverage;
   if (!coverage || coverage.phase === "none") return startHistory;
   if (coverage.phase === "history")
     return `Loading the last 30 days, oldest first. History has reached ${when(coverage.through)}; newer changes fill in as it catches up.`;
-  return `History kept since ${day(coverage.from)}. Last collected ${when(coverage.lastCollected)}. Microsoft keeps 7 days without Entra ID P1 or P2 and 30 days with it, so days before collection started can be empty.`;
+  return (
+    <>
+      History kept since {day(coverage.from)}. Last collected{" "}
+      <RelativeTime value={coverage.lastCollected} />. Microsoft keeps 7 days without Entra ID P1 or
+      P2 and 30 days with it, so days before collection started can be empty.
+    </>
+  );
 }
 
 export interface ChangesViewProps {
@@ -395,13 +424,10 @@ export function ChangesView(props: ChangesViewProps) {
           <h2 id={`${titleId}-flagged`}>Flagged changes</h2>
         </div>
         {findings.length === 0 ? (
-          <div className="signin-findings__empty">
-            <ShieldIcon />
-            <p>
-              Nothing flagged. Role assignments, new app credentials, consents, Conditional Access
-              and domain changes show up here as they are collected.
-            </p>
-          </div>
+          <p className="empty-data">
+            Nothing flagged. Role assignments, new app credentials, consents, Conditional Access and
+            domain changes show up here as they are collected.
+          </p>
         ) : (
           <ul className="finding-list">
             {findings.map((finding) => (
@@ -485,7 +511,7 @@ export function ChangesView(props: ChangesViewProps) {
           />
         </div>
         {!feed ? (
-          <p className="empty-data">Loading…</p>
+          <SkeletonRows rows={6} label="Loading changes" />
         ) : items.length === 0 ? (
           <p className="empty-data">
             {feed.coverage.phase === "none"

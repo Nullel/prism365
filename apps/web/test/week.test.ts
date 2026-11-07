@@ -22,6 +22,8 @@ import {
   signed,
 } from "../src/Week.tsx";
 
+import { at, expectSkeleton, relativeCell, severityDot } from "./markup.ts";
+
 // Invented people, findings, audits and Microsoft posts only.
 
 function session(overrides: Partial<PrismSession> = {}): PrismSession {
@@ -355,6 +357,9 @@ function props(overrides: Partial<WeekViewProps> = {}): { props: WeekViewProps; 
 const render = (overrides: Partial<WeekViewProps> = {}) =>
   renderToStaticMarkup(createElement(WeekView, props(overrides).props));
 
+// A piece of text that holds elements, drawn the way the page draws it.
+const markup = (node: ReactNode) => renderToStaticMarkup(createElement("p", null, node));
+
 // What a click on each button of the page does, without a browser: the page is a tree of plain
 // function components, so it is expanded here and its buttons are collected as they are.
 interface Clickable {
@@ -515,14 +520,15 @@ describe("the This week page", () => {
 
   it("shows a loading line, and an error without hiding the ranges", () => {
     const loading = render({ digest: null });
-    expect(loading).toContain("Loading…");
+    expect(loading).toContain("Loading this week");
+    expect(loading).toContain("skeleton__row");
     expect(loading).toContain("Last 14 days");
     expect(loading).not.toContain("Sign-in findings");
     const failed = render({ digest: null, error: "Request failed with HTTP 500." });
     expect(failed).toContain('role="alert"');
     expect(failed).toContain("Request failed with HTTP 500.");
     // Nothing is loading after a failure, so the page does not say it is.
-    expect(failed).not.toContain("Loading…");
+    expect(failed).not.toContain("Loading this week");
     expect(failed).toContain("Last 7 days");
   });
 
@@ -647,7 +653,7 @@ describe("small pieces", () => {
     expect(
       coverageText({ from: null, through: null, lastCollected: null, phase: "none" }),
     ).toBeNull();
-    expect(coverageText(digest.directoryChanges.coverage)).toContain("History kept since");
+    expect(markup(coverageText(digest.directoryChanges.coverage))).toContain("History kept since");
     expect(coverageText({ ...digest.directoryChanges.coverage, phase: "history" })).toContain(
       "Loading the last 30 days, oldest first",
     );
@@ -684,7 +690,7 @@ describe("the page for a session", () => {
 
   it("starts a signed-in page on the last 7 days, loading", () => {
     const html = page(session());
-    expect(html).toContain("Loading…");
+    expect(html).toContain("Loading this week");
     expect(html).toMatch(/aria-pressed="true"[^>]*>Last 7 days</);
   });
 });
@@ -745,5 +751,38 @@ describe("This week in the demo", () => {
   it("says a range that was not recorded is not available, rather than inventing it", () => {
     const answer = handleRequest(state, { method: "GET", url: digestUrl(30) });
     expect(answer.status).toBe(404);
+  });
+});
+
+describe("the page speaks the shared visual language", () => {
+  const NOW = "2026-10-22T12:00:00.000Z";
+  const html = at(NOW, () => render());
+
+  it("shows when something happened as words, with the exact moment on hover", () => {
+    // A finding first seen the day before, an incident hours ago, a collector minutes ago.
+    expect(html).toMatch(relativeCell("2026-10-21T09:00:00.000Z", "yesterday"));
+    expect(html).toMatch(relativeCell("2026-10-22T08:00:00.000Z", "4 h ago"));
+    expect(html).toMatch(relativeCell("2026-10-22T11:55:00.000Z", "5 min ago"));
+    expect(html).toMatch(relativeCell("2026-10-22T11:50:00.000Z", "10 min ago"));
+    // A result from more than a week back is its date, still a time element.
+    expect(html).toMatch(/<time dateTime="2026-10-14T10:00:00.000Z" title="[^"]+">[^<]+<\/time>/);
+  });
+
+  it("keeps the date a person has to act by as a date", () => {
+    expect(html).toContain("Act by ");
+    expect(html).not.toContain('dateTime="2026-10-30T00:00:00.000Z"');
+  });
+
+  it("marks severity with the shared dot and name, in the lists and in the counts", () => {
+    expect(html).toContain(severityDot("critical", "Critical"));
+    expect(html).toContain(severityDot("high", "High"));
+    expect(html).toContain(severityDot("medium", "Medium"));
+    expect(html).toContain(severityDot("critical", "1 critical"));
+    expect(html).toContain(severityDot("high", "2 high"));
+    expect(html).not.toContain("finding-severity");
+  });
+
+  it("draws still skeleton rows while the answer is on its way", () => {
+    expectSkeleton(render({ digest: null }), "Loading this week");
   });
 });

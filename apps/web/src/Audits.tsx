@@ -63,6 +63,51 @@ function duration(run: AuditRun): string | null {
   return seconds < 90 ? `${seconds} s` : `${Math.round(seconds / 60)} min`;
 }
 
+// The sentence above a result: when the audit ran, who ran it, how long it took and, for a
+// scoped audit, what it was limited to. The time is words, with the exact moment on hover.
+export function RunLine({
+  run,
+  definition,
+  scope,
+}: {
+  run: AuditRunDetail;
+  definition: AuditDefinition;
+  scope: readonly string[] | null;
+}) {
+  const took = duration(run);
+  const scheduled = run.trigger === "schedule";
+  return (
+    <p>
+      {run.status === "running" ? (
+        <>
+          <span className="collection-dot collection-dot--on" aria-hidden="true" />
+          Reading Microsoft, started <RelativeTime value={run.startedAt} />. Large directories take
+          a few minutes.
+        </>
+      ) : run.status === "failed" ? (
+        <>
+          Run failed <RelativeTime value={run.startedAt} />.
+        </>
+      ) : (
+        <>
+          Ran <RelativeTime value={run.startedAt} />
+          {run.startedBy.name
+            ? scheduled
+              ? ` with ${run.startedBy.name}'s sign-in`
+              : ` by ${run.startedBy.name}`
+            : ""}
+          {took ? `, took ${took}` : ""}.{" "}
+          {run.complete ? null : (
+            <strong className="audit-partial">Partial result: see the notes below.</strong>
+          )}
+        </>
+      )}
+      {scheduled ? <span className="person-tag">Scheduled</span> : null}
+      <RunScopeTags definition={definition} run={run} saved={scope} />
+    </p>
+  );
+}
+
 // The tile an audit leads with: the first one that is neither neutral nor good and has something
 // to show. It names the number worth a look in the catalog, and its tone decides whether the
 // Overview counts the audit as needing attention.
@@ -1720,8 +1765,6 @@ function AuditDetail({
 
   const running = run?.status === "running" || starting;
   const access = accessText(entry);
-  const took = run ? duration(run) : null;
-  const scheduled = run?.trigger === "schedule";
 
   return (
     <div className="audit-detail">
@@ -1780,31 +1823,7 @@ function AuditDetail({
 
       {run ? (
         <div className="audit-run-line">
-          <p>
-            {run.status === "running" ? (
-              <>
-                <span className="collection-dot collection-dot--on" aria-hidden="true" />
-                Reading Microsoft since {when(run.startedAt)}. Large directories take a few minutes.
-              </>
-            ) : run.status === "failed" ? (
-              <>Run of {when(run.startedAt)} failed.</>
-            ) : (
-              <>
-                Ran {when(run.startedAt)}
-                {run.startedBy.name
-                  ? scheduled
-                    ? ` with ${run.startedBy.name}'s sign-in`
-                    : ` by ${run.startedBy.name}`
-                  : ""}
-                {took ? `, took ${took}` : ""}.{" "}
-                {run.complete ? null : (
-                  <strong className="audit-partial">Partial result: see the notes below.</strong>
-                )}
-              </>
-            )}
-            {scheduled ? <span className="person-tag">Scheduled</span> : null}
-            <RunScopeTags definition={definition} run={run} saved={scope} />
-          </p>
+          <RunLine run={run} definition={definition} scope={scope} />
           {history && history.length > 1 ? (
             <label className="audit-filter" htmlFor={historyId}>
               <span className="audit-filter__label">Run</span>
@@ -1831,12 +1850,10 @@ function AuditDetail({
       ) : null}
 
       {!run && !demo && history !== null && history.length === 0 ? (
-        <section className="panel audit-empty-run">
-          <p>
-            This audit has not been run yet. It reads Microsoft once each time you press Run audit,
-            and keeps the last 10 successful results here.
-          </p>
-        </section>
+        <p className="empty-data">
+          This audit has not been run yet. It reads Microsoft once each time you press Run audit,
+          and keeps the last 10 successful results here.
+        </p>
       ) : null}
 
       {run?.status === "succeeded" ? (

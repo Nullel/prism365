@@ -18,7 +18,7 @@ import {
 } from "@prism365/contracts";
 import { type FormEvent, useCallback, useEffect, useId, useState } from "react";
 import { CopyButton } from "./CopyButton.tsx";
-import { number, post, readJson, when } from "./common.tsx";
+import { number, post, RelativeTime, readJson, SkeletonRows } from "./common.tsx";
 
 // Settings, Alerts: where Prism365 sends word of something that needs attention, and when. A
 // destination is an email list on the operator's own relay or a webhook (Teams, Slack, or any
@@ -571,7 +571,12 @@ export function RuleList({
   onToggle: (id: string, enabled: boolean) => void;
   onDelete: (id: string) => void;
 }) {
-  if (rules.length === 0) return <p className="empty-data">No rules yet.</p>;
+  if (rules.length === 0)
+    return (
+      <p className="empty-data">
+        No rules yet. Add one below to hear about findings or audit numbers.
+      </p>
+    );
   return (
     <ul className="alert-list">
       {rules.map((rule) => (
@@ -666,7 +671,12 @@ export function DeliveryTable({
   destinations: readonly Destination[];
   rules: readonly AlertRule[];
 }) {
-  if (deliveries.length === 0) return <p className="empty-data">Nothing has been sent yet.</p>;
+  if (deliveries.length === 0)
+    return (
+      <p className="empty-data">
+        Nothing has been sent yet. Deliveries appear here once a rule or an export fires.
+      </p>
+    );
   return (
     <table className="audit-table alert-deliveries">
       <thead>
@@ -681,7 +691,9 @@ export function DeliveryTable({
       <tbody>
         {deliveries.map((record) => (
           <tr key={record.id}>
-            <td>{when(record.createdAt)}</td>
+            <td>
+              <RelativeTime value={record.createdAt} />
+            </td>
             <td>{deliverySource(record, rules)}</td>
             <td>
               {destinations.find((item) => item.id === record.destinationId)?.label ??
@@ -955,7 +967,7 @@ export function Alerts({ session }: { session: PrismSession }) {
         that use them and scheduled exports, and lists recent deliveries.
       </p>
     );
-  if (state === "loading") return <p className="empty-data">Loading alert settings.</p>;
+  if (state === "loading") return <SkeletonRows rows={5} label="Loading alert settings" />;
   if (state === "unavailable" || !overview)
     return (
       <p className="empty-data">

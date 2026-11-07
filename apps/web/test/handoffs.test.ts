@@ -21,6 +21,7 @@ import {
   readReceiptFile,
 } from "../src/Handoffs.tsx";
 import { PersonReceipts, PersonReceiptsPanel } from "../src/PersonReceipts.tsx";
+import { at, expectSkeleton, relativeCell } from "./markup.ts";
 
 // Invented accounts, tools and operators only.
 const handoffId = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
@@ -86,13 +87,17 @@ describe("Handoffs page", () => {
   });
 
   it("shows loading, then empty lists with what to do next", () => {
-    expect(view(null)).toContain("Loading handoffs…");
+    const loading = view(null);
+    expect(loading).toContain("Loading handoffs");
+    expect(loading).toContain("Loading receipts");
+    expect(loading).toContain("skeleton__row");
+    expect(loading).not.toContain("Loading…");
     const empty = view({ handoffs: [], receipts: [] });
     expect(empty).toContain("Nothing exported yet. Open an audit");
     expect(empty).toContain("No receipts yet.");
     const failed = view(null, { state: "idle" }, "Handoffs could not be loaded.");
     expect(failed).toContain("Handoffs could not be loaded.");
-    expect(failed).not.toContain("Loading handoffs…");
+    expect(failed).not.toContain("Loading handoffs");
   });
 
   it("lists exports and receipts with their counts and the handoff each answers", () => {
@@ -342,5 +347,48 @@ describe("Export for action", () => {
     expect(handoff.searchParams.get("columns")).toBe("person,days");
     handoff.searchParams.delete("columns");
     expect(handoff.searchParams.toString()).toBe(csv.searchParams.toString());
+  });
+});
+
+describe("the page speaks the shared visual language", () => {
+  const NOW = "2026-10-22T12:00:00.000Z";
+
+  it("shows when each export and receipt happened as words, with the exact moment on hover", () => {
+    const html = at(NOW, () => view(list));
+    // The export's own cell, the receipt's cell, and the export the receipt answers.
+    expect(html).toMatch(
+      new RegExp(
+        `<th scope="row" class="nowrap">${relativeCell("2026-10-21T10:00:00.000Z", "yesterday").source}</th>`,
+      ),
+    );
+    expect(html).toMatch(
+      new RegExp(
+        `<td class="nowrap">${relativeCell("2026-10-21T15:00:00.000Z", "21 h ago").source}<span class="muted-label"> by Jordan Vale`,
+      ),
+    );
+    expect(html).toMatch(
+      /Inactive accounts, exported <time dateTime="2026-10-21T10:00:00.000Z"[^>]*>yesterday<\/time>/,
+    );
+  });
+
+  it("keeps the moment a tool performed its actions as a date, because the report is the point", () => {
+    const html = at(NOW, () =>
+      renderToStaticMarkup(
+        createElement(ReceiptItemsTable, {
+          page: { receipt: receiptSummary, items: [], next: null },
+          loading: false,
+          onMore: null,
+        }),
+      ),
+    );
+    expect(html).toContain("run by Jordan Vale on ");
+    expect(html).not.toContain("<time");
+  });
+
+  it("draws still skeleton rows for every part that is loading", () => {
+    const html = view(null);
+    expectSkeleton(html, "Loading handoffs");
+    expect(html).toContain('<span class="visually-hidden">Loading receipts</span>');
+    expect(html).not.toContain("empty-data");
   });
 });

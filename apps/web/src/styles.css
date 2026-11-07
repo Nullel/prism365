@@ -67,6 +67,9 @@
   font-size: var(--text-md);
   line-height: 1.5;
   font-synthesis: none;
+  /* Digits are the same width everywhere: columns of numbers line up and a count that changes
+     does not shift what is beside it. Set here once, never per table or per page. */
+  font-variant-numeric: tabular-nums;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
@@ -637,6 +640,12 @@ summary:focus-visible {
   color: var(--text-3);
   font-size: var(--text-xs);
 }
+/* Short facts side by side with a hairline between them, in place of a punctuation mark. The
+   hairline rule is further down, shared with the person header. */
+.meta-line {
+  display: flex;
+  flex-wrap: wrap;
+}
 
 .button {
   display: inline-flex;
@@ -792,8 +801,6 @@ a.button {
 }
 
 /* Badges: one shape everywhere. */
-.finding-severity,
-.severity,
 .person-tag,
 .person-result,
 .data-chip {
@@ -811,14 +818,6 @@ a.button {
   line-height: 1;
   white-space: nowrap;
 }
-.finding-severity,
-.severity {
-  text-transform: capitalize;
-}
-.finding-severity--critical,
-.finding-severity--high,
-.severity--critical,
-.severity--high,
 .person-tag--alert,
 .person-result--failure,
 .person-result--mfaFailure,
@@ -826,20 +825,11 @@ a.button {
   color: var(--danger);
   background: var(--danger-soft);
 }
-.finding-severity--medium,
-.severity--medium,
 .person-result--interrupted {
   color: var(--warning);
   background: var(--warning-soft);
 }
-.finding-severity--low,
-.finding-severity--info,
-.severity--low,
-.severity--info {
-  color: var(--info);
-  background: var(--info-soft);
-}
-/* Severity dot and name: the one way severity looks outside a finding's own card. */
+/* Severity dot and name: the one way severity looks, on every page. */
 .sev {
   display: inline-flex;
   align-items: center;
@@ -847,7 +837,6 @@ a.button {
   color: var(--sev-color, var(--text-2));
   font-size: var(--text-xs);
   font-weight: 550;
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .sev--critical {
@@ -939,7 +928,6 @@ a.button {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
 }
 .signin-table th,
 .signin-table td {
@@ -1194,7 +1182,6 @@ a.button {
   color: var(--text);
   font-size: var(--text-2xl);
   font-weight: 650;
-  font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   line-height: 1.2;
 }
@@ -1246,7 +1233,6 @@ a.button {
   gap: 8px;
   font-size: var(--text-2xl);
   font-weight: 650;
-  font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   line-height: 1.2;
 }
@@ -1259,7 +1245,6 @@ a.button {
 .overview-tile__detail {
   color: var(--text-2);
   font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
 }
 .overview-tile__counts {
   display: flex;
@@ -1367,7 +1352,6 @@ a.button {
 .overview-row__when,
 .overview-row__due {
   flex: none;
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .overview-row__due--late {
@@ -1605,16 +1589,18 @@ a.button {
   border-radius: 50%;
   background: var(--text-3);
 }
-.activity-row__marker--high,
 .activity-row__marker--critical {
-  background: var(--danger);
+  background: var(--sev-critical);
+}
+.activity-row__marker--high {
+  background: var(--sev-high);
 }
 .activity-row__marker--medium {
-  background: #d9a441;
+  background: var(--sev-medium);
 }
 .activity-row__marker--info,
 .activity-row__marker--low {
-  background: var(--info);
+  background: var(--sev-low);
 }
 .activity-row__title {
   display: flex;
@@ -2010,19 +1996,6 @@ a.button {
 .signin-findings .eyebrow {
   display: none;
 }
-.signin-findings__empty {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-3);
-  font-size: var(--text-sm);
-}
-.signin-findings__empty svg {
-  width: 18px;
-}
-.signin-findings__empty p {
-  margin: 0;
-}
 
 /* Canary accounts */
 .canary-toggle {
@@ -2286,10 +2259,7 @@ a.button {
 .copy-button.is-failed {
   color: var(--danger);
 }
-/* A person's page. Numbers line up in every table and tile on it. */
-.person {
-  font-variant-numeric: tabular-nums;
-}
+/* A person's page. */
 /* The header: avatar, name and state on the left, the Actions menu on the right. It wraps on a
    narrow screen, with the menu under the identity. */
 .person-header {
@@ -2355,6 +2325,7 @@ a.button {
   font-size: var(--text-md);
   overflow-wrap: anywhere;
 }
+.meta-line > * + *,
 .person-header__role > span + span {
   margin-left: 10px;
   padding-left: 10px;
@@ -2496,7 +2467,6 @@ a.button {
   color: var(--text-2);
   background: var(--surface-sunken);
   font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
   line-height: 1.4;
 }
 /* Every panel stays on the page; the ones not showing are hidden. The column may shrink below
@@ -2543,7 +2513,6 @@ a.button {
   margin: 2px 0 0;
   font-size: var(--text-xl);
   font-weight: 650;
-  font-variant-numeric: tabular-nums;
 }
 .person-stats p {
   margin: 12px 0 0;
@@ -2676,7 +2645,6 @@ a.button {
 }
 .change-row__time {
   color: var(--text-3);
-  font-variant-numeric: tabular-nums;
 }
 .change-row__note {
   display: block;
@@ -3084,7 +3052,6 @@ a.button {
   border-collapse: collapse;
   table-layout: fixed;
   font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
 }
 .catalog-table th,
 .catalog-table td {
@@ -3325,15 +3292,14 @@ button.audit-tile:hover {
   color: var(--text);
   font-size: var(--text-2xl);
   font-weight: 650;
-  font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   line-height: 1.2;
 }
 .audit-tile--warning .audit-tile__value {
-  color: var(--warning);
+  color: var(--sev-medium);
 }
 .audit-tile--critical .audit-tile__value {
-  color: var(--danger);
+  color: var(--sev-critical);
 }
 .audit-tile--good .audit-tile__value {
   color: var(--success);
@@ -3403,7 +3369,6 @@ button.audit-tile:hover {
   margin: 12px 0 4px;
   color: var(--text-3);
   font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
 }
 .audit-scroll {
   overflow-x: auto;
@@ -3412,7 +3377,6 @@ button.audit-tile:hover {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
 }
 .audit-table td,
 .audit-table thead th,
@@ -3485,14 +3449,6 @@ button.audit-tile:hover {
 .audit-empty-state {
   padding: 12px 0;
 }
-.audit-empty-run {
-  padding: 14px 16px;
-}
-.audit-empty-run p {
-  margin: 0;
-  color: var(--text-2);
-  font-size: var(--text-sm);
-}
 
 .audit-schedule {
   display: grid;
@@ -3538,7 +3494,6 @@ button.audit-tile:hover {
   margin: 0;
   color: var(--text-2);
   font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
 }
 .audit-trend__chart {
   display: block;
@@ -3571,7 +3526,6 @@ button.audit-tile:hover {
   gap: 8px;
   color: var(--text-3);
   font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
 }
 .audit-trend .muted-label {
   margin: 0;
@@ -3582,7 +3536,6 @@ button.audit-tile:hover {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
 }
 .audit-trend .audit-trend__table th,
 .audit-trend .audit-trend__table td {
@@ -3947,21 +3900,19 @@ p.week-sub {
   font-size: var(--text-sm);
 }
 .week-tile--critical {
-  border-left-color: var(--danger);
+  border-left-color: var(--sev-critical);
 }
 .week-tile--warning {
-  border-left-color: var(--warning);
+  border-left-color: var(--sev-medium);
 }
 .week-tile--good {
   border-left-color: var(--success);
 }
 .week-tile__values {
   color: var(--text-3);
-  font-variant-numeric: tabular-nums;
 }
 .week-tile strong {
   text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 .week-part {
   display: grid;

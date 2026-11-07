@@ -1,4 +1,5 @@
 import { Fragment, isValidElement, type ReactNode } from "react";
+import { expect, vi } from "vitest";
 
 // Helpers for tests that look at what a component draws without a browser: the host elements it
 // produces as a plain tree, and a check that no link or button holds another one.
@@ -64,4 +65,35 @@ export function nestedInteractive(html: string): number {
     }
   }
   return nested;
+}
+
+// Runs a render with the clock fixed, so a time shown as words ("5 min ago") reads the same on
+// every day the test runs. Only Date is faked: nothing in a render waits on a timer.
+export function at<T>(now: string, render: () => T): T {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(now));
+  try {
+    return render();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+// A date shown as words: a time element that holds the exact moment and says `words`.
+export function relativeCell(iso: string, words: string): RegExp {
+  return new RegExp(`<time dateTime="${iso}" title="[^"]+">${words}</time>`);
+}
+
+// Severity as the shared dot and name, with a count when it has one.
+export function severityDot(severity: string, label: string): string {
+  return `<span class="sev sev--${severity}"><span class="sev__dot" aria-hidden="true"></span>${label}</span>`;
+}
+
+// What a loading page draws: still grey rows, a label for assistive technology, and never text
+// that says Loading with an ellipsis.
+export function expectSkeleton(html: string, label: string) {
+  expect(html).toContain("skeleton__row");
+  expect(html).toContain('aria-busy="true"');
+  expect(html).toContain(`<span class="visually-hidden">${label}</span>`);
+  expect(html).not.toContain("Loading…");
 }

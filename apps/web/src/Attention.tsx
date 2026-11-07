@@ -10,7 +10,7 @@ import {
   type SystemAlert,
 } from "@prism365/contracts";
 import { useCallback, useEffect, useState } from "react";
-import { day, post, readJson, when } from "./common.tsx";
+import { day, RelativeTime, post, readJson, SeverityDot, SkeletonRows } from "./common.tsx";
 
 // Notification center: the list the Overview reads, the Notifications inbox, and its settings.
 // Microsoft's status and labels are shown as Microsoft's; the administrator's own state (read,
@@ -59,7 +59,7 @@ export function useAttention(
   return { list, error, reload: load };
 }
 
-function AttentionCard({
+export function AttentionCard({
   item,
   session,
   onChanged,
@@ -91,9 +91,7 @@ function AttentionCard({
             <span className="visually-hidden">Unread</span>
           </span>
         ) : null}
-        <span className={`finding-severity finding-severity--${item.severity}`}>
-          {item.severity}
-        </span>
+        <SeverityDot severity={item.severity} />
         {item.services.slice(0, 3).map((service) => (
           <span key={service} className="attention__service">
             {service}
@@ -131,21 +129,26 @@ function AttentionCard({
       ) : null}
       {item.changeNote ? (
         <p className="attention__change">
-          <strong>Changed {when(item.changedAt)}:</strong> {item.changeNote}
+          <strong>
+            Changed <RelativeTime value={item.changedAt} />:
+          </strong>{" "}
+          {item.changeNote}
         </p>
       ) : null}
       <p className="attention__summary">{item.provider.impact ?? item.summary}</p>
-      <p className="incident__meta">
-        {item.ref} · Microsoft updated {when(item.provider.updatedAt)} · You:{" "}
-        {reviewLabels[item.review.state]}
-        {item.muted ? ", muted" : ""}
+      <p className="incident__meta meta-line">
+        <span>{item.ref}</span>
+        <span>
+          Microsoft updated <RelativeTime value={item.provider.updatedAt} />
+        </span>
+        <span>
+          You: {reviewLabels[item.review.state]}
+          {item.muted ? ", muted" : ""}
+        </span>
         {item.link ? (
-          <>
-            {" · "}
-            <a href={item.link} target="_blank" rel="noreferrer">
-              Open in Microsoft 365 admin center
-            </a>
-          </>
+          <a href={item.link} target="_blank" rel="noreferrer">
+            Open in Microsoft 365 admin center
+          </a>
         ) : null}
       </p>
       {error ? (
@@ -206,7 +209,7 @@ function AttentionCard({
   );
 }
 
-function SystemAlertRow({
+export function SystemAlertRow({
   alert,
   onNavigate,
 }: {
@@ -215,14 +218,17 @@ function SystemAlertRow({
 }) {
   return (
     <li className="system-alert">
-      <span className={`finding-severity finding-severity--${alert.severity}`}>
-        {alert.severity}
-      </span>
+      <SeverityDot severity={alert.severity} />
       <div>
         <strong>{alert.title}</strong>
         <p>
           {alert.detail}
-          {alert.observedAt ? ` Last check ${when(alert.observedAt)}.` : ""}
+          {alert.observedAt ? (
+            <>
+              {" "}
+              Last check <RelativeTime value={alert.observedAt} />.
+            </>
+          ) : null}
         </p>
       </div>
       {alert.action ? (
@@ -250,6 +256,14 @@ const filters = [
   ["all", "All"],
   ["muted", "Muted"],
 ] as const;
+
+// What an empty inbox means under each filter, and where its items would come from.
+export const emptyInbox: Record<(typeof filters)[number][0], string> = {
+  unread: "No unread notifications. New incidents and meaningful changes appear here.",
+  open: "No open notifications. Incidents and Message center posts that need you appear here.",
+  all: "No notifications yet. Microsoft incidents and Message center posts appear here once they are collected.",
+  muted: "No muted notifications. Mute one from its card and it moves here.",
+};
 
 export function Notifications({
   session,
@@ -332,13 +346,9 @@ export function Notifications({
             </ul>
           ) : null}
           {!list ? (
-            <p className="empty-data">Loading…</p>
+            <SkeletonRows rows={5} label="Loading notifications" />
           ) : list.items.length === 0 ? (
-            <p className="empty-data">
-              {filter === "unread"
-                ? "No unread notifications. New incidents and meaningful changes appear here."
-                : "Nothing here."}
-            </p>
+            <p className="empty-data">{emptyInbox[filter]}</p>
           ) : (
             <>
               <ul className="attention-list">
@@ -395,7 +405,11 @@ function NotificationSettings({ session }: { session: PrismSession }) {
     return () => controller.abort();
   }, []);
   if (!settings || !draft)
-    return <section className="panel notification-settings">{error || "Loading…"}</section>;
+    return (
+      <section className="panel notification-settings">
+        {error ? <p className="form-error">{error}</p> : <SkeletonRows label="Loading settings" />}
+      </section>
+    );
   const services = [...new Set([...settings.services, ...draft.services])].sort();
   async function save() {
     if (!draft) return;

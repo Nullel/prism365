@@ -26,9 +26,9 @@ import {
   post,
   RelativeTime,
   readJson,
+  SkeletonRows,
   when,
 } from "./common.tsx";
-import { ShieldIcon } from "./icons.tsx";
 import { PersonChanges } from "./PersonChanges.tsx";
 import { PersonActions, PersonHeader, personAddress } from "./PersonHeader.tsx";
 import { PersonReceipts } from "./PersonReceipts.tsx";
@@ -211,7 +211,7 @@ function PeopleList({ onSelect }: { onSelect: (userId: string) => void }) {
           </p>
         ) : null}
         {!list ? (
-          <p className="empty-data">Loading…</p>
+          <SkeletonRows rows={8} label="Loading people" />
         ) : items.length === 0 ? (
           <p className="empty-data">
             {query
@@ -263,7 +263,9 @@ export function PersonRow({
           onOpen={() => onSelect(item.userId)}
         />
       </th>
-      <td>{when(item.lastSignIn)}</td>
+      <td>
+        <RelativeTime value={item.lastSignIn} />
+      </td>
       <td>{number.format(item.signIns)}</td>
       <td>{number.format(item.failures)}</td>
       <td>{number.format(item.countries)}</td>
@@ -692,10 +694,10 @@ export function PersonProfileView({
         ) : null}
 
         {record && !history && record.findings.length === 0 ? (
-          <div className="signin-findings__empty">
-            <ShieldIcon />
-            <p>Nothing has been flagged about this person.</p>
-          </div>
+          <p className="empty-data">
+            Nothing has been flagged about this person. Findings appear here when the rules flag
+            something.
+          </p>
         ) : null}
       </PersonTabPanel>
 
@@ -906,9 +908,11 @@ export function PersonProfileView({
             </fieldset>
           </div>
           {signins === null ? (
-            <p className="empty-data">Loading sign-ins…</p>
+            <SkeletonRows rows={6} label="Loading sign-ins" />
           ) : signins.length === 0 ? (
-            <p className="empty-data">No stored sign-ins match.</p>
+            <p className="empty-data">
+              No stored sign-ins match. They appear here once collection reads one for this person.
+            </p>
           ) : (
             <>
               <table>

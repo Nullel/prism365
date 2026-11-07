@@ -201,9 +201,7 @@ export function FindingItem({
   return (
     <article className="finding">
       <div className="finding__topline">
-        <span className={`finding-severity finding-severity--${finding.severity}`}>
-          {finding.severity}
-        </span>
+        <SeverityDot severity={finding.severity} />
         {!showSubject ? null : finding.subject.kind === "person" && onOpenPerson ? (
           <button
             className="finding__subject finding__subject--link"
@@ -221,9 +219,17 @@ export function FindingItem({
       </div>
       <h3>{finding.title}</h3>
       <p>{finding.summary}</p>
-      <p className="finding__meta">
-        Last seen {when(finding.lastSeen)} · first seen {when(finding.firstSeen)} ·{" "}
-        {finding.occurrences} {finding.occurrences === 1 ? "occurrence" : "occurrences"}
+      <p className="finding__meta meta-line">
+        <span>
+          Last seen <RelativeTime value={finding.lastSeen} />
+        </span>
+        <span>
+          First seen <RelativeTime value={finding.firstSeen} />
+        </span>
+        <span>
+          {number.format(finding.occurrences)}{" "}
+          {finding.occurrences === 1 ? "occurrence" : "occurrences"}
+        </span>
       </p>
       <Evidence finding={finding} />
       <div className="finding__actions">
