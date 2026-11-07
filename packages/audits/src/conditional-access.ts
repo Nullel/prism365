@@ -264,7 +264,7 @@ function userIds(list: readonly string[]): string[] {
   return [...new Set(list.filter((item) => GUID.test(item)).map(lower))];
 }
 
-function requiresMfa(policy: Policy): boolean {
+export function requiresMfa(policy: Policy): boolean {
   const grant = policy.grantControls;
   return has(grant.builtInControls, "mfa") || grant.authenticationStrength !== null;
 }

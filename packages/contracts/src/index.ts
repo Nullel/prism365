@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { personHistorySchema } from "./people.ts";
+import { combinedRisksOkSchema } from "./person-access.ts";
 
 export * from "./attention.ts";
 export * from "./audit-review.ts";
@@ -336,6 +337,9 @@ export type FindingList = z.infer<typeof findingListSchema>;
 export const personRecordSchema = z.object({
   history: personHistorySchema.nullable(),
   findings: z.array(findingSchema),
+  // What the latest Combined risks run said about the account, present only when that audit has a
+  // run. The page header's chip reads it, so it shows without opening the Access tab.
+  combinedRisks: combinedRisksOkSchema.optional(),
 });
 export type PersonRecord = z.infer<typeof personRecordSchema>;
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyPerson, type Person } from "../src/combined-risks-inputs.ts";
 import { type MfaPolicy, mfaPolicies, mfaReach } from "../src/combined-risks-reach.ts";
+import { policySchema } from "../src/conditional-access.ts";
 import { RULES, type RuleEnv, type RuleId } from "../src/combined-risks-rules.ts";
 import { daysAgo, finding, now } from "./combined-risks-support.ts";
 
@@ -29,19 +30,55 @@ const helpdesk = [
   { role: "Helpdesk Administrator", privileged: false, held: "Permanent", templateId: null },
 ];
 
-const policy = (over: Partial<MfaPolicy> = {}): MfaPolicy => ({
-  id: "p1",
-  name: "Require MFA for everyone",
-  includeUsers: ["all"],
-  excludeUsers: [],
-  includeGroups: [],
-  excludeGroups: [],
-  includeRoles: [],
-  excludeRoles: [],
-  includesGuests: false,
-  excludesGuests: false,
-  ...over,
-});
+// A flat description of the "Users" part of an MFA policy, built into the real parsed policy so
+// the tests exercise the same shape the audit reads from Microsoft.
+interface PolicySpec {
+  id: string;
+  name: string;
+  includeUsers: string[];
+  excludeUsers: string[];
+  includeGroups: string[];
+  excludeGroups: string[];
+  includeRoles: string[];
+  excludeRoles: string[];
+  includesGuests: boolean;
+  excludesGuests: boolean;
+}
+const guests = { guestOrExternalUserTypes: "b2bCollaborationGuest" };
+const policy = (over: Partial<PolicySpec> = {}): MfaPolicy => {
+  const spec: PolicySpec = {
+    id: "p1",
+    name: "Require MFA for everyone",
+    includeUsers: ["all"],
+    excludeUsers: [],
+    includeGroups: [],
+    excludeGroups: [],
+    includeRoles: [],
+    excludeRoles: [],
+    includesGuests: false,
+    excludesGuests: false,
+    ...over,
+  };
+  const parsed = policySchema.parse({
+    id: spec.id,
+    displayName: spec.name,
+    state: "enabled",
+    conditions: {
+      users: {
+        includeUsers: spec.includeUsers,
+        excludeUsers: spec.excludeUsers,
+        includeGroups: spec.includeGroups,
+        excludeGroups: spec.excludeGroups,
+        includeRoles: spec.includeRoles,
+        excludeRoles: spec.excludeRoles,
+        includeGuestsOrExternalUsers: spec.includesGuests ? guests : null,
+        excludeGuestsOrExternalUsers: spec.excludesGuests ? guests : null,
+      },
+    },
+    grantControls: { operator: "OR", builtInControls: ["mfa"] },
+  });
+  return { id: spec.id, name: spec.name, policy: parsed };
+};
 
 describe("the rule list", () => {
   it("has nine rules with the agreed severities", () => {
@@ -526,6 +563,9 @@ describe("Conditional Access reach", () => {
     ]);
     expect(read.policies.map((item) => item.id)).toEqual(["enabled", "strength"]);
     expect(read.skipped).toBe(1);
-    expect(read.policies[0]).toMatchObject({ includeUsers: ["all"], excludeGroups: ["g-1"] });
+    expect(read.policies[0]?.policy.conditions.users).toMatchObject({
+      includeUsers: ["All"],
+      excludeGroups: ["G-1"],
+    });
   });
 });

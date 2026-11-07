@@ -17,6 +17,7 @@ import {
   type AccessMembership,
   type AccessPolicy,
   MAX_ACCESS_AUDIT_ROWS,
+  COMBINED_RISKS_AUDIT_ID,
   MAX_ACCESS_MEMBERSHIPS,
   type PersonAccess,
   type PolicyReason,
@@ -29,6 +30,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   classifyMembership,
+  combinedRisksFor,
   type DirectoryObject,
   directoryObjectSchema,
   ownedEntries,
@@ -331,7 +333,33 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
         audits = { status: "failed", message: "The stored audit results could not be read." };
       }
 
-    return personAccessSchema.parse({ memberships, owned, conditionalAccess, audits });
+    let combinedRisks: PersonAccess["combinedRisks"];
+    if (!modules)
+      combinedRisks = {
+        status: "failed",
+        message:
+          "Audit results are kept with module storage, which this installation does not have.",
+      };
+    else
+      try {
+        const run = await modules.database.tenant(session.tenantId, (sql) =>
+          latestSucceededRun(sql, session.tenantId, COMBINED_RISKS_AUDIT_ID),
+        );
+        combinedRisks = run ? combinedRisksFor(run, userId) : { status: "no_run" };
+      } catch {
+        combinedRisks = {
+          status: "failed",
+          message: "The stored Combined risks result could not be read.",
+        };
+      }
+
+    return personAccessSchema.parse({
+      combinedRisks,
+      memberships,
+      owned,
+      conditionalAccess,
+      audits,
+    });
   });
 
   async function storedAudits(

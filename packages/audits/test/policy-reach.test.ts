@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { policyReach, policySchema } from "../src/index.ts";
+import { mfaPolicies, mfaReach, policyReach, policySchema } from "../src/index.ts";
 
 // Whether a Conditional Access policy reaches one person, from its "Users" part alone. Synthetic
 // ids only.
@@ -148,5 +148,37 @@ describe("policyReach", () => {
         userType: null,
       }).effect,
     ).toBe("none");
+  });
+});
+
+// The Combined risks audit decides reach with policyReach too, so the two cannot drift apart.
+describe("policyReach and the Combined risks check agree", () => {
+  const role = "cccccccc-0000-4000-8000-000000000001";
+  const group = "bbbbbbbb-0000-4000-8000-000000000001";
+  const subject = { id: person.id, groupIds: [group], roleIds: [role], guest: false };
+  const cases: [string, Record<string, unknown>, "applies" | "excluded"][] = [
+    ["an include by group", { includeUsers: [], includeGroups: [group] }, "applies"],
+    ["an exclude by group", { includeUsers: ["All"], excludeGroups: [group] }, "excluded"],
+    ["an exclude by role", { includeUsers: ["All"], excludeRoles: [role] }, "excluded"],
+  ];
+
+  it.each(cases)("%s", (_name, users, effect) => {
+    const raw = {
+      id: "policy-1",
+      displayName: "A policy",
+      state: "enabled",
+      conditions: { users },
+      grantControls: { operator: "OR", builtInControls: ["mfa"] },
+    };
+    const reach = policyReach(policySchema.parse(raw), {
+      ...person,
+      groupIds: subject.groupIds,
+      roleTemplateIds: subject.roleIds,
+    });
+    const { policies } = mfaPolicies([raw]);
+    expect(reach.effect).toBe(effect);
+    expect(mfaReach(subject, policies)).toEqual(
+      effect === "applies" ? { state: "covered" } : { state: "left-out", policy: "A policy" },
+    );
   });
 });

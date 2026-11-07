@@ -1,4 +1,4 @@
-import type { Severity } from "@prism365/contracts";
+import type { CombinedRisksOk, Severity } from "@prism365/contracts";
 import type { ReactNode } from "react";
 import { ActionsMenu, type MenuItem } from "./ActionsMenu.tsx";
 import { canaryExplanation, type PersonCanary } from "./Canary.tsx";
@@ -77,17 +77,38 @@ export function severityCounts(
     .filter((entry) => entry.count > 0);
 }
 
+// The chip for a person who trips a combined risk: how many rules, in the tone of the highest one.
+// null when they trip none, so a clean account shows nothing extra. Critical and high read as a
+// problem, medium as a notice.
+export function combinedRiskChip(
+  combined: Pick<CombinedRisksOk, "severity" | "rules"> | null,
+): { text: string; tone: "alert" | "notice"; title: string } | null {
+  if (!combined || combined.severity === null || combined.rules.length === 0) return null;
+  const count = combined.rules.length;
+  return {
+    text: `${count} combined ${count === 1 ? "risk" : "risks"}`,
+    tone: combined.severity === "medium" ? "notice" : "alert",
+    title: `Highest severity: ${combined.severity}. Opens the Access tab.`,
+  };
+}
+
 export function PersonStatusChips({
   account,
   openSeverities,
   canary,
+  combined = null,
+  onOpenAccess,
 }: {
   // null until the directory has answered.
   account: PersonAccount | null;
   // The severity of each open finding; null until the person's record has loaded.
   openSeverities: readonly Severity[] | null;
   canary: boolean;
+  // The latest Combined risks answer for this person; null when there is none to show.
+  combined?: Pick<CombinedRisksOk, "severity" | "rules"> | null;
+  onOpenAccess?: () => void;
 }) {
+  const chip = combinedRiskChip(combined);
   return (
     <div className="person-tags">
       {account ? (
@@ -114,6 +135,16 @@ export function PersonStatusChips({
         <span className="person-tag person-tag--notice" title="Marked as a canary account">
           Canary
         </span>
+      ) : null}
+      {chip ? (
+        <button
+          type="button"
+          className={`person-tag person-tag--${chip.tone} person-tag--button`}
+          title={chip.title}
+          onClick={onOpenAccess}
+        >
+          {chip.text}
+        </button>
       ) : null}
       {openSeverities === null ? null : openSeverities.length === 0 ? (
         <span className="person-tag person-tag--ok">Nothing open</span>
@@ -219,6 +250,8 @@ export function PersonHeader({
   account,
   openSeverities,
   canary,
+  combined = null,
+  onOpenAccess,
   actions,
   below,
 }: {
@@ -230,6 +263,8 @@ export function PersonHeader({
   account: PersonAccount | null;
   openSeverities: readonly Severity[] | null;
   canary: boolean;
+  combined?: Pick<CombinedRisksOk, "severity" | "rules"> | null;
+  onOpenAccess?: () => void;
   // The Actions menu.
   actions: ReactNode;
   // What a choice in the menu asks next, such as the canary confirmation.
@@ -264,7 +299,13 @@ export function PersonHeader({
           {!principal && !jobTitle && !department ? (
             <p className="person-header__role">No directory details</p>
           ) : null}
-          <PersonStatusChips account={account} openSeverities={openSeverities} canary={canary} />
+          <PersonStatusChips
+            account={account}
+            openSeverities={openSeverities}
+            canary={canary}
+            combined={combined}
+            {...(onOpenAccess ? { onOpenAccess } : {})}
+          />
         </div>
       </div>
       <div className="person-header__actions">{actions}</div>

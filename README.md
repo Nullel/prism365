@@ -32,7 +32,10 @@ stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator'
 #### Access tab
 
 The person page's Access tab answers "what can this account reach?" in one place. It opens only
-when you select it, and shows each section with where it came from and when. Groups and roles
+when you select it, and shows each section with where it came from and when. Combined risks comes
+first: the rules the account trips in the latest Combined risks run, with the reasons, the age of
+the run and any input that run could not use, and the person header shows a chip such as "2
+combined risks" that opens this tab. Groups and roles
 lists the groups the account is in, direct or nested, by kind, with Microsoft 365 groups marked
 "Group mailbox", the directory roles it holds now and its administrative units; objects Microsoft
 hides from the signed-in administrator are listed as "Hidden by Microsoft" with their id. The
