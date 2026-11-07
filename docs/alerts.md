@@ -173,7 +173,10 @@ count towards the 50 and can be deleted. Scheduled exports are kept the same way
 - An audit number: one of an audit's tiles going above or below a value, or moving by at least a
   value, against its previous comparable run. Comparable means what the trend chart means: the
   same audit version, the same scope, and complete. A partial run never fires a rule. Above and
-  below fire when the number crosses the line, not on every run past it.
+  below fire when the number crosses the line, not on every run past it. The Combined risks audit
+  needs no new rule: an audit-number rule on its tile "Critical combined risks", above 0, alerts
+  when a new critical combination appears (run the audit after the audits it joins, or its numbers
+  trail theirs by a run).
 
 Each rule has a quiet period, 5 minutes to 7 days: at most one alert per rule and subject in it.
 The subject is the finding for finding, directory change and gap alerts, the tile for an audit

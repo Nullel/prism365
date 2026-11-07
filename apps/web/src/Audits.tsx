@@ -38,6 +38,7 @@ import {
   post,
   RelativeTime,
   readJson,
+  SeverityDot,
   SkeletonRows,
   when,
 } from "./common.tsx";
@@ -753,6 +754,14 @@ export function rowEmails(columns: readonly AuditColumn[], rows: readonly AuditR
   return emails;
 }
 
+// The severity column of the Combined risks audit: its three names shown the way a finding shows
+// its severity, so a critical account looks like a critical finding.
+const severityByName = {
+  Critical: "critical",
+  High: "high",
+  Medium: "medium",
+} as const;
+
 const alertValues = new Set([
   "Disabled",
   "Not accepted",
@@ -810,6 +819,10 @@ function CellValue({
   }
   if (typeof cell === "number")
     return <span className={cell < 0 ? "audit-negative" : undefined}>{number.format(cell)}</span>;
+  if (column.kind === "enum" && column.key === "severity" && typeof cell === "string") {
+    const severity = severityByName[cell as keyof typeof severityByName];
+    if (severity) return <SeverityDot severity={severity} />;
+  }
   if (column.kind === "enum" && typeof cell === "string" && alertValues.has(cell))
     return <span className="person-tag person-tag--alert">{cell}</span>;
   if (column.kind === "text" && isEmail(cell))

@@ -493,6 +493,7 @@ describe("handoff export", () => {
         "accounts.inactive",
         "accounts.passwords",
         "guests.review",
+        "identity.combined-risks",
         "identity.risky-users",
         "licenses.reclaim",
         "mfa.registration",

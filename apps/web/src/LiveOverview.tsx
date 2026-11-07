@@ -4,6 +4,8 @@ import {
   type AttentionSource,
   type AuditCatalog,
   auditCatalogSchema,
+  COMBINED_RISKS_AUDIT_ID,
+  COMBINED_RISKS_TILES,
   type Finding,
   findingListSchema,
   type ModuleList,
@@ -269,7 +271,7 @@ export function microsoftSummary(list: AttentionList): MicrosoftSummary {
 // Tiles
 // ---------------------------------------------------------------------------------------------
 
-export type TileId = "findings" | "audits" | "signins" | "collection" | "microsoft";
+export type TileId = "findings" | "audits" | "signins" | "collection" | "microsoft" | "combined";
 
 export interface Tile {
   id: TileId;
@@ -280,6 +282,10 @@ export interface Tile {
   value: string;
   // A coloured dot before the value, for the one tile whose value is a state and not a number.
   dot: "good" | "warning" | null;
+  // The value is words and not a figure, such as "Not run yet", and is set smaller.
+  muted: boolean;
+  // The audit the tile opens, when it opens one and not a page.
+  audit: string | null;
   detail: ReactNode;
 }
 
@@ -293,7 +299,7 @@ const collectionLabels: Record<CollectionName, string> = {
 };
 
 function tile(id: TileId, label: string, view: WorkspaceView, status: SourceStatus): Tile {
-  return { id, label, view, status, value: "", dot: null, detail: null };
+  return { id, label, view, status, value: "", dot: null, muted: false, audit: null, detail: null };
 }
 
 export function buildTiles(data: OverviewData, now: number): Tile[] {
@@ -391,7 +397,47 @@ export function buildTiles(data: OverviewData, now: number): Tile[] {
     }
   }
 
-  return [findings, audits, signins, collection, microsoft];
+  return [findings, audits, signins, collection, microsoft, combinedRisksTile(data.audits)];
+}
+
+// Critical and high combined risks from the latest run of that audit, or what stands in the way of
+// one: it never ran, it is running, or it failed. The counts are the tiles the audit itself
+// publishes, found by the labels both sides share.
+function combinedRisksTile(source: Source<AuditCatalog>): Tile {
+  const item = tile("combined", "Combined risks", "audits", statusOf(source));
+  item.audit = COMBINED_RISKS_AUDIT_ID;
+  if (item.status !== "ready" || !source.value) return item;
+  const run =
+    source.value.audits.find((entry) => entry.definition.id === COMBINED_RISKS_AUDIT_ID)?.lastRun ??
+    null;
+  if (!run) {
+    item.value = "Not run yet";
+    item.muted = true;
+    item.detail = "Run it on the Audits page";
+  } else if (run.status === "running") {
+    item.value = "Running";
+    item.muted = true;
+    item.detail = "Joining the other audits";
+  } else if (run.status === "failed") {
+    item.value = "Failed";
+    item.muted = true;
+    item.detail = "The last run did not finish";
+  } else {
+    const count = (label: string) => run.summary.find((entry) => entry.label === label)?.value ?? 0;
+    const critical = count(COMBINED_RISKS_TILES.critical);
+    const high = count(COMBINED_RISKS_TILES.high);
+    item.value = number.format(critical + high);
+    item.detail =
+      critical + high === 0 ? (
+        "None critical or high"
+      ) : (
+        <span className="overview-tile__counts">
+          {critical > 0 ? <SeverityDot severity="critical" count={critical} /> : null}
+          {high > 0 ? <SeverityDot severity="high" count={high} /> : null}
+        </span>
+      );
+  }
+  return item;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -435,7 +481,13 @@ function TileButton({ item, onOpen }: { item: Tile; onOpen: () => void }) {
         </>
       ) : (
         <>
-          <span className="overview-tile__value">
+          <span
+            className={
+              item.muted
+                ? "overview-tile__value overview-tile__value--muted"
+                : "overview-tile__value"
+            }
+          >
             {item.dot ? (
               <span className={`tile-dot tile-dot--${item.dot}`} aria-hidden="true" />
             ) : null}
@@ -630,11 +682,14 @@ export function OverviewView({
   data,
   now,
   onNavigate,
+  onOpenAudit,
   onOpenPerson,
 }: {
   data: OverviewData;
   now: number;
   onNavigate: (view: WorkspaceView) => void;
+  // Opens one audit. Without it a tile that belongs to an audit opens the Audits page instead.
+  onOpenAudit?: (auditId: string) => void;
   onOpenPerson: (userId: string) => void;
 }) {
   return (
@@ -643,7 +698,12 @@ export function OverviewView({
       <ul className="overview-tiles" aria-label="Summary">
         {buildTiles(data, now).map((item) => (
           <li key={item.id}>
-            <TileButton item={item} onOpen={() => onNavigate(item.view)} />
+            <TileButton
+              item={item}
+              onOpen={() =>
+                item.audit && onOpenAudit ? onOpenAudit(item.audit) : onNavigate(item.view)
+              }
+            />
           </li>
         ))}
       </ul>
@@ -673,10 +733,12 @@ export function LiveOverview({
   session,
   onOpenPerson,
   onNavigate,
+  onOpenAudit,
 }: {
   session: PrismSession;
   onOpenPerson: (userId: string) => void;
   onNavigate: (view: WorkspaceView) => void;
+  onOpenAudit?: (auditId: string) => void;
 }) {
   const [data, setData] = useState<Omit<OverviewData, "attention">>(emptyOverviewData);
   const { list, error } = useAttention(session, "open");
@@ -720,6 +782,7 @@ export function LiveOverview({
       data={{ ...data, attention: { value: list, error: error || null } }}
       now={Date.now()}
       onNavigate={onNavigate}
+      {...(onOpenAudit ? { onOpenAudit } : {})}
       onOpenPerson={onOpenPerson}
     />
   );

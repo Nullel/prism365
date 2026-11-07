@@ -1192,10 +1192,10 @@ a.button {
   display: grid;
   gap: 16px;
 }
-/* Summary tiles: five buttons, each opening the page that owns the figure. */
+/* Summary tiles: six buttons, each opening the page or audit that owns the figure. */
 .overview-tiles {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   margin: 0;
   padding: 0;
@@ -2764,7 +2764,8 @@ a.button {
   }
 }
 
-@media (max-width: 1100px) {
+/* Six tiles stop fitting a row below about 1280px; three to a row keeps both rows full. */
+@media (max-width: 1280px) {
   .overview-tiles {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2776,13 +2777,10 @@ a.button {
   }
 }
 
-/* A phone: two tiles to a row with the odd one across. */
+/* A phone: two tiles to a row, three rows. */
 @media (max-width: 560px) {
   .overview-tiles {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .overview-tiles > li:last-child {
-    grid-column: 1 / -1;
   }
   .overview-tile {
     padding: 12px;

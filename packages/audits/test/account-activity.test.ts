@@ -965,6 +965,8 @@ describe("Account activity", () => {
       expect(find(result.rows, "u-active").cells).toMatchObject({
         groups: 2,
         groupNames: ["Staff", "Laboratory"],
+        // The same groups' directory IDs, which Combined risks matches to Conditional Access.
+        groupIds: ["g-1", "g-2"],
         roles: 1,
         roleNames: ["Helpdesk Administrator"],
         adminUnits: 1,
@@ -988,6 +990,7 @@ describe("Account activity", () => {
       expect(find(result.rows, "u-31").cells).toMatchObject({
         groups: null,
         groupNames: null,
+        groupIds: null,
         roles: null,
         licenseGroups: null,
       });

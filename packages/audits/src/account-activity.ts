@@ -407,6 +407,14 @@ const columns: Column[] = [
     empty: NOT_READ,
   },
   {
+    key: "groupIds",
+    label: "Group IDs",
+    kind: "list",
+    hidden: true,
+    help: "The directory IDs of the same direct groups. The Combined risks audit matches them to Conditional Access policies.",
+    empty: NOT_READ,
+  },
+  {
     key: "roles",
     label: "Directory roles",
     kind: "number",
@@ -705,6 +713,7 @@ export const accountActivityAudit: Audit = {
           licenseGroups,
           groups: member ? member.groups.length : null,
           groupNames: member ? member.groups.map((group) => group.name) : null,
+          groupIds: member ? member.groups.map((group) => group.id) : null,
           roles: member ? roles.length : null,
           roleNames: member ? roles : null,
           adminUnits: member ? member.units : null,
