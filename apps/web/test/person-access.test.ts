@@ -364,10 +364,11 @@ describe("the Access tab", () => {
     expect(html).toContain('href="#/access"');
   });
 
-  it("says shared mailbox permissions cannot be read", () => {
-    expect(draw(answer())).toContain(
-      "Full Access and Send As on shared mailboxes cannot be read through Microsoft's read-only APIs",
+  it("waits for its own answer in the Shared mailboxes section", () => {
+    const html = renderToStaticMarkup(
+      createElement(PersonAccessView, { access: answer(), error: "" }),
     );
+    expect(html).toContain('<span class="visually-hidden">Reading shared mailbox access</span>');
   });
 
   it("is written without em dashes, middle dots or exclamation marks", () => {

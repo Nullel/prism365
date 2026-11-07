@@ -519,6 +519,43 @@ Inactivity needs Microsoft Entra ID P1 or P2 and a role such as Reports Reader, 
 or Global Reader; risky users need Entra ID P2. Results are kept (the last 10 successful runs
 per audit) and can be exported as CSV. See `docs/audits.md`.
 
+## Shared mailbox access
+
+Microsoft has no read-only API for Full Access, Send As or Send on Behalf, so Prism365 reads them
+from a file you export yourself (ADR-0012). Prism365 never calls Exchange and never holds an
+Exchange credential; you run the export in your own session, and only Get- cmdlets run.
+
+1. On the Microsoft access page, under Mailbox access, download `Export-MailboxAccess.ps1`. A
+   self-hosted install serves its own copy at `/scripts/Export-MailboxAccess.ps1`. The script runs
+   with your Exchange session, so check it before you run it: read it (it is short), and compare
+   `Get-FileHash .\Export-MailboxAccess.ps1 -Algorithm SHA256` with the hash below, as published
+   in this file at the release tag of the version you run (https://github.com/Nullel/prism365/tags;
+   the Microsoft access page names the version), so an older install compares against its own
+   hash. The page shows the hash of the copy it serves and whether it matches, but a changed
+   server could show anything there.
+
+   SHA-256 of Export-MailboxAccess.ps1: `ffc7745a13cf2a6d22a4515a01013270bd3c5c666c39c65da02b13c830c3f2c4`
+2. Install the module if you do not have it, version 3.0.0 or later:
+   `Install-Module ExchangeOnlineManagement -Scope CurrentUser`.
+3. Connect once, to the tenant Prism365 reads: `Connect-ExchangeOnline`. The script refuses to run
+   with no connection or with more than one (`Disconnect-ExchangeOnline` closes extra ones).
+4. Check that your role may read mailbox permissions:
+   `Get-ManagementRole -Cmdlet Get-MailboxPermission`, and the same for `Get-RecipientPermission`
+   and `Get-Recipient`. Microsoft does not document which roles can run them. Global Reader
+   includes View-Only Organization Management in Exchange Online; if none of your roles is
+   listed, ask an Exchange administrator for one that is.
+5. Run it in the same window: `.\Export-MailboxAccess.ps1 -OutputPath .\mailbox-access.json`.
+   Add `-IncludeUserMailboxes` to cover user mailboxes too. It stops and writes nothing if
+   Exchange refuses a cmdlet, and does not replace an existing file without `-Force`.
+6. Import the file under Mailbox access (at most 25 MB). It must be from this tenant and no
+   older than 90 days. The import replaces the previous one; Clear removes it.
+
+Each person page's Access tab then shows the shared mailboxes the account can use, directly or
+through a group, with the export's date, and warns once the export is older than 30 days. Rights
+granted to groups are matched only with `directory.users.read`, which reads the account's groups,
+nested ones included. The file is the export's claim: keep it where only administrators can
+change it, and export again after access changes.
+
 ## Breach lookup (Have I Been Pwned)
 
 Each person page's Actions menu has Check Have I Been Pwned. It opens haveibeenpwned.com in a new tab

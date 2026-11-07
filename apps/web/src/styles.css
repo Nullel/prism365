@@ -3747,6 +3747,61 @@ button.audit-tile:hover {
   }
 }
 
+/* Mailbox access (MailboxAccess.tsx) on the Microsoft access page. */
+.mailbox-access {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+}
+.mailbox-access h2,
+.mailbox-access h3 {
+  margin: 0;
+}
+.mailbox-access h3 {
+  margin-top: 6px;
+  font-size: var(--text-md);
+}
+.mailbox-access__intro,
+.mailbox-access__line {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.mailbox-access__commands {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font-size: var(--text-sm);
+  white-space: pre;
+}
+.mailbox-access__current,
+.mailbox-access__hash {
+  display: grid;
+  gap: 6px;
+}
+.mailbox-access__hash code {
+  overflow-wrap: anywhere;
+}
+.mailbox-access__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mailbox-access__confirm p {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.mailbox-access > .button {
+  justify-self: start;
+}
+
 /* Setup checklist (Setup.tsx) on the Microsoft access page. */
 .setup-checklist {
   display: grid;

@@ -11,6 +11,8 @@ deployment, or write actions.
 - AI provider credentials, tenant AI grants, evidence bundles, prompts, and generated answers.
 - Script packages imported before the import was removed (2026-10-24), encrypted until they
   expire or an operator deletes them, and backups that still hold them.
+- The mailbox access export script (`/scripts/Export-MailboxAccess.ps1`), which Prism365 serves and
+  administrators run with their own Exchange Online session.
 - Software supply chain, release artifacts, and update channel.
 
 ## Trust boundaries
@@ -47,6 +49,41 @@ deployment, or write actions.
 Prism365 has no write path (ROADMAP Milestone 6). The threats that come with acting on a tenant,
 such as a malicious imported script, a runner escape, targeting a protected account or a lifecycle
 run that fails halfway, belong to the threat model of the action tool that a handoff feeds.
+
+### Imported mailbox access
+
+Shared mailbox access comes from a file an administrator exports and imports (ADR-0012), so the
+file is untrusted input:
+
+- An edited or forged file can show access that does not exist, or hide access that does. Prism365
+  cannot check it against Exchange. Every page shows where the data came from and how old it is,
+  warns after 30 days, and refuses exports older than 90 days, dated in the future, or from
+  another tenant. Nothing in Prism365 acts on the import or feeds it to audits, alerts or
+  handoffs, so a false file misleads a reader but triggers nothing.
+- A hostile file cannot reach storage or the page as anything but bounded text: the whole file is
+  validated before anything is recorded (strict format, GUID ids, every string bounded on the text
+  as sent and cleaned of controls and direction marks, at most 20,000 mailboxes and 200,000 grants,
+  25 MB on that route only, read only for a signed-in administrator), queries are parameterised,
+  and the page renders it as text, never HTML.
+- A replace that fails partway keeps the previous import whole (one transaction), two imports
+  cannot interleave (a row lock and a one-import-per-tenant index), and tables are tenant-scoped
+  with row-level security like every other.
+- The script runs with the administrator's Exchange session. It calls only Get- cmdlets, it never
+  looks a trustee up with an empty identity (which Exchange answers with every recipient in the
+  tenant), and it stops, writing nothing, on any Exchange error other than a trustee that is not
+  found or matches more than one recipient. Tests read it with PowerShell's own parser and fail on
+  any command not on a short list, any call or dot-source operator, any redirection and any module
+  import; a text check that does not need PowerShell refuses the same classes of syntax.
+- Prism365 serves code that administrators run with Exchange admin rights, so a changed copy is a
+  way into Exchange: an attacker who can change the image, the files under `WEB_DIST_PATH`, or a
+  proxy in front of the server could serve a script that writes. A changed script can do anything
+  the administrator's session can; Prism365's own read-only guarantees do not cover it. Controls:
+  the script's SHA-256 is published in `docs/SETUP.md` (a test fails when the file and the
+  published hash differ), the page works out the hash of the copy it serves in the browser and
+  warns when it is not the one this version shipped, and both the page and the guide tell the
+  administrator to read the script and compare `Get-FileHash` against the hash on GitHub before
+  running it. The page's own check cannot be trusted if the server is the one that was changed,
+  which is why the comparison with GitHub is the one the guide relies on.
 
 ## Security assumptions
 

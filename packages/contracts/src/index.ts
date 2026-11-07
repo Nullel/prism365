@@ -11,6 +11,7 @@ export * from "./handoff.ts";
 export * from "./insights.ts";
 export * from "./investigation.ts";
 export * from "./licenses.ts";
+export * from "./mailbox-access.ts";
 export * from "./people.ts";
 export * from "./person-access.ts";
 export * from "./setup.ts";
