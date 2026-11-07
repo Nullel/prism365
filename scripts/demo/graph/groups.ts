@@ -274,7 +274,7 @@ export const TEAM_USAGE: readonly TeamUsage[] = [
   },
 ];
 
-function groupRecords(tenant: SyntheticTenant) {
+export function groupRecords(tenant: SyntheticTenant) {
   const now = tenant.now.getTime();
   const iso = (days: number) => new Date(now + days * DAY).toISOString();
   return groups.map((group) => ({
@@ -305,6 +305,17 @@ function ownersOf(tenant: SyntheticTenant, group: DemoGroup) {
       accountEnabled: user.accountEnabled,
     };
   });
+}
+
+// The groups an account owns, as records, for the Access tab. An owner is named by roster key.
+export function groupsOwnedBy(tenant: SyntheticTenant, userId: string) {
+  const records = new Map(groupRecords(tenant).map((record) => [record.id, record]));
+  return groups
+    .filter((group) => (group.owners ?? []).some((key) => guid(`user:${key}`) === userId))
+    .flatMap((group) => {
+      const record = records.get(group.id);
+      return record ? [record] : [];
+    });
 }
 
 const OWNERS = /^groups\/([^/]+)\/owners$/;

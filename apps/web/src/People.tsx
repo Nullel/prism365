@@ -29,6 +29,7 @@ import {
   SkeletonRows,
   when,
 } from "./common.tsx";
+import { PersonAccess } from "./PersonAccess.tsx";
 import { PersonChanges } from "./PersonChanges.tsx";
 import { PersonActions, PersonHeader, personAddress } from "./PersonHeader.tsx";
 import { PersonReceipts } from "./PersonReceipts.tsx";
@@ -1032,6 +1033,10 @@ export function PersonProfileView({
       <PersonTabPanel idBase={tabsId} tab="changes" selected={tab}>
         <PersonChanges session={session} userId={userId} onLoaded={onChanges} />
         <PersonReceipts session={session} userId={userId} principal={upn} />
+      </PersonTabPanel>
+
+      <PersonTabPanel idBase={tabsId} tab="access" selected={tab}>
+        <PersonAccess session={session} userId={userId} active={tab === "access"} />
       </PersonTabPanel>
     </section>
   );

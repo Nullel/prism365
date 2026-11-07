@@ -62,6 +62,13 @@ people does not. Stored sign-in tables are encrypted at rest only by the host's 
 encryption (FileVault, BitLocker or LUKS); Prism365 does not encrypt those columns itself.
 Backups made with `scripts/docker-live.sh backup` are plain `pg_dump` files outside retention.
 
+A person page's Access tab shows that account's group and role memberships, the objects it owns,
+the Conditional Access policies that apply to it or leave it out, and its rows from the latest
+stored audit runs. The memberships, ownership and policies are read live with the administrator's
+own session and are not stored; the audit rows are read from results the audits already stored,
+so the tab stores nothing new. Opening it writes an access-ledger entry (`person.access.viewed`)
+that names the datasets read and how many, not the person, a group or a policy.
+
 "Check Have I Been Pwned" in a person page's Actions menu opens haveibeenpwned.com with that person's
 address in the link, so the administrator's browser, not Prism365, sends it to HIBP, only when
 the button is pressed. The address also lands in that browser's history.

@@ -4,7 +4,7 @@ import { number } from "./common.tsx";
 // The tabs on a person's page. The selected tab is part of the address (#/people/<id>/signins),
 // and a plain #/people/<id> opens the first one, so links made before the tabs existed still work.
 
-export const personTabs = ["overview", "signins", "licenses", "changes"] as const;
+export const personTabs = ["overview", "signins", "licenses", "changes", "access"] as const;
 export type PersonTab = (typeof personTabs)[number];
 
 export const personTabLabels: Record<PersonTab, string> = {
@@ -12,6 +12,7 @@ export const personTabLabels: Record<PersonTab, string> = {
   signins: "Sign-ins",
   licenses: "Licenses",
   changes: "Changes",
+  access: "Access",
 };
 
 // The tab a route segment names, or null when it names none.
@@ -41,6 +42,9 @@ export function personTabCounts(input: {
     signins: input.signIns === null ? null : { value: input.signIns },
     licenses: input.licenses === null ? null : { value: input.licenses },
     changes: input.changes,
+    // The tab loads when it opens, so there is nothing to count before then, and a count of what
+    // it holds would not mean one thing.
+    access: null,
   };
 }
 

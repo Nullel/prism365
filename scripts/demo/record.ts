@@ -505,6 +505,7 @@ async function main() {
   for (const { id, principal } of accounts) {
     await record(`/api/v1/people/${encodeURIComponent(id)}`);
     await record(`/api/v1/people/${encodeURIComponent(id)}/directory`);
+    await record(`/api/v1/people/${encodeURIComponent(id)}/access`);
     // The first page of all sign-ins; the demo works the "successful" and "not successful"
     // filters out from it. A later page would be asked for by a position that moves with the
     // dates, so every account has to fit on this one.

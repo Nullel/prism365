@@ -11,7 +11,7 @@ import { createPacer, type Pacer, type Pause, readPaced } from "./paced-read.ts"
 // https://learn.microsoft.com/en-us/graph/api/conditionalaccessroot-list-namedlocations?view=graph-rest-1.0
 // https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccesspolicy?view=graph-rest-1.0
 
-const policyContext = {
+export const policyContext = {
   feature: "identity.conditional-access.read",
   permission: "Policy.Read.All",
 } as const;
@@ -191,7 +191,7 @@ const sessionSchema = z.object({
   disableResilienceDefaults: flag,
 });
 
-const policySchema = z.object({
+export const policySchema = z.object({
   id: z
     .string()
     .min(1)
@@ -205,7 +205,7 @@ const policySchema = z.object({
   grantControls: orEmpty(grantSchema),
   sessionControls: orEmpty(sessionSchema),
 });
-type Policy = z.output<typeof policySchema>;
+export type Policy = z.output<typeof policySchema>;
 
 const locationSchema = z.object({
   id: z.string().min(1).max(200),
@@ -488,7 +488,7 @@ const controlLabels: Record<string, string> = {
   riskremediation: "risk remediation",
 };
 
-function grantText(policy: Policy): string {
+export function grantText(policy: Policy): string {
   const grant = policy.grantControls;
   if (has(grant.builtInControls, "block")) return "Block access";
   const items = grant.builtInControls.map((control) => label(control, controlLabels));

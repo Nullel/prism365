@@ -109,8 +109,8 @@ import {
   supportedReadFeatures,
 } from "./config.ts";
 import { DeliveryService, type DeliveryServiceOptions } from "./delivery.ts";
-import { buildDigest, digestSectionsRead } from "./digest.ts";
 import { demoDashboard } from "./demo-data.ts";
+import { buildDigest, digestSectionsRead } from "./digest.ts";
 import {
   digest,
   equalSecret,
@@ -126,6 +126,7 @@ import { RouteBoundaryError, type RouteContext } from "./routes/context.ts";
 import { registerDeliveryRoutes } from "./routes/delivery.ts";
 import { digestUnavailable, registerDigestRoutes } from "./routes/digest.ts";
 import { registerHandoffRoutes } from "./routes/handoffs.ts";
+import { registerPersonAccessRoutes } from "./routes/person-access.ts";
 import { registerSetupRoutes } from "./routes/setup.ts";
 
 export interface AppOptions {
@@ -1574,6 +1575,7 @@ export function createApp(options: AppOptions = {}) {
   registerSetupRoutes(app, routes);
   registerHandoffRoutes(app, routes);
   registerCanaryRoutes(app, routes);
+  registerPersonAccessRoutes(app, routes);
   registerDeliveryRoutes(app, routes);
 
   app.get("/v1/dashboard/summary", async (_request, reply) => {

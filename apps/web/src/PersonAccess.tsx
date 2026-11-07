@@ -1,0 +1,534 @@
+import {
+  type AccessAuditResult,
+  type AccessMembership,
+  type AccessMembershipKind,
+  type AccessPolicy,
+  type PersonAccess as PersonAccessData,
+  type PolicyReason,
+  type PrismSession,
+  personAccessSchema,
+} from "@prism365/contracts";
+import { type ReactNode, useEffect, useState } from "react";
+import { number, RelativeTime, readJson, SeverityDot, SkeletonRows } from "./common.tsx";
+import {
+  lineKey,
+  partKey,
+  type SummaryLine,
+  type SummaryPart,
+  summaryLines,
+} from "./personAccessSummary.ts";
+
+// The Access tab on a person's page: everything Prism365 can see about this account's access, each
+// section with where it came from and when, and a plain line when it cannot be shown. The groups,
+// roles, ownership and Conditional Access are read live when the tab first opens. The rest comes
+// from the audits' stored results, so it is only as new as the audit's last run.
+
+type NotGranted = Extract<PersonAccessData["memberships"], { status: "not_granted" }>;
+
+const accessLink = <a href="#/access">Review Microsoft access</a>;
+
+// What a section that was refused needs, in words, with the way to get it.
+export function CannotShow({
+  section,
+}: {
+  section: NotGranted | { status: "failed"; message: string };
+}) {
+  if (section.status === "failed") return <p className="empty-data">{section.message}</p>;
+  return (
+    <p className="empty-data">
+      {section.enabled ? (
+        <>
+          This needs the {section.permission} permission, which the signed-in administrator has not
+          granted. {accessLink}.
+        </>
+      ) : (
+        <>
+          This needs the {section.pack} read pack, which this installation has not enabled. Add it
+          to ENABLED_READ_FEATURES and restart. {accessLink}.
+        </>
+      )}
+    </p>
+  );
+}
+
+const kindHeadings: Record<AccessMembershipKind, string> = {
+  microsoft365: "Microsoft 365 groups",
+  security: "Security groups",
+  "mail-security": "Mail-enabled security groups",
+  distribution: "Distribution lists",
+  dynamic: "Dynamic groups",
+  role: "Directory roles held now",
+  "administrative-unit": "Administrative units",
+  hidden: "Hidden by Microsoft",
+};
+
+function MembershipItem({ entry }: { entry: AccessMembership }) {
+  if (entry.kind === "hidden" || entry.name === null)
+    return (
+      <li>
+        <span className="person-muted">Hidden by Microsoft</span> <code>{entry.id}</code>
+      </li>
+    );
+  return (
+    <li>
+      <strong>{entry.name}</strong>
+      {entry.kind === "role" || entry.kind === "administrative-unit" ? null : (
+        // Microsoft lists the groups an account is in, nested or not, but not the path to a nested
+        // one, so it can only be called nested.
+        <span className="person-muted"> {entry.relation === "direct" ? "Direct" : "Nested"}</span>
+      )}
+      {entry.dynamic && entry.kind === "microsoft365" ? (
+        <span className="person-muted"> Dynamic</span>
+      ) : null}
+      {entry.hasGroupMailbox ? <span className="person-access__tag">Group mailbox</span> : null}
+    </li>
+  );
+}
+
+function Source({ children }: { children: ReactNode }) {
+  return <p className="signin-coverage person-access__source">{children}</p>;
+}
+
+function PartView({ part }: { part: SummaryPart }) {
+  const body = part.date ? <RelativeTime value={part.date} /> : part.text;
+  const words = (
+    <>
+      {part.prefix ? `${part.prefix} ` : null}
+      {body}
+    </>
+  );
+  if (part.tone === "bad") return <SeverityDot severity="high" label={part.text ?? ""} />;
+  if (part.tone === "warning") return <SeverityDot severity="medium" label={part.text ?? ""} />;
+  return part.tone === "good" ? <span className="person-access__good">{words}</span> : words;
+}
+
+function LineView({ line }: { line: SummaryLine }) {
+  return (
+    <li>
+      {line.title ? <strong>{line.title}</strong> : null}
+      {line.privileged ? (
+        <>
+          {" "}
+          <SeverityDot severity="high" label="Privileged" />
+        </>
+      ) : null}
+      {line.parts.map((part, index) => (
+        <span className="person-access__part" key={partKey(part)}>
+          {index > 0 ? ", " : line.title ? ": " : null}
+          <PartView part={part} />
+        </span>
+      ))}
+    </li>
+  );
+}
+
+const auditLink = (result: AccessAuditResult) => (
+  <a href={`#/audits/${encodeURIComponent(result.auditId)}`}>{result.name}</a>
+);
+
+// The source line of a stored result: which audit, how the row was found and how old it is.
+function AuditSource({ result }: { result: Extract<AccessAuditResult, { status: "ok" }> }) {
+  return (
+    <Source>
+      From the {auditLink(result)} audit
+      {result.matchedBy === "sign-in name" ? ", matched by sign-in name" : ""},{" "}
+      <RelativeTime value={result.finishedAt} />
+      {result.scope ? `, limited to ${result.scope.join(", ")}` : ""}
+    </Source>
+  );
+}
+
+// The line that stands for a result with nothing to show. Risk says the person was not flagged,
+// since that is good news and not a gap.
+function EmptyAudit({ result }: { result: Extract<AccessAuditResult, { status: "ok" }> }) {
+  if (result.auditId === "identity.risky-users")
+    return (
+      <p className="empty-data">
+        Not flagged in the latest {auditLink(result)} run,{" "}
+        <RelativeTime value={result.finishedAt} />.
+      </p>
+    );
+  return (
+    <p className="empty-data">Nothing about this person in the latest {auditLink(result)} run.</p>
+  );
+}
+
+// One audit's rows for this person as a few short lines, from the fields that matter
+// (personAccessSummary.ts). A result that cannot be shown says what to do about it.
+export function AuditSummary({
+  result,
+  results,
+}: {
+  result: AccessAuditResult;
+  results: ReadonlyMap<string, AccessAuditResult>;
+}) {
+  if (result.status === "no_run")
+    return (
+      <p className="empty-data">
+        <a href={`#/audits/${encodeURIComponent(result.auditId)}`}>Run the {result.name} audit</a>{" "}
+        to see this here.
+      </p>
+    );
+  if (result.status === "failed")
+    return (
+      <div className="person-access__audit">
+        <Source>From the {auditLink(result)} audit</Source>
+        <p className="empty-data">{result.message}</p>
+      </div>
+    );
+  const lines = summaryLines(results, result.auditId);
+  return (
+    <div className="person-access__audit">
+      <AuditSource result={result} />
+      {lines.length === 0 ? (
+        <EmptyAudit result={result} />
+      ) : (
+        <ul className="person-access__list">
+          {lines.map((line) => (
+            <LineView key={lineKey(line)} line={line} />
+          ))}
+        </ul>
+      )}
+      {result.truncated ? (
+        <p className="signin-coverage">Showing the first {result.rows.length} rows.</p>
+      ) : null}
+    </div>
+  );
+}
+
+const ownedLabels = {
+  group: "Group",
+  team: "Team",
+  application: "Application",
+  "service-principal": "Service principal",
+} as const;
+
+const stateLabels: Record<AccessPolicy["state"], string> = {
+  on: "On",
+  "report-only": "Report only",
+  off: "Off",
+  unknown: "State not recognised",
+};
+
+function reasonText(reason: PolicyReason): string {
+  switch (reason.kind) {
+    case "all":
+      return "all users";
+    case "person":
+      return "this person by name";
+    case "guests":
+      return "guests or external users";
+    case "group":
+      return reason.name ? `the group ${reason.name}` : "a group they are in";
+    case "role":
+      return reason.name ? `the role ${reason.name}` : "a role they hold";
+  }
+}
+const reasonList = (reasons: PolicyReason[]) => reasons.map(reasonText).join(", ");
+
+// How an exclusion reads: by name, or through the group or role that carries it.
+function exclusionText(reason: PolicyReason): string {
+  switch (reason.kind) {
+    case "person":
+      return "by name";
+    case "guests":
+      return "as a guest or external user";
+    case "group":
+      return reason.name ? `through the group ${reason.name}` : "through a group they are in";
+    case "role":
+      return reason.name ? `through the role ${reason.name}` : "through a role they hold";
+    case "all":
+      return "for all users";
+  }
+}
+
+function PolicyItem({ policy }: { policy: AccessPolicy }) {
+  return (
+    <li>
+      <strong>{policy.name ?? "Unnamed policy"}</strong>
+      <span className="person-muted">
+        {" "}
+        {stateLabels[policy.state]}. {policy.controls}.
+      </span>
+      <div className="person-access__why">
+        {policy.effect === "excluded" ? (
+          <>
+            <SeverityDot severity="medium" label="Excluded" /> Left out{" "}
+            {policy.excludedBy.map(exclusionText).join(" and ")}.
+            {policy.targeted
+              ? ` It would otherwise reach them through ${reasonList(policy.includedBy)}.`
+              : " It would not have reached them anyway."}
+          </>
+        ) : (
+          <>Applies through {reasonList(policy.includedBy)}.</>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function ConditionalAccessSection({ section }: { section: PersonAccessData["conditionalAccess"] }) {
+  if (section.status !== "ok")
+    return (
+      <section className="panel person-access" aria-label="Conditional Access">
+        <h3>Conditional Access</h3>
+        <Source>Live from Microsoft</Source>
+        <CannotShow section={section} />
+      </section>
+    );
+  const excluded = section.policies.filter((policy) => policy.effect === "excluded");
+  const applies = section.policies.filter((policy) => policy.effect === "applies");
+  // An exclusion from a policy that is enforced is the risky case, so it comes first.
+  const exclusionsFirst = excluded.some((policy) => policy.state === "on");
+  const groups = [
+    { id: "applies", title: "Policies that apply", items: applies },
+    { id: "excluded", title: "Policies that leave them out", items: excluded },
+  ];
+  if (exclusionsFirst) groups.reverse();
+  return (
+    <section className="panel person-access" aria-label="Conditional Access">
+      <h3>Conditional Access</h3>
+      <Source>
+        Live from Microsoft, <RelativeTime value={section.readAt} />
+      </Source>
+      {section.policies.length === 0 ? (
+        <p className="empty-data">No Conditional Access policy names or reaches this person.</p>
+      ) : (
+        groups
+          .filter((group) => group.items.length > 0)
+          .map((group) => (
+            <div key={group.id}>
+              <h4>{group.title}</h4>
+              <ul className="person-access__list">
+                {group.items.map((policy) => (
+                  <PolicyItem key={policy.id} policy={policy} />
+                ))}
+              </ul>
+            </div>
+          ))
+      )}
+      <p className="signin-coverage">
+        Conditions such as apps, platforms and locations still decide whether a policy applies at a
+        given sign-in.
+      </p>
+      {section.unaffected > 0 ? (
+        <p className="signin-coverage">
+          {number.format(section.unaffected)}{" "}
+          {section.unaffected === 1 ? "other policy does" : "other policies do"} not reach this
+          person.
+        </p>
+      ) : null}
+      {section.membershipsKnown ? null : (
+        <p className="signin-coverage">
+          Group and role memberships could not be read, so only policies that name everyone, this
+          person or guests are matched.
+        </p>
+      )}
+      {section.unreadable > 0 ? (
+        <p className="signin-coverage">
+          {number.format(section.unreadable)} {section.unreadable === 1 ? "policy" : "policies"}{" "}
+          could not be read and {section.unreadable === 1 ? "is" : "are"} not counted.
+        </p>
+      ) : null}
+      {section.truncated ? (
+        <p className="signin-coverage">The tenant has more policies than were read.</p>
+      ) : null}
+    </section>
+  );
+}
+
+function GroupsSection({
+  memberships,
+  results,
+}: {
+  memberships: PersonAccessData["memberships"];
+  results: ReadonlyMap<string, AccessAuditResult>;
+}) {
+  const roles = results.get("directory.privileged-roles") ?? null;
+  return (
+    <section className="panel person-access" aria-label="Groups and roles">
+      <h3>Groups and roles</h3>
+      <Source>
+        Live from Microsoft
+        {memberships.status === "ok" ? (
+          <>
+            , <RelativeTime value={memberships.readAt} />
+          </>
+        ) : null}
+      </Source>
+      {memberships.status !== "ok" ? (
+        <CannotShow section={memberships} />
+      ) : memberships.entries.length === 0 ? (
+        <p className="empty-data">This account is not in any group and holds no directory role.</p>
+      ) : (
+        (Object.keys(kindHeadings) as AccessMembershipKind[]).flatMap((kind) => {
+          const entries = memberships.entries.filter((entry) => entry.kind === kind);
+          return entries.length === 0
+            ? []
+            : [
+                <div key={kind}>
+                  <h4>
+                    {kindHeadings[kind]} ({number.format(entries.length)})
+                  </h4>
+                  <ul className="person-access__list">
+                    {entries.map((entry) => (
+                      <MembershipItem key={entry.id} entry={entry} />
+                    ))}
+                  </ul>
+                </div>,
+              ];
+        })
+      )}
+      {memberships.status === "ok" && memberships.truncated ? (
+        <p className="signin-coverage">
+          Showing the first {number.format(memberships.entries.length)} memberships.
+        </p>
+      ) : null}
+      <h4>Eligible and time-bound roles</h4>
+      {roles ? <AuditSummary result={roles} results={results} /> : null}
+    </section>
+  );
+}
+
+function OwnsSection({ owned }: { owned: PersonAccessData["owned"] }) {
+  return (
+    <section className="panel person-access" aria-label="Owns">
+      <h3>Owns</h3>
+      <Source>
+        Live from Microsoft
+        {owned.status === "ok" ? (
+          <>
+            , <RelativeTime value={owned.readAt} />
+          </>
+        ) : null}
+      </Source>
+      {owned.status !== "ok" ? (
+        <CannotShow section={owned} />
+      ) : owned.entries.length === 0 ? (
+        <p className="empty-data">This account owns no groups, teams or applications.</p>
+      ) : (
+        <>
+          <ul className="person-access__list">
+            {owned.entries.map((entry) => (
+              <li key={entry.id}>
+                <strong>{entry.name ?? "Hidden by Microsoft"}</strong>
+                <span className="person-muted"> {ownedLabels[entry.kind]}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="signin-coverage">
+            Hand ownership over before this account is removed, so nothing it owns is left without
+            an owner.
+          </p>
+          {owned.truncated ? (
+            <p className="signin-coverage">
+              Showing the first {number.format(owned.entries.length)} objects.
+            </p>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+// The audits each stored section draws on, in the order the tab shows them.
+const auditSections: { title: string; audits: string[] }[] = [
+  { title: "Sign-in methods", audits: ["mfa.registration"] },
+  { title: "Devices", audits: ["devices.managed"] },
+  { title: "Mailbox", audits: ["mail.mailbox-storage"] },
+  { title: "Password", audits: ["accounts.passwords"] },
+  { title: "Risk", audits: ["identity.risky-users"] },
+  // Inactive accounts and Licenses to reclaim are folded into this one (personAccessSummary.ts).
+  { title: "Activity", audits: ["accounts.activity"] },
+];
+
+// The whole tab as a function of what has loaded. It holds no state, so a test can draw it with an
+// answer in hand.
+export function PersonAccessView({
+  access,
+  error,
+}: {
+  // null while the answer loads.
+  access: PersonAccessData | null;
+  error: string;
+}) {
+  if (error) return <p className="empty-data">{error}</p>;
+  if (!access)
+    return (
+      <section className="panel person-access" aria-label="Access">
+        <SkeletonRows rows={5} label="Reading this person's access" />
+      </section>
+    );
+  const results = access.audits.status === "ok" ? access.audits.results : [];
+  const byId = new Map(results.map((result) => [result.auditId, result]));
+  return (
+    <>
+      <GroupsSection memberships={access.memberships} results={byId} />
+      <OwnsSection owned={access.owned} />
+      <ConditionalAccessSection section={access.conditionalAccess} />
+      {auditSections.map((group) => (
+        <section className="panel person-access" aria-label={group.title} key={group.title}>
+          <h3>{group.title}</h3>
+          {access.audits.status !== "ok" ? (
+            <CannotShow section={access.audits} />
+          ) : (
+            group.audits.map((id) => {
+              const result = byId.get(id);
+              return result ? <AuditSummary key={id} result={result} results={byId} /> : null;
+            })
+          )}
+        </section>
+      ))}
+      <section className="panel person-access" aria-label="Shared mailboxes">
+        <h3>Shared mailboxes</h3>
+        <p className="empty-data">
+          Full Access and Send As on shared mailboxes cannot be read through Microsoft's read-only
+          APIs. The Microsoft 365 group mailboxes this account can use are listed under Groups and
+          roles.
+        </p>
+      </section>
+    </>
+  );
+}
+
+// Loads when the tab first opens, not with the page, and keeps the answer when the tab is left.
+export function PersonAccess({
+  session,
+  userId,
+  active,
+}: {
+  session: PrismSession;
+  userId: string;
+  active: boolean;
+}) {
+  const [opened, setOpened] = useState(false);
+  const [access, setAccess] = useState<PersonAccessData | null>(null);
+  const [error, setError] = useState("");
+  const live = session.mode === "live" && session.authenticated;
+
+  useEffect(() => {
+    if (active) setOpened(true);
+  }, [active]);
+
+  useEffect(() => {
+    if (!live || !opened) return;
+    const controller = new AbortController();
+    readJson(
+      `/api/v1/people/${encodeURIComponent(userId)}/access`,
+      (value) => personAccessSchema.parse(value),
+      { signal: controller.signal },
+    )
+      .then((value) => {
+        setAccess(value);
+        setError("");
+      })
+      .catch((loadError: unknown) => {
+        if (controller.signal.aborted) return;
+        setError(loadError instanceof Error ? loadError.message : "Access could not be loaded.");
+      });
+    return () => controller.abort();
+  }, [live, opened, userId]);
+
+  if (!live || !opened) return null;
+  return <PersonAccessView access={access} error={error} />;
+}
