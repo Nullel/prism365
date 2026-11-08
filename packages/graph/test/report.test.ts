@@ -795,7 +795,6 @@ describe("the usage report and membership paths", () => {
       "users/u-1/registeredDevices",
       "users/u-1/createdObjects",
       "users/u-1/transitiveReports",
-      "users/u-1/directReports",
       "users/u-1/oauth2PermissionGrants",
       "users/u-1/appRoleAssignments",
       "users/u-1/mailboxSettings",
@@ -811,6 +810,12 @@ describe("the usage report and membership paths", () => {
       "users/u-1/memberOf/microsoft.graph.group",
       "users/u-1/memberOf/$count",
       "users/u-1/manager/memberOf",
+      "users/u-1/directReports/extra",
+      "users/u-1/directReports/$count",
+      "users/u-1/directReports/microsoft.graph.user",
+      "directReports/u-1/manager",
+      "users/u%2FdirectReports",
+      "groups/g-1/directReports",
       "users/u%2F..%2Fgroups/memberOf",
       "users/u%2f/memberOf",
       "users/u%5C/memberOf",
@@ -823,6 +828,9 @@ describe("the usage report and membership paths", () => {
       expect(await users(path), path).toBe(false);
     // The paths the user pack already had stay as they were.
     for (const path of ["users", "users/u-1", "users('ada%40lab.example')", "users/u-1/manager"])
+      expect(await users(path), path).toBe(true);
+    // Direct reports are the one navigation added to the user pack since, in both key forms.
+    for (const path of ["users/u-1/directReports", "users('ada%40lab.example')/directReports"])
       expect(await users(path), path).toBe(true);
   });
 });

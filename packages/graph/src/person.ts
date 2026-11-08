@@ -11,6 +11,7 @@ import { type GraphHttpClient, GraphRequestError } from "./client.ts";
 // Microsoft Graph v1.0 documentation verified 2026-10-22:
 // https://learn.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0
 // https://learn.microsoft.com/en-us/graph/api/user-list-manager?view=graph-rest-1.0
+// https://learn.microsoft.com/en-us/graph/api/user-list-directreports?view=graph-rest-1.0
 // https://learn.microsoft.com/en-us/graph/api/resources/signinactivity?view=graph-rest-1.0
 // https://learn.microsoft.com/en-us/graph/api/user-list-licensedetails?view=graph-rest-1.0
 
@@ -90,11 +91,37 @@ const providerProfile = z.object({
     .transform((value) => (value ?? []).slice(0, 20)),
 });
 
+// The manager can be an organizational contact. The kind rule is the one the direct reports use:
+// Microsoft names it in @odata.type, and without one an entry is a user only if it has a
+// user principal name.
+const isUserEntry = (kind: string | undefined, principal: string | null): boolean =>
+  kind ? kind.toLowerCase() === "#microsoft.graph.user" : principal !== null;
+
 const providerManager = z.object({
+  "@odata.type": z.string().max(200).optional(),
   id: z.string().min(1).max(500),
   displayName: text,
   userPrincipalName: text,
   jobTitle: text,
+});
+
+// directReports can hold contacts as well as users. Microsoft names the kind in @odata.type; when
+// it is missing, an entry counts as a user only if it carries a user principal name.
+const providerReport = z.object({
+  "@odata.type": z.string().max(200).optional(),
+  id: z.string().min(1).max(500),
+  displayName: text,
+  userPrincipalName: text,
+  jobTitle: text,
+});
+
+const reportsPageSize = 50;
+
+// The first page of direct reports. `value` is taken whole and cut in code, so a page longer than
+// asked for is capped rather than refused.
+const providerReportsPage = z.object({
+  value: z.array(z.unknown()),
+  "@odata.nextLink": z.string().max(16_384).optional(),
 });
 
 const providerActivity = z.object({
@@ -132,7 +159,13 @@ export async function readPersonDirectory(options: {
   grantedScopes: readonly string[];
 }): Promise<PersonDirectory> {
   const has = (scope: string) => options.grantedScopes.includes(scope);
-  const empty = { profile: null, manager: null, signInActivity: null, licenses: null };
+  const empty = {
+    profile: null,
+    manager: null,
+    directReports: null,
+    signInActivity: null,
+    licenses: null,
+  };
   if (!has("User.Read.All"))
     return personDirectorySchema.parse({
       state: "missingConsent",
@@ -169,7 +202,7 @@ export async function readPersonDirectory(options: {
   }
   const byId = `users/${encodeURIComponent(profile.id)}`;
 
-  const [manager, activity, licenses] = await Promise.all([
+  const [manager, directReports, activity, licenses] = await Promise.all([
     options.client
       .request(
         `${byId}/manager?$select=id,displayName,userPrincipalName,jobTitle`,
@@ -177,13 +210,54 @@ export async function readPersonDirectory(options: {
         {},
         providerManager,
       )
-      .then((data) => ({ state: "available" as const, data }))
+      .then(({ "@odata.type": kind, ...person }) => ({
+        state: "available" as const,
+        data: { ...person, isUser: isUserEntry(kind, person.userPrincipalName) },
+      }))
       // 404 means no manager is set.
       .catch((error: unknown) =>
         error instanceof GraphRequestError && error.status === 404
           ? { state: "available" as const, data: null }
           : { state: "unavailable" as const, data: null },
       ),
+    // One page only. The answer is read with a single request, never with getCollection, because
+    // that validates a next link, and Microsoft may give one in the directoryObjects form that the
+    // pack does not allow. The link is only noted, never resolved or followed.
+    options.client
+      .request(
+        `${byId}/directReports?$select=id,displayName,userPrincipalName,jobTitle&$top=${reportsPageSize}`,
+        directoryContext,
+        {},
+        providerReportsPage,
+      )
+      .then((page) => {
+        const people: z.infer<typeof providerReport>[] = [];
+        let skipped = 0;
+        for (const raw of page.value.slice(0, reportsPageSize)) {
+          const parsed = providerReport.safeParse(raw);
+          if (
+            parsed.success &&
+            isUserEntry(parsed.data["@odata.type"], parsed.data.userPrincipalName)
+          )
+            people.push(parsed.data);
+          else skipped += 1;
+        }
+        return {
+          state: "available" as const,
+          more: page["@odata.nextLink"] !== undefined || page.value.length > reportsPageSize,
+          skipped,
+          data: people.map(({ "@odata.type": _kind, ...person }) => person),
+        };
+      })
+      // Microsoft answers an empty collection when there are no reports, so a 404 means the
+      // account was not found, not that it has none. 403 means Microsoft refused this read for the
+      // signed-in administrator; any other failure leaves the list unread.
+      .catch((error: unknown) => {
+        const status = error instanceof GraphRequestError ? error.status : null;
+        const none = { more: false, skipped: 0, data: [] };
+        if (status === 403) return { state: "missingConsent" as const, ...none };
+        return { state: "unavailable" as const, ...none };
+      }),
     has("AuditLog.Read.All")
       ? options.client
           .request(`${byId}?$select=signInActivity`, directoryContext, {}, providerActivity)
@@ -235,6 +309,7 @@ export async function readPersonDirectory(options: {
     state: "available",
     profile,
     manager,
+    directReports,
     signInActivity: activity,
     licenses,
   });

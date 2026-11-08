@@ -29,8 +29,16 @@ import {
   SkeletonRows,
   when,
 } from "./common.tsx";
+import {
+  type Crumb,
+  OriginScope,
+  originTrail,
+  PersonBreadcrumb,
+  useNavigation,
+} from "./navigation.tsx";
 import { PersonAccess } from "./PersonAccess.tsx";
 import { PersonChanges } from "./PersonChanges.tsx";
+import { DirectReportsValue, ManagerValue } from "./PersonDirectoryLinks.tsx";
 import { PersonSummary, scrollToSection } from "./PersonSummary.tsx";
 import { sectionIds } from "./personSummaryLines.ts";
 import { PersonActions, PersonHeader, personAddress } from "./PersonHeader.tsx";
@@ -74,9 +82,11 @@ function Intro({ title, children }: { title: string; children: string }) {
 
 // Finds the account behind a full work email in the directory, for someone with no stored
 // sign-ins. The People search and quick search both use it, so the request has one definition.
-export async function lookUpPerson(email: string): Promise<string> {
-  const found = await readJson(`/api/v1/people/lookup?email=${encodeURIComponent(email)}`, (body) =>
-    personLookupSchema.parse(body),
+export async function lookUpPerson(email: string, signal?: AbortSignal): Promise<string> {
+  const found = await readJson(
+    `/api/v1/people/lookup?email=${encodeURIComponent(email)}`,
+    (body) => personLookupSchema.parse(body),
+    signal ? { signal } : {},
   );
   return found.userId;
 }
@@ -316,6 +326,7 @@ function PersonProfile({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const canary = usePersonCanary(session, userId);
+  const navigation = useNavigation();
 
   const loadRecord = useCallback(
     async (signal?: AbortSignal) => {
@@ -344,6 +355,7 @@ function PersonProfile({
           message: "Microsoft's directory could not be read just now.",
           profile: null,
           manager: null,
+          directReports: null,
           signInActivity: null,
           licenses: null,
         });
@@ -419,6 +431,7 @@ function PersonProfile({
       busy={busy}
       changes={changes}
       canary={canary}
+      trail={originTrail(navigation.origin, navigation)}
       onBack={onBack}
       onTab={onTab}
       onFilter={setFilter}
@@ -462,6 +475,8 @@ export interface PersonProfileViewProps {
   busy: string | null;
   changes: TabCount | null;
   canary: PersonCanary;
+  // The places you came from, before this person's name. Left out, the breadcrumb starts at People.
+  trail?: Crumb[];
   onBack: () => void;
   onTab: (tab: PersonTab) => void;
   onFilter: (filter: SigninFilter) => void;
@@ -487,6 +502,7 @@ export function PersonProfileView({
   busy,
   changes,
   canary,
+  trail = [],
   onBack,
   onTab,
   onFilter,
@@ -511,9 +527,10 @@ export function PersonProfileView({
     usual: value ? learned.get(`${kind}|${value}`) === true : false,
     known: value ? learned.has(`${kind}|${value}`) : false,
   });
+  // People opened from inside this person's page come from here.
+  const here = { kind: "person", userId, name } as const;
   const openFindings = (record?.findings ?? []).filter((finding) => finding.state !== "resolved");
   const activity = directory?.signInActivity ?? null;
-  const manager = directory?.manager?.data ?? null;
   const counts = personTabCounts({
     openFindings: record ? openFindings.length : null,
     signIns: record ? (history?.totals.signIns ?? 0) : null,
@@ -523,13 +540,7 @@ export function PersonProfileView({
 
   return (
     <section className="people person" aria-labelledby={titleId}>
-      <nav className="breadcrumb" aria-label="Breadcrumb">
-        <button type="button" onClick={onBack}>
-          People
-        </button>
-        <span aria-hidden="true">/</span>
-        <span aria-current="page">{name}</span>
-      </nav>
+      <PersonBreadcrumb trail={trail} name={name} onBack={onBack} />
 
       {error ? (
         <p className="form-error" role="alert">
@@ -600,11 +611,7 @@ export function PersonProfileView({
                   ["Employee ID", profile?.employeeId],
                   [
                     "Manager",
-                    manager
-                      ? `${manager.displayName ?? manager.userPrincipalName ?? "Unnamed"}${manager.jobTitle ? `, ${manager.jobTitle}` : ""}`
-                      : directory.manager?.state === "available"
-                        ? "None set"
-                        : "Unavailable",
+                    <ManagerValue key="manager" manager={directory.manager} from={here} />,
                   ],
                   [
                     "Phone",
@@ -654,6 +661,12 @@ export function PersonProfileView({
               ))}
             </dl>
           )}
+          {directory?.state === "available" ? (
+            <div className="person-facts__reports">
+              <h4>Direct reports</h4>
+              <DirectReportsValue reports={directory.directReports} from={here} />
+            </div>
+          ) : null}
         </section>
 
         {history ? (
@@ -1043,12 +1056,16 @@ export function PersonProfileView({
       </PersonTabPanel>
 
       <PersonTabPanel idBase={tabsId} tab="changes" selected={tab}>
-        <PersonChanges session={session} userId={userId} onLoaded={onChanges} />
+        <OriginScope origin={here}>
+          <PersonChanges session={session} userId={userId} onLoaded={onChanges} />
+        </OriginScope>
         <PersonReceipts session={session} userId={userId} principal={upn} />
       </PersonTabPanel>
 
       <PersonTabPanel idBase={tabsId} tab="access" selected={tab}>
-        <PersonAccess session={session} userId={userId} active={tab === "access"} />
+        <OriginScope origin={here}>
+          <PersonAccess session={session} userId={userId} active={tab === "access"} />
+        </OriginScope>
       </PersonTabPanel>
     </section>
   );

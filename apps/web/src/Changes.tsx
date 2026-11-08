@@ -86,12 +86,16 @@ function Result({ value }: { value: string | null }) {
 }
 
 // The person a link opens: a user with a directory id.
+// On a person's own page `self` is that person, who is not a link to their own page.
 function personLink(
   kind: string | null,
   id: string | null,
   onOpenPerson: ((userId: string) => void) | undefined,
+  self?: string,
 ) {
-  return onOpenPerson && id && kind?.toLowerCase() === "user" ? () => onOpenPerson(id) : null;
+  return onOpenPerson && id && id !== self && kind?.toLowerCase() === "user"
+    ? () => onOpenPerson(id)
+    : null;
 }
 
 function Name({ label, onOpen }: { label: string; onOpen: (() => void) | null }) {
@@ -188,10 +192,13 @@ function Properties({ change }: { change: ChangeEvent }) {
 export function ChangeRow({
   change,
   onOpenPerson,
+  self,
   note,
 }: {
   change: ChangeEvent;
   onOpenPerson?: (userId: string) => void;
+  // The person whose page this row is on, when it is on one.
+  self?: string;
   note?: ReactNode;
 }) {
   const shown = change.targets
@@ -207,7 +214,7 @@ export function ChangeRow({
         <span className="change-row__actor">
           <Name
             label={actorLabel(change)}
-            onOpen={personLink(change.initiatedBy.kind, change.initiatedBy.id, onOpenPerson)}
+            onOpen={personLink(change.initiatedBy.kind, change.initiatedBy.id, onOpenPerson, self)}
           />
         </span>
         <span className="change-row__activity">
@@ -224,7 +231,7 @@ export function ChangeRow({
                 {first ? "" : ", "}
                 <Name
                   label={targetLabel(target)}
-                  onOpen={personLink(target.type, target.id, onOpenPerson)}
+                  onOpen={personLink(target.type, target.id, onOpenPerson, self)}
                 />
               </span>
             ))

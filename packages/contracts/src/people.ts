@@ -172,10 +172,34 @@ export const personDirectorySchema = z.object({
           displayName: nullableText,
           userPrincipalName: nullableText,
           jobTitle: nullableText,
+          // False for an organizational contact, which has no account page to open.
+          isUser: z.boolean().default(true),
         })
         .nullable(),
     })
     .nullable(),
+  // One page of the people who report to this account. `more` is true when Microsoft has further
+  // pages that were not read.
+  directReports: z
+    .object({
+      state: directoryState,
+      more: z.boolean().default(false),
+      // Entries Microsoft returned that are not accounts (contacts, unreadable records).
+      skipped: z.number().int().min(0).max(1000).default(0),
+      data: z
+        .array(
+          z.object({
+            id: requiredText,
+            displayName: nullableText,
+            userPrincipalName: nullableText,
+            jobTitle: nullableText,
+          }),
+        )
+        .max(50),
+    })
+    .nullable()
+    // Copies of this answer recorded before direct reports were read do not carry the field.
+    .default(null),
   signInActivity: z
     .object({
       state: directoryState,

@@ -180,6 +180,19 @@ export async function listHandoffs(
   }));
 }
 
+// The run a handoff was exported from, or null when there is no such handoff.
+export async function handoffRunId(
+  sql: SqlClient,
+  tenantId: string,
+  id: string,
+): Promise<string | null> {
+  const result = await sql.query<{ run_id: string }>(
+    "SELECT run_id FROM prism365_handoff WHERE tenant_id=$1 AND id=$2",
+    [tenantId, id],
+  );
+  return result.rows[0]?.run_id ?? null;
+}
+
 export async function handoffExists(sql: SqlClient, tenantId: string, id: string) {
   const result = await sql.query("SELECT 1 FROM prism365_handoff WHERE tenant_id=$1 AND id=$2", [
     tenantId,

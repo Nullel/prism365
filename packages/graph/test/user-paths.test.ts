@@ -54,10 +54,10 @@ const principals = [
 ];
 
 describe("the user pack's paths", () => {
-  it("allow a user, its manager and its memberships in both forms the builders write", async () => {
+  it("allow a user, its manager, its direct reports and its memberships in both forms the builders write", async () => {
     for (const name of principals)
       for (const base of [byId(name), byName(name)])
-        for (const path of [base, `${base}/manager`, `${base}/memberOf`])
+        for (const path of [base, `${base}/manager`, `${base}/directReports`, `${base}/memberOf`])
           expect(await allowed(path), path).toBe(true);
     // encodeURIComponent leaves ! ~ * ' ( ) as they are, so the id class takes them too.
     for (const path of [
@@ -71,10 +71,11 @@ describe("the user pack's paths", () => {
   it("refuse an encoded slash, backslash or question mark in every form", async () => {
     for (const separator of ["%2F", "%2f", "%5C", "%5c", "%3F", "%3f"])
       for (const base of [`users/a${separator}b`, `users('a${separator}b')`])
-        for (const path of [base, `${base}/manager`, `${base}/memberOf`])
+        for (const path of [base, `${base}/manager`, `${base}/directReports`, `${base}/memberOf`])
           expect(await allowed(path), path).toBe(false);
     for (const path of [
       "users/x%2Fmanager",
+      "users/x%2FdirectReports",
       "users/x%2FtransitiveMemberOf",
       "users('x%2FtransitiveMemberOf')",
       "users('a%2F..%2Fx')/memberOf",

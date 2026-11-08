@@ -20,6 +20,7 @@ import {
 } from "@prism365/contracts";
 import { type ReactNode, useEffect, useState } from "react";
 import { day, number, RelativeTime, readJson, SeverityDot, SkeletonRows } from "./common.tsx";
+import { PersonLink } from "./navigation.tsx";
 import {
   lineKey,
   partKey,
@@ -626,7 +627,10 @@ function HolderItem({ holder }: { holder: MailboxHolder }) {
   const tag = trusteeLabels[holder.trustee.kind];
   return (
     <li>
-      <strong>{holder.trustee.name}</strong>
+      <PersonLink
+        userId={holder.trustee.kind === "user" ? holder.trustee.id : null}
+        name={holder.trustee.name}
+      />
       {holder.trustee.address ? (
         <span className="person-muted"> {holder.trustee.address}</span>
       ) : null}
@@ -663,10 +667,13 @@ function GroupsNote({ groups }: { groups: PersonMailboxAccess["groups"] }) {
 export function SharedMailboxesSection({
   mailbox,
   error,
+  selfId,
 }: {
   // null while it loads.
   mailbox: PersonMailboxAccess | null;
   error: string;
+  // The account whose page this is. On a mailbox's own page its own row is not a link to itself.
+  selfId?: string;
 }) {
   const body = (() => {
     if (error) return <p className="empty-data">{error}</p>;
@@ -709,7 +716,12 @@ export function SharedMailboxesSection({
           <ul className="person-access__list">
             {mailboxes.map(({ mailbox: shared, rights }) => (
               <li key={shared.id}>
-                <strong>{shared.name || shared.address}</strong>
+                {/* A mailbox is an account, so its id opens its own page, which lists who can use it. */}
+                <PersonLink
+                  userId={shared.id === selfId ? null : shared.id}
+                  name={shared.name || shared.address}
+                  tab="access"
+                />
                 {shared.name ? <span className="person-muted"> {shared.address}</span> : null}
                 {shared.type === "UserMailbox" ? (
                   <span className="person-access__tag">User mailbox</span>
@@ -789,6 +801,7 @@ export function PersonAccessView({
   error,
   mailbox = null,
   mailboxError = "",
+  userId,
 }: {
   // null while the answer loads.
   access: PersonAccessData | null;
@@ -796,6 +809,8 @@ export function PersonAccessView({
   // The Shared mailboxes section's own answer, null while it loads.
   mailbox?: PersonMailboxAccess | null;
   mailboxError?: string;
+  // The account whose page this is.
+  userId?: string;
 }) {
   if (error) return <p className="empty-data">{error}</p>;
   if (!access)
@@ -832,7 +847,11 @@ export function PersonAccessView({
             )}
           </section>
         ))}
-      <SharedMailboxesSection mailbox={mailbox} error={mailboxError} />
+      <SharedMailboxesSection
+        mailbox={mailbox}
+        error={mailboxError}
+        {...(userId ? { selfId: userId } : {})}
+      />
     </>
   );
 }
@@ -903,6 +922,12 @@ export function PersonAccess({
 
   if (!live || !opened) return null;
   return (
-    <PersonAccessView access={access} error={error} mailbox={mailbox} mailboxError={mailboxError} />
+    <PersonAccessView
+      access={access}
+      error={error}
+      mailbox={mailbox}
+      mailboxError={mailboxError}
+      userId={userId}
+    />
   );
 }
