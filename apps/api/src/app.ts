@@ -133,6 +133,7 @@ import { digestUnavailable, registerDigestRoutes } from "./routes/digest.ts";
 import { registerHandoffRoutes } from "./routes/handoffs.ts";
 import { registerMailboxAccessRoutes } from "./routes/mailbox-access.ts";
 import { registerPersonAccessRoutes } from "./routes/person-access.ts";
+import { registerPersonSummaryRoutes } from "./routes/person-summary.ts";
 import { registerSetupRoutes } from "./routes/setup.ts";
 
 export interface AppOptions {
@@ -1608,6 +1609,7 @@ export function createApp(options: AppOptions = {}) {
   registerHandoffRoutes(app, routes);
   registerCanaryRoutes(app, routes);
   registerPersonAccessRoutes(app, routes);
+  registerPersonSummaryRoutes(app, routes);
   registerMailboxAccessRoutes(app, routes);
   registerDeliveryRoutes(app, routes);
 

@@ -29,6 +29,14 @@ One page per account: where they signed in from, with full addresses and devices
 the apps they use, their manager and licenses from the live directory, open findings, and every
 stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator's own browser.
 
+#### Where they show up
+
+The Overview opens with a panel that lists every place Prism365 knows the account from, one line
+each: Combined risks, sign-in findings, the audits that name the account, the groups and teams it
+owns, shared mailbox access, directory changes in the last 30 days and the latest handoff. Each
+line says when its source last ran and links to the section that holds the detail. It reads stored
+results only, so it asks Microsoft for nothing.
+
 #### Access tab
 
 The person page's Access tab answers "what can this account reach?" in one place. It opens only

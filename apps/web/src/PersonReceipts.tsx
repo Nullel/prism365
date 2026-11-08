@@ -7,6 +7,7 @@ import {
 import { useEffect, useId, useState } from "react";
 import { RelativeTime, readJson } from "./common.tsx";
 import { statusTagClass } from "./Handoffs.tsx";
+import { sectionIds } from "./personSummaryLines.ts";
 
 // What other tools reported doing to this person, from the receipts imported on the Handoffs
 // page. These are the tools' own reports: Prism365 shows them as sent and never as something it
@@ -22,7 +23,11 @@ export function PersonReceiptsPanel({
   const titleId = useId();
   if (!error && (!list || list.items.length === 0)) return null;
   return (
-    <section className="panel signin-table person-grid" aria-labelledby={titleId}>
+    <section
+      id={sectionIds.receipts}
+      className="panel signin-table person-grid"
+      aria-labelledby={titleId}
+    >
       <h3 id={titleId}>Reported by other tools</h3>
       {error ? (
         <p className="form-error" role="alert">

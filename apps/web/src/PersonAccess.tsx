@@ -27,6 +27,7 @@ import {
   type SummaryPart,
   summaryLines,
 } from "./personAccessSummary.ts";
+import { sectionIds } from "./personSummaryLines.ts";
 
 // The Access tab on a person's page: everything Prism365 can see about this account's access, each
 // section with where it came from and when, and a plain line when it cannot be shown. The groups,
@@ -99,7 +100,7 @@ function Source({ children }: { children: ReactNode }) {
   return <p className="signin-coverage person-access__source">{children}</p>;
 }
 
-function PartView({ part }: { part: SummaryPart }) {
+export function PartView({ part }: { part: SummaryPart }) {
   const body = part.date ? <RelativeTime value={part.date} /> : part.text;
   const words = (
     <>
@@ -112,7 +113,7 @@ function PartView({ part }: { part: SummaryPart }) {
   return part.tone === "good" ? <span className="person-access__good">{words}</span> : words;
 }
 
-function LineView({ line }: { line: SummaryLine }) {
+export function LineView({ line }: { line: SummaryLine }) {
   return (
     <li>
       {line.title ? <strong>{line.title}</strong> : null}
@@ -214,7 +215,11 @@ export function CombinedRisksSection({ section }: { section: CombinedRisks | und
   // An answer recorded before the section existed has nothing to show.
   if (!section) return null;
   return (
-    <section className="panel person-access" aria-label="Combined risks">
+    <section
+      id={sectionIds.combinedRisks}
+      className="panel person-access"
+      aria-label="Combined risks"
+    >
       <h3>Combined risks</h3>
       {section.status === "failed" ? (
         <p className="empty-data">{section.message}</p>
@@ -413,7 +418,7 @@ function GroupsSection({
 }) {
   const roles = results.get("directory.privileged-roles") ?? null;
   return (
-    <section className="panel person-access" aria-label="Groups and roles">
+    <section id={sectionIds.groups} className="panel person-access" aria-label="Groups and roles">
       <h3>Groups and roles</h3>
       <Source>
         Live from Microsoft
@@ -457,9 +462,78 @@ function GroupsSection({
   );
 }
 
+// What Groups and Teams tags mean, in the words the audit's own views use. A tag not listed here
+// (team, no-usage) says nothing the status does not already say.
+const groupTagLabels: Record<string, string> = {
+  "no-owners": "No owners",
+  "disabled-owners": "Only disabled owners",
+  "one-owner": "One owner",
+  guests: "Has guests",
+  inactive: "Inactive",
+  "public-team": "Public team",
+  expiring: "Expiring soon",
+  "role-assignable": "Can hold a role",
+  "owners-not-read": "Owners not read",
+};
+
+type OwnedOk = Extract<PersonAccessData["owned"], { status: "ok" }>;
+type OwnedEntry = OwnedOk["entries"][number];
+
+// What the audits say about one owned object, or why they say nothing. A status other than OK is
+// shown as a warning; the words always say what it is.
+function OwnedDetail({ entry, owned }: { entry: OwnedEntry; owned: OwnedOk }) {
+  const group = entry.kind === "group" || entry.kind === "team";
+  const lookup = group ? owned.lookups?.groups : owned.lookups?.apps;
+  const found = owned.details?.find((detail) => detail.id === entry.id);
+  const audit = group ? "Groups and Teams" : "App consents";
+  const href = `#/audits/${encodeURIComponent(group ? "groups.teams" : "apps.consents")}`;
+  if (!lookup) return null;
+  if (lookup.status === "no_run")
+    return (
+      <div className="person-access__why">
+        <a href={href}>Run {audit}</a> to see this object's status here.
+      </div>
+    );
+  if (lookup.status === "failed")
+    return <div className="person-access__why person-muted">{lookup.message}</div>;
+  if (!found)
+    return (
+      <div className="person-access__why person-muted">
+        Not in the latest <a href={href}>{audit}</a> run.
+      </div>
+    );
+  if (found.kind === "group") {
+    const tags = found.tags.flatMap((tag) => (groupTagLabels[tag] ? [groupTagLabels[tag]] : []));
+    return (
+      <div className="person-access__why">
+        {found.status === "OK" || found.status === "" ? (
+          "Status: OK"
+        ) : (
+          <SeverityDot severity="medium" label={found.status} />
+        )}
+        {tags.length > 0 ? <span className="person-muted"> {tags.join(", ")}</span> : null}
+      </div>
+    );
+  }
+  const consent = [
+    found.adminConsent ? "Admin consent for everyone" : null,
+    found.userConsent ? "Consented to by users" : null,
+  ].filter(Boolean);
+  return (
+    <div className="person-access__why">
+      {found.highRisk ? <SeverityDot severity="high" label="High-risk permissions" /> : null}
+      {found.highRisk ? " " : null}
+      {found.applicationPermissions
+        ? "Holds application permissions, usable with no one signed in."
+        : "Holds no application permissions."}
+      {consent.length > 0 ? <span className="person-muted"> {consent.join(", ")}.</span> : null}
+    </div>
+  );
+}
+
 function OwnsSection({ owned }: { owned: PersonAccessData["owned"] }) {
   return (
-    <section className="panel person-access" aria-label="Owns">
+    <section id={sectionIds.owns} className="panel person-access" aria-label="Owns">
       <h3>Owns</h3>
       <Source>
         Live from Microsoft
@@ -480,6 +554,7 @@ function OwnsSection({ owned }: { owned: PersonAccessData["owned"] }) {
               <li key={entry.id}>
                 <strong>{entry.name ?? "Hidden by Microsoft"}</strong>
                 <span className="person-muted"> {ownedLabels[entry.kind]}</span>
+                <OwnedDetail entry={entry} owned={owned} />
               </li>
             ))}
           </ul>
@@ -499,14 +574,17 @@ function OwnsSection({ owned }: { owned: PersonAccessData["owned"] }) {
 }
 
 // The audits each stored section draws on, in the order the tab shows them.
-const auditSections: { title: string; audits: string[] }[] = [
-  { title: "Sign-in methods", audits: ["mfa.registration"] },
-  { title: "Devices", audits: ["devices.managed"] },
-  { title: "Mailbox", audits: ["mail.mailbox-storage"] },
-  { title: "Password", audits: ["accounts.passwords"] },
-  { title: "Risk", audits: ["identity.risky-users"] },
+const auditSections: { title: string; id: string; audits: string[]; guestsOnly?: true }[] = [
+  { title: "Sign-in methods", id: sectionIds.methods, audits: ["mfa.registration"] },
+  { title: "Devices", id: sectionIds.devices, audits: ["devices.managed"] },
+  { title: "Mailbox", id: sectionIds.mailbox, audits: ["mail.mailbox-storage"] },
+  { title: "Password", id: sectionIds.password, audits: ["accounts.passwords"] },
+  { title: "Risk", id: sectionIds.risk, audits: ["identity.risky-users"] },
   // Inactive accounts and Licenses to reclaim are folded into this one (personAccessSummary.ts).
-  { title: "Activity", audits: ["accounts.activity"] },
+  { title: "Activity", id: sectionIds.activity, audits: ["accounts.activity"] },
+  // The route sends a result for this audit only for an account that is a guest.
+  { title: "Guest", id: sectionIds.guest, audits: ["guests.review"], guestsOnly: true },
+  { title: "Microsoft 365 apps", id: sectionIds.apps, audits: ["usage.m365-apps"] },
 ];
 
 export const rightLabels: Record<MailboxRight, string> = {
@@ -693,7 +771,11 @@ export function SharedMailboxesSection({
     );
   })();
   return (
-    <section className="panel person-access" aria-label="Shared mailboxes">
+    <section
+      id={sectionIds.sharedMailboxes}
+      className="panel person-access"
+      aria-label="Shared mailboxes"
+    >
       <h3>Shared mailboxes</h3>
       {body}
     </section>
@@ -730,19 +812,26 @@ export function PersonAccessView({
       <GroupsSection memberships={access.memberships} results={byId} />
       <OwnsSection owned={access.owned} />
       <ConditionalAccessSection section={access.conditionalAccess} />
-      {auditSections.map((group) => (
-        <section className="panel person-access" aria-label={group.title} key={group.title}>
-          <h3>{group.title}</h3>
-          {access.audits.status !== "ok" ? (
-            <CannotShow section={access.audits} />
-          ) : (
-            group.audits.map((id) => {
-              const result = byId.get(id);
-              return result ? <AuditSummary key={id} result={result} results={byId} /> : null;
-            })
-          )}
-        </section>
-      ))}
+      {auditSections
+        .filter((group) => !group.guestsOnly || group.audits.some((id) => byId.has(id)))
+        .map((group) => (
+          <section
+            id={group.id}
+            className="panel person-access"
+            aria-label={group.title}
+            key={group.title}
+          >
+            <h3>{group.title}</h3>
+            {access.audits.status !== "ok" ? (
+              <CannotShow section={access.audits} />
+            ) : (
+              group.audits.map((id) => {
+                const result = byId.get(id);
+                return result ? <AuditSummary key={id} result={result} results={byId} /> : null;
+              })
+            )}
+          </section>
+        ))}
       <SharedMailboxesSection mailbox={mailbox} error={mailboxError} />
     </>
   );

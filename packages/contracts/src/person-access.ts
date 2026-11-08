@@ -66,6 +66,40 @@ export const accessMembershipsSchema = z.discriminatedUnion("status", [
 ]);
 
 export const accessOwnedKinds = ["group", "team", "application", "service-principal"] as const;
+
+// What the stored audits say about one object a person owns. A group or team has its Groups and
+// Teams status and tags; an application or service principal has its App consents row. An owned
+// object with no row in the latest run has no detail, and `lookups` says whether that run exists.
+export const accessOwnedDetailSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("group"),
+    id: z.string().max(200),
+    status: text,
+    tags: z.array(z.string().max(40)).max(20),
+  }),
+  z.object({
+    kind: z.literal("app"),
+    id: z.string().max(200),
+    // Holds a permission on Prism365's high-risk list.
+    highRisk: z.boolean(),
+    // Holds permissions of its own, usable with no one signed in.
+    applicationPermissions: z.boolean(),
+    // An administrator granted permissions for everyone.
+    adminConsent: z.boolean(),
+    // At least one user consented for themselves.
+    userConsent: z.boolean(),
+  }),
+]);
+export type AccessOwnedDetail = z.infer<typeof accessOwnedDetailSchema>;
+
+// Whether the audit behind a kind of detail has a result to look in.
+export const accessLookupSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ok"), finishedAt: time.nullable() }),
+  z.object({ status: z.literal("no_run") }),
+  accessFailedSchema,
+]);
+export type AccessLookup = z.infer<typeof accessLookupSchema>;
+
 export const accessOwnedSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("ok"),
@@ -80,6 +114,9 @@ export const accessOwnedSchema = z.discriminatedUnion("status", [
       )
       .max(MAX_ACCESS_OWNED),
     truncated: z.boolean(),
+    // Absent in an answer recorded before owned objects were looked up in the audits.
+    details: z.array(accessOwnedDetailSchema).max(MAX_ACCESS_OWNED).optional(),
+    lookups: z.object({ groups: accessLookupSchema, apps: accessLookupSchema }).optional(),
   }),
   accessNotGrantedSchema,
   accessFailedSchema,
@@ -157,6 +194,8 @@ export const ACCESS_AUDIT_FIELDS: Readonly<Record<string, readonly string[]>> = 
   ],
   "accounts.inactive": ["days"],
   "licenses.reclaim": ["status", "licenses"],
+  "guests.review": ["invitation", "invited", "days", "lastSuccess", "status"],
+  "usage.m365-apps": ["lastActivity", "days", "apps", "platforms"],
 };
 
 export const accessAuditCellSchema = z.object({

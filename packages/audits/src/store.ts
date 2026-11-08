@@ -7,6 +7,8 @@ import {
   auditRunTriggerSchema,
 } from "@prism365/contracts";
 import type { SqlClient } from "@prism365/storage";
+import { joinKey } from "./activity-reports.ts";
+import { HASHED } from "./m365-app-usage.ts";
 import { auditTrendTiles } from "./trend.ts";
 
 // Audit runs in prism365_audit_run. Every query is tenant-scoped twice: by the transaction's
@@ -320,4 +322,150 @@ export async function getRun(
   const row = result.rows[0];
   if (!row) return null;
   return { ...toRun(row), rows: json(row.result_rows) as AuditRow[] };
+}
+
+// Which rows of a run to pick.
+//
+// - personId: the rows whose account id is this one.
+// - name: the rows whose cell at `path` is this sign-in name, compared the way the audits compare
+//   names (NFKC, trimmed, lower case). A cell that is a hash is Microsoft hiding the name, and is
+//   never matched against anything.
+// - list: the rows whose cell at `path` is a list that holds `value` exactly (the owners of a group).
+// - keys: the rows whose key is one of `keys`, or whose cell at `cell.path` is one of
+//   `cell.values` (an application registration is found by its application id, which the row
+//   carries as a cell). Ids compare in lower case.
+export type RowPick =
+  | { by: "personId"; personId: string }
+  | { by: "name"; path: readonly string[]; principal: string }
+  | { by: "list"; path: readonly string[]; value: string }
+  | {
+      by: "keys";
+      keys: readonly string[];
+      cell?: { path: readonly string[]; values: readonly string[] };
+    };
+
+function cellAt(row: AuditRow, path: readonly string[]): unknown {
+  let value: unknown = row.cells;
+  for (const step of path) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    value = (value as Record<string, unknown>)[step];
+  }
+  return value;
+}
+
+// The one definition of "this row belongs to that pick". The SQL below only narrows the rows it
+// hands back to this: it never decides alone.
+export function rowMatches(row: AuditRow, pick: RowPick): boolean {
+  switch (pick.by) {
+    case "personId":
+      return row.personId === pick.personId;
+    case "name": {
+      const cell = cellAt(row, pick.path);
+      if (typeof cell !== "string") return false;
+      const name = cell.trim();
+      if (name === "" || HASHED.test(name)) return false;
+      return joinKey(name) === joinKey(pick.principal);
+    }
+    case "list": {
+      const cell = cellAt(row, pick.path);
+      return Array.isArray(cell) && cell.includes(pick.value);
+    }
+    case "keys": {
+      if (pick.keys.some((key) => key.toLowerCase() === row.key.toLowerCase())) return true;
+      if (!pick.cell) return false;
+      const cell = cellAt(row, pick.cell.path);
+      return (
+        typeof cell === "string" &&
+        pick.cell.values.some((value) => value.toLowerCase() === cell.toLowerCase())
+      );
+    }
+  }
+}
+
+export interface PickedRows {
+  run: AuditRun;
+  // At most `limit` rows, in the order the run stores them.
+  rows: AuditRow[];
+  // The run held more matching rows than `limit`.
+  more: boolean;
+}
+
+// The most rows of a name comparison the database hands back for JavaScript to settle. A cell with
+// a character outside printable ASCII could equal the name only after NFKC folding (a full-width
+// letter) or because of white space other than a space, which the database cannot do, so every
+// such cell is a candidate whatever name is sought. A name equal to an ASCII cell is found by the
+// comparison itself. More candidates than this and the run is read whole instead.
+const NAME_CANDIDATES = 200;
+
+// The rows of the newest succeeded run of one audit that match `pick`, found by the database in
+// one statement (the run's header and its matching rows come from one snapshot), so a page view
+// never loads a whole run of up to 20,000 rows. null when the audit never finished a run.
+//
+// The database only narrows the rows; rowMatches decides, so the answer is the same as filtering
+// the whole run in memory. A name comparison is narrowed to the cells that equal the name in
+// plain ASCII plus the few that hold any other character, and falls back to reading the run when
+// there are too many of those.
+export async function pickRows(
+  sql: SqlClient,
+  tenantId: string,
+  auditId: string,
+  pick: RowPick,
+  limit: number,
+): Promise<PickedRows | null> {
+  const wholeRun = async (): Promise<PickedRows | null> => {
+    const run = await latestSucceededRun(sql, tenantId, auditId);
+    if (!run) return null;
+    const matching = run.rows.filter((row) => rowMatches(row, pick));
+    const { rows: _rows, ...header } = run;
+    return { run: header, rows: matching.slice(0, limit), more: matching.length > limit };
+  };
+  const fetch = pick.by === "name" ? NAME_CANDIDATES : limit;
+  const where =
+    pick.by === "personId"
+      ? "e.elem->>'personId' = $3"
+      : pick.by === "name"
+        ? `jsonb_typeof(e.elem #> $3::text[]) = 'string' AND (lower(btrim(e.elem #>> $3::text[]) COLLATE "C") = $4 OR (e.elem #>> $3::text[]) ~ '[^ -~]')`
+        : pick.by === "list"
+          ? "jsonb_typeof(e.elem #> $3::text[]) = 'array' AND (e.elem #> $3::text[]) @> $4::jsonb"
+          : `lower((e.elem->>'key') COLLATE "C") = ANY($3::text[]) OR lower((e.elem #>> $4::text[]) COLLATE "C") = ANY($5::text[])`;
+  const params: unknown[] =
+    pick.by === "personId"
+      ? [pick.personId]
+      : pick.by === "name"
+        ? [["cells", ...pick.path], joinKey(pick.principal)]
+        : pick.by === "list"
+          ? [["cells", ...pick.path], JSON.stringify([pick.value])]
+          : [
+              pick.keys.map((key) => key.toLowerCase()),
+              ["cells", ...(pick.cell?.path ?? [])],
+              (pick.cell?.values ?? []).map((value) => value.toLowerCase()),
+            ];
+  const result = await sql.query<RunRecord & { elem: unknown }>(
+    `WITH latest AS (
+       SELECT ${summaryColumns}, result_rows FROM prism365_audit_run
+        WHERE tenant_id=$1 AND audit_id=$2 AND status='succeeded'
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1)
+     SELECT l.id, l.audit_id, l.audit_version, l.status, l.complete, l.started_at, l.finished_at,
+            l.started_by, l.started_by_name, l.error_code, l.error_message, l.summary, l.notes,
+            l.row_count, l.run_scope, l.domain_counts, l.trigger, m.elem
+       FROM latest l
+       LEFT JOIN LATERAL (
+         SELECT e.elem, e.ord FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(l.result_rows) = 'array' THEN l.result_rows ELSE '[]'::jsonb END)
+           WITH ORDINALITY AS e(elem, ord)
+          WHERE ${where}
+          ORDER BY e.ord
+          LIMIT $${params.length + 3}) m ON true
+      ORDER BY m.ord`,
+    [tenantId, auditId, ...params, fetch + 1],
+  );
+  const first = result.rows[0];
+  if (!first) return null;
+  const candidates = result.rows.flatMap((row) =>
+    row.elem === null ? [] : [row.elem as AuditRow],
+  );
+  if (pick.by === "name" && candidates.length > fetch) return wholeRun();
+  const found = candidates.filter((row) => rowMatches(row, pick));
+  return { run: toRun(first), rows: found.slice(0, limit), more: found.length > limit };
 }

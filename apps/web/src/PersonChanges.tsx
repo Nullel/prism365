@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { ChangeRow, startHistory } from "./Changes.tsx";
 import { readJson, SkeletonRows } from "./common.tsx";
+import { sectionIds } from "./personSummaryLines.ts";
 
 // Directory changes made to or by one person, newest first, on their page. Read from what
 // collection stored; opening the panel writes its own access-ledger entry on the server.
@@ -32,6 +33,7 @@ export function PersonChangeList({
 }) {
   return (
     <section
+      id={sectionIds.changes}
       className="panel signin-table person-grid person-changes"
       aria-label="Directory changes"
     >

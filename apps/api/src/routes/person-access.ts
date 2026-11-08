@@ -5,6 +5,7 @@ import {
   grantText,
   latestSucceededRun,
   type Pacer,
+  pickRows,
   type Policy,
   policyContext,
   policyReach,
@@ -12,11 +13,16 @@ import {
   readPaced,
 } from "@prism365/audits";
 import {
-  ACCESS_AUDIT_FIELDS,
   type AccessAuditResult,
+  type AccessLookup,
   type AccessMembership,
+  type AccessOwnedDetail,
   type AccessPolicy,
+  type AuditRow,
+  cleanText,
   MAX_ACCESS_AUDIT_ROWS,
+  MAX_ACCESS_OWNED,
+  normalizeUserId,
   COMBINED_RISKS_AUDIT_ID,
   MAX_ACCESS_MEMBERSHIPS,
   type PersonAccess,
@@ -33,9 +39,11 @@ import {
   combinedRisksFor,
   type DirectoryObject,
   directoryObjectSchema,
+  accessRows,
+  type OwnedObject,
   ownedEntries,
+  pickFor,
   readFailure,
-  rowsFor,
   sortMemberships,
 } from "../person-access.ts";
 import { RouteBoundaryError, type RouteContext } from "./context.ts";
@@ -49,7 +57,9 @@ import { RouteBoundaryError, type RouteContext } from "./context.ts";
 const usersContext = { feature: "directory.users.read", permission: "User.Read.All" } as const;
 const MEMBERSHIP_SELECT =
   "id,displayName,groupTypes,mailEnabled,securityEnabled,membershipRule,roleTemplateId,description";
-const OWNED_SELECT = "id,displayName,resourceProvisioningOptions";
+// appId lets an owned application registration be found in App consents, which keys its rows by
+// the service principal and holds the application id as a cell.
+const OWNED_SELECT = "id,displayName,resourceProvisioningOptions,appId";
 const MEMBERSHIP_PAGE = 100;
 const OWNED_PAGE = 100;
 const MAX_PAGES = 20;
@@ -68,7 +78,15 @@ const AUDIT_IDS = [
   "accounts.activity",
   "accounts.inactive",
   "licenses.reclaim",
+  "guests.review",
+  "usage.m365-apps",
 ] as const;
+
+// The audits that describe an owned group or team, and an owned application or service principal.
+const GROUPS_AUDIT = "groups.teams";
+const CONSENTS_AUDIT = "apps.consents";
+const GUESTS_AUDIT = "guests.review";
+const OWNED_ROW_LIMIT = MAX_ACCESS_OWNED * 2;
 
 const userSchema = z.object({
   userPrincipalName: z.string().max(320).nullish().catch(null),
@@ -205,7 +223,9 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
     const params = personParams.safeParse(request.params);
     if (!params.success)
       return reply.status(400).send({ error: "invalid_request", message: "Unknown account." });
-    const { userId } = params.data;
+    // Lower case like the person summary, so an id written in capitals in the address gives the
+    // same answer as the one Microsoft writes.
+    const userId = normalizeUserId(params.data.userId);
 
     // Which live sections can be read is decided first, so the ledger entry names what is about to
     // be read. Nothing has been asked of Microsoft or the store yet.
@@ -258,7 +278,14 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
     else
       try {
         const read = await readOwned(users.scoped, userId, signal);
-        owned = { status: "ok", readAt: readAt(), ...read };
+        const looked = modules ? await ownedDetails(modules, session.tenantId, read.entries) : null;
+        owned = {
+          status: "ok",
+          readAt: readAt(),
+          entries: read.entries.map(({ appId: _appId, ...entry }) => entry),
+          truncated: read.truncated,
+          ...(looked ?? {}),
+        };
       } catch (error) {
         owned = { status: "failed", message: readFailure(error) };
       }
@@ -328,7 +355,7 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
       };
     else
       try {
-        audits = await storedAudits(modules, session.tenantId, userId, principal);
+        audits = await storedAudits(modules, session.tenantId, userId, principal, userType);
       } catch {
         audits = { status: "failed", message: "The stored audit results could not be read." };
       }
@@ -342,10 +369,18 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
       };
     else
       try {
-        const run = await modules.database.tenant(session.tenantId, (sql) =>
-          latestSucceededRun(sql, session.tenantId, COMBINED_RISKS_AUDIT_ID),
+        const picked = await modules.database.tenant(session.tenantId, (sql) =>
+          pickRows(
+            sql,
+            session.tenantId,
+            COMBINED_RISKS_AUDIT_ID,
+            { by: "personId", personId: userId },
+            5,
+          ),
         );
-        combinedRisks = run ? combinedRisksFor(run, userId) : { status: "no_run" };
+        combinedRisks = picked
+          ? combinedRisksFor({ ...picked.run, rows: picked.rows }, userId)
+          : { status: "no_run" };
       } catch {
         combinedRisks = {
           status: "failed",
@@ -367,6 +402,7 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
     tenantId: string,
     userId: string,
     directoryName: string | null,
+    userType: string | null,
   ): Promise<PersonAccess["audits"]> {
     const wanted = AUDIT_IDS.flatMap((id) => {
       const audit = builtInAudits.find((candidate) => candidate.definition.id === id);
@@ -381,8 +417,16 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
         principal = stored.get(userId) ?? null;
       }
       const results: AccessAuditResult[] = [];
-      for (const audit of wanted)
-        results.push(await resultFor(sql, tenantId, audit, userId, principal));
+      for (const audit of wanted) {
+        // Guest accounts is a section for guests. When the directory said the account is a
+        // member it is skipped without a look; when it said nothing, the audit's own row decides.
+        const guests = audit.definition.id === GUESTS_AUDIT;
+        if (guests && userType !== null && userType.toLowerCase() !== "guest") continue;
+        const result = await resultFor(sql, tenantId, audit, userId, principal);
+        if (guests && userType === null && !(result.status === "ok" && result.rows.length > 0))
+          continue;
+        results.push(result);
+      }
       return { status: "ok" as const, results };
     });
   }
@@ -396,41 +440,124 @@ export function registerPersonAccessRoutes(app: FastifyInstance, context: RouteC
   ): Promise<AccessAuditResult> {
     const auditId = audit.definition.id;
     const name = audit.definition.title;
-    const run = await latestSucceededRun(sql, tenantId, auditId);
-    if (!run) return { status: "no_run", auditId, name };
-    const found = rowsFor(auditId, run, userId, principal);
-    if (found === "no_name")
+    const how = pickFor(auditId, userId, principal);
+    if (how === "no_name") {
+      // Without a name there is nothing to look for, but whether the audit ever ran still shows.
+      const run = await pickRows(sql, tenantId, auditId, { by: "keys", keys: [] }, 1);
+      if (!run) return { status: "no_run", auditId, name };
       return {
         status: "failed",
         auditId,
         name,
         message:
-          "Prism365 does not know this account's sign-in name yet, so its mailbox cannot be found in the report.",
+          auditId === "mail.mailbox-storage"
+            ? "Prism365 does not know this account's sign-in name yet, so its mailbox cannot be found in the report."
+            : "Prism365 does not know this account's sign-in name yet, so it cannot be found in this report.",
       };
-    // Only the columns this page shows (ACCESS_AUDIT_FIELDS), in that order.
-    const shown = ACCESS_AUDIT_FIELDS[auditId] ?? [];
-    const columns = shown.flatMap((key) => {
-      const column = audit.definition.columns.find((candidate) => candidate.key === key);
-      return column ? [column] : [];
-    });
-    const rows = found.rows.slice(0, MAX_ACCESS_AUDIT_ROWS).map((row) => ({
-      key: row.key,
-      cells: columns.flatMap((column) => {
-        const value = row.cells[column.key];
-        if (value === null || value === undefined) return [];
-        if (Array.isArray(value) && value.length === 0) return [];
-        return [{ key: column.key, label: column.label, kind: column.kind, value }];
-      }),
-    }));
+    }
+    const picked = await pickRows(sql, tenantId, auditId, how.pick, MAX_ACCESS_AUDIT_ROWS);
+    if (!picked) return { status: "no_run", auditId, name };
+    const rows = accessRows(audit, picked.rows);
     return {
       status: "ok",
       auditId,
       name,
-      finishedAt: run.finishedAt,
-      scope: run.scope,
-      matchedBy: found.matchedBy,
+      finishedAt: picked.run.finishedAt,
+      scope: picked.run.scope,
+      matchedBy: how.matchedBy,
       rows,
-      truncated: found.rows.length > MAX_ACCESS_AUDIT_ROWS,
+      truncated: picked.more,
     };
   }
+}
+
+// What the stored audits say about the groups, teams, applications and service principals a person
+// owns. A group or team is found in Groups and Teams by its id; a service principal in App
+// consents by its id, and an application registration by its application id. An owned object with
+// no row simply has no detail, and the lookup says whether the audit has a result to look in.
+async function ownedDetails(
+  modules: NonNullable<RouteContext["modules"]>,
+  tenantId: string,
+  owned: readonly OwnedObject[],
+): Promise<{
+  details: AccessOwnedDetail[];
+  lookups: { groups: AccessLookup; apps: AccessLookup };
+}> {
+  const groupObjects = owned.filter((object) => object.kind === "group" || object.kind === "team");
+  const appObjects = owned.filter(
+    (object) => object.kind === "application" || object.kind === "service-principal",
+  );
+  const details: AccessOwnedDetail[] = [];
+  const lookup = async (
+    auditId: string,
+    objects: readonly OwnedObject[],
+    useAppId: boolean,
+  ): Promise<{ lookup: AccessLookup; rows: AuditRow[] }> => {
+    try {
+      const appIds = useAppId
+        ? objects.flatMap((object) =>
+            object.kind === "application" && object.appId ? [object.appId] : [],
+          )
+        : [];
+      const picked = await modules.database.tenant(tenantId, (sql) =>
+        pickRows(
+          sql,
+          tenantId,
+          auditId,
+          {
+            by: "keys",
+            keys: objects.map((object) => object.id),
+            cell: { path: ["appId"], values: appIds },
+          },
+          OWNED_ROW_LIMIT,
+        ),
+      );
+      if (!picked) return { lookup: { status: "no_run" }, rows: [] };
+      return {
+        lookup: { status: "ok", finishedAt: picked.run.finishedAt },
+        rows: picked.rows,
+      };
+    } catch {
+      return {
+        lookup: { status: "failed", message: "The stored audit result could not be read." },
+        rows: [],
+      };
+    }
+  };
+  const groups = await lookup(GROUPS_AUDIT, groupObjects, false);
+  const apps = await lookup(CONSENTS_AUDIT, appObjects, true);
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  for (const object of groupObjects) {
+    const row = groups.rows.find((candidate) => same(candidate.key, object.id));
+    if (!row) continue;
+    const status = row.cells.status;
+    details.push({
+      kind: "group",
+      id: object.id,
+      status: typeof status === "string" ? cleanText(status.slice(0, 500)) : "",
+      tags: row.tags.slice(0, 20),
+    });
+  }
+  for (const object of appObjects) {
+    const row = apps.rows.find((candidate) =>
+      object.kind === "service-principal"
+        ? same(candidate.key, object.id)
+        : object.appId !== null &&
+          typeof candidate.cells.appId === "string" &&
+          same(candidate.cells.appId, object.appId),
+    );
+    if (!row) continue;
+    details.push({
+      kind: "app",
+      id: object.id,
+      highRisk: row.tags.includes("high-risk"),
+      applicationPermissions: row.tags.includes("app-permissions"),
+      adminConsent: row.tags.includes("admin-consent"),
+      userConsent: row.tags.includes("user-consent"),
+    });
+  }
+  return {
+    details: details.slice(0, MAX_ACCESS_OWNED),
+    lookups: { groups: groups.lookup, apps: apps.lookup },
+  };
 }

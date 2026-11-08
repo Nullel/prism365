@@ -263,3 +263,26 @@ export async function personChanges(
     next: rows.rows.length > limit && last ? position(last) : null,
   };
 }
+
+// The most changes a count reports. A person with more reads as this many "or more", which keeps
+// the statement short for an account that is changed constantly.
+export const CHANGE_COUNT_LIMIT = 1_000;
+
+// How many changes involve one person (as the actor or the target) since a time. A change where
+// they are both is counted once. Never more than CHANGE_COUNT_LIMIT: `more` says the count was cut.
+export async function countPersonChanges(
+  sql: SqlClient,
+  tenantId: string,
+  userId: string,
+  since: Date,
+): Promise<{ count: number; more: boolean }> {
+  const result = await sql.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM (
+       SELECT DISTINCT s.event_id FROM ${subjectTable} AS s
+        WHERE s.tenant_id = $1 AND s.subject_id = $2 AND s.activity_at >= $3::timestamptz
+        LIMIT $4) AS involved`,
+    [tenantId, userId.toLowerCase(), since.toISOString(), CHANGE_COUNT_LIMIT + 1],
+  );
+  const n = result.rows[0]?.n ?? 0;
+  return { count: Math.min(n, CHANGE_COUNT_LIMIT), more: n > CHANGE_COUNT_LIMIT };
+}
