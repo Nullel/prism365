@@ -511,6 +511,8 @@ describe("person access API, stored audit results", () => {
         applicationPermissions: true,
         adminConsent: true,
         userConsent: false,
+        // The row's own id, which opens the app's panel. The registration's id is not that row's.
+        entityId: "elsewhere",
       },
       {
         kind: "app",
@@ -519,6 +521,7 @@ describe("person access API, stored audit results", () => {
         applicationPermissions: false,
         adminConsent: false,
         userConsent: true,
+        entityId: "sp-4",
       },
     ]);
     expect(owned.lookups.groups.status).toBe("ok");

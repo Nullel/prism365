@@ -20,7 +20,7 @@ import {
 } from "@prism365/contracts";
 import { type ReactNode, useEffect, useState } from "react";
 import { day, number, RelativeTime, readJson, SeverityDot, SkeletonRows } from "./common.tsx";
-import { PersonLink } from "./navigation.tsx";
+import { EntityLink, PersonLink } from "./navigation.tsx";
 import {
   lineKey,
   partKey,
@@ -81,9 +81,22 @@ function MembershipItem({ entry }: { entry: AccessMembership }) {
         <span className="person-muted">Hidden by Microsoft</span> <code>{entry.id}</code>
       </li>
     );
+  // Groups open their panel. A role is named to the panel by its role ID, which for the roles an
+  // account holds is the template ID. An administrative unit has no panel.
+  const roleId = entry.kind === "role" ? entry.roleTemplateId : null;
+  const name =
+    entry.kind === "administrative-unit" || (entry.kind === "role" && roleId === null) ? (
+      <strong>{entry.name}</strong>
+    ) : (
+      <EntityLink
+        kind={entry.kind === "role" ? "role" : "group"}
+        id={entry.kind === "role" ? roleId : entry.id}
+        name={entry.name}
+      />
+    );
   return (
     <li>
-      <strong>{entry.name}</strong>
+      {name}
       {entry.kind === "role" || entry.kind === "administrative-unit" ? null : (
         // Microsoft lists the groups an account is in, nested or not, but not the path to a nested
         // one, so it can only be called nested.
@@ -117,7 +130,13 @@ export function PartView({ part }: { part: SummaryPart }) {
 export function LineView({ line }: { line: SummaryLine }) {
   return (
     <li>
-      {line.title ? <strong>{line.title}</strong> : null}
+      {line.title ? (
+        line.entity ? (
+          <EntityLink kind={line.entity.kind} id={line.entity.id} name={line.title} />
+        ) : (
+          <strong>{line.title}</strong>
+        )
+      ) : null}
       {line.privileged ? (
         <>
           {" "}
@@ -283,42 +302,98 @@ const stateLabels: Record<AccessPolicy["state"], string> = {
   unknown: "State not recognised",
 };
 
-function reasonText(reason: PolicyReason): string {
+// How a policy reaches or skips a person, in words, with the group or role named as a link when
+// the policy names one by its ID.
+function Named({ reason }: { reason: PolicyReason }) {
+  const kind = reason.kind === "role" ? "role" : "group";
+  return reason.id && reason.name ? (
+    <EntityLink kind={kind} id={reason.id} name={reason.name} />
+  ) : null;
+}
+
+function ReasonText({ reason }: { reason: PolicyReason }) {
   switch (reason.kind) {
     case "all":
-      return "all users";
+      return <>all users</>;
     case "person":
-      return "this person by name";
+      return <>this person by name</>;
     case "guests":
-      return "guests or external users";
+      return <>guests or external users</>;
     case "group":
-      return reason.name ? `the group ${reason.name}` : "a group they are in";
+      return reason.name ? (
+        <>
+          the group <Named reason={reason} />
+          {reason.id ? null : reason.name}
+        </>
+      ) : (
+        <>a group they are in</>
+      );
     case "role":
-      return reason.name ? `the role ${reason.name}` : "a role they hold";
+      return reason.name ? (
+        <>
+          the role <Named reason={reason} />
+          {reason.id ? null : reason.name}
+        </>
+      ) : (
+        <>a role they hold</>
+      );
   }
 }
-const reasonList = (reasons: PolicyReason[]) => reasons.map(reasonText).join(", ");
+
+function ReasonList({ reasons }: { reasons: PolicyReason[] }) {
+  return (
+    <>
+      {reasons.map((reason, index) => (
+        <span key={`${reason.kind}:${reason.id ?? reason.name ?? index}`}>
+          {index > 0 ? ", " : null}
+          <ReasonText reason={reason} />
+        </span>
+      ))}
+    </>
+  );
+}
 
 // How an exclusion reads: by name, or through the group or role that carries it.
-function exclusionText(reason: PolicyReason): string {
+function ExclusionText({ reason }: { reason: PolicyReason }) {
   switch (reason.kind) {
     case "person":
-      return "by name";
+      return <>by name</>;
     case "guests":
-      return "as a guest or external user";
+      return <>as a guest or external user</>;
     case "group":
-      return reason.name ? `through the group ${reason.name}` : "through a group they are in";
+      return reason.name ? (
+        <>
+          through the group <Named reason={reason} />
+          {reason.id ? null : reason.name}
+        </>
+      ) : (
+        <>through a group they are in</>
+      );
     case "role":
-      return reason.name ? `through the role ${reason.name}` : "through a role they hold";
+      return reason.name ? (
+        <>
+          through the role <Named reason={reason} />
+          {reason.id ? null : reason.name}
+        </>
+      ) : (
+        <>through a role they hold</>
+      );
     case "all":
-      return "for all users";
+      return <>for all users</>;
   }
 }
+
+const POLICY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isPolicyId = (id: string) => POLICY_ID.test(id);
 
 function PolicyItem({ policy }: { policy: AccessPolicy }) {
   return (
     <li>
-      <strong>{policy.name ?? "Unnamed policy"}</strong>
+      {isPolicyId(policy.id) ? (
+        <EntityLink kind="policy" id={policy.id} name={policy.name ?? "Unnamed policy"} />
+      ) : (
+        <strong>{policy.name ?? "Unnamed policy"}</strong>
+      )}
       <span className="person-muted">
         {" "}
         {stateLabels[policy.state]}. {policy.controls}.
@@ -327,13 +402,26 @@ function PolicyItem({ policy }: { policy: AccessPolicy }) {
         {policy.effect === "excluded" ? (
           <>
             <SeverityDot severity="medium" label="Excluded" /> Left out{" "}
-            {policy.excludedBy.map(exclusionText).join(" and ")}.
-            {policy.targeted
-              ? ` It would otherwise reach them through ${reasonList(policy.includedBy)}.`
-              : " It would not have reached them anyway."}
+            {policy.excludedBy.map((reason, index) => (
+              <span key={`${reason.kind}:${reason.id ?? reason.name ?? index}`}>
+                {index > 0 ? " and " : null}
+                <ExclusionText reason={reason} />
+              </span>
+            ))}
+            .
+            {policy.targeted ? (
+              <>
+                {" "}
+                It would otherwise reach them through <ReasonList reasons={policy.includedBy} />.
+              </>
+            ) : (
+              " It would not have reached them anyway."
+            )}
           </>
         ) : (
-          <>Applies through {reasonList(policy.includedBy)}.</>
+          <>
+            Applies through <ReasonList reasons={policy.includedBy} />.
+          </>
         )}
       </div>
     </li>
@@ -532,6 +620,27 @@ function OwnedDetail({ entry, owned }: { entry: OwnedEntry; owned: OwnedOk }) {
   );
 }
 
+// An owned object's name, opening its panel when it has one. A group or team is a group. An app is
+// found by the service principal row the App consents audit matched to it, or is a service
+// principal itself; an application registration that audit has no row for has no panel.
+function OwnedName({ entry, owned }: { entry: OwnedEntry; owned: OwnedOk }) {
+  if (entry.name === null) return <strong>Hidden by Microsoft</strong>;
+  if (entry.kind === "group" || entry.kind === "team")
+    return <EntityLink kind="group" id={entry.id} name={entry.name} />;
+  const found = owned.details?.find((detail) => detail.id === entry.id);
+  const appId =
+    found?.kind === "app" && found.entityId
+      ? found.entityId
+      : entry.kind === "service-principal"
+        ? entry.id
+        : null;
+  return appId ? (
+    <EntityLink kind="app" id={appId} name={entry.name} />
+  ) : (
+    <strong>{entry.name}</strong>
+  );
+}
+
 function OwnsSection({ owned }: { owned: PersonAccessData["owned"] }) {
   return (
     <section id={sectionIds.owns} className="panel person-access" aria-label="Owns">
@@ -553,7 +662,7 @@ function OwnsSection({ owned }: { owned: PersonAccessData["owned"] }) {
           <ul className="person-access__list">
             {owned.entries.map((entry) => (
               <li key={entry.id}>
-                <strong>{entry.name ?? "Hidden by Microsoft"}</strong>
+                <OwnedName entry={entry} owned={owned} />
                 <span className="person-muted"> {ownedLabels[entry.kind]}</span>
                 <OwnedDetail entry={entry} owned={owned} />
               </li>

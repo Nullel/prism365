@@ -400,7 +400,7 @@ export const privilegedRolesAudit: Audit = {
   definition: {
     id: "directory.privileged-roles",
     handoff: false,
-    version: 1,
+    version: 2,
     title: "Privileged roles",
     description:
       "Who holds Microsoft Entra administrator roles: permanent, time-bound, activated and eligible assignments, with the disabled accounts, guests and apps among them.",
@@ -451,6 +451,31 @@ export const privilegedRolesAudit: Audit = {
         kind: "boolean",
         empty: "Not read",
         help: "From Microsoft's authentication methods report, when that read pack is on. Accounts only.",
+      },
+      {
+        key: "roleId",
+        label: "Role ID",
+        kind: "text",
+        hidden: true,
+        internal: true,
+        help: "The role definition ID, which a role's page and Conditional Access policies name it by.",
+      },
+      {
+        key: "holderId",
+        label: "Holder ID",
+        kind: "text",
+        hidden: true,
+        internal: true,
+        help: "The directory ID of the account, group or app that holds the role.",
+      },
+      {
+        key: "throughId",
+        label: "Through group ID",
+        kind: "text",
+        hidden: true,
+        internal: true,
+        empty: "Not known",
+        help: "The ID of the group a role comes through. Microsoft does not say which group, so it is filled only when exactly one group holds the same role at the same scope.",
       },
     ],
     views: [
@@ -545,6 +570,29 @@ export const privilegedRolesAudit: Audit = {
         a.grant.principalId.localeCompare(b.grant.principalId),
     );
 
+    // Microsoft names the route (Group) and not the group, so the group is known only when one
+    // group holds the same role at the same scope. That needs every holder told apart: an app left
+    // unnamed would look like a group.
+    const groupHolders = new Map<string, Set<string>>();
+    const holdersKnown =
+      resolution.usersAsked &&
+      resolution.applicationsAsked &&
+      !resolution.failed &&
+      !resolution.capped;
+    if (holdersKnown)
+      for (const { grant, holder } of entries)
+        if (holder.type === "Group or other" && grant.through === "Direct") {
+          const route = [grant.roleId, grant.scope].join("|");
+          const found = groupHolders.get(route) ?? new Set<string>();
+          found.add(grant.principalId);
+          groupHolders.set(route, found);
+        }
+    const throughGroupOf = (grant: Grant): string | null => {
+      if (grant.through !== "Group") return null;
+      const found = groupHolders.get([grant.roleId, grant.scope].join("|"));
+      return found?.size === 1 ? ([...found][0] ?? null) : null;
+    };
+
     const rows: AuditRow[] = entries.map(({ grant, holder, role, privileged, mfa }) => ({
       key: [grant.held, grant.principalId, grant.roleId, grant.scope].join("|").toLowerCase(),
       personId: holder.personId,
@@ -569,6 +617,9 @@ export const privilegedRolesAudit: Audit = {
         ends: grant.ends,
         enabled: holder.enabled,
         mfa,
+        roleId: grant.roleId,
+        holderId: grant.principalId,
+        throughId: throughGroupOf(grant),
       },
     }));
 

@@ -4,6 +4,7 @@ import {
   type ChangeProperty,
   type ChangeTarget,
   changeFeedSchema,
+  type EntityKind,
   type Finding,
   type FindingState,
   findingListSchema,
@@ -23,6 +24,7 @@ import {
   SkeletonRows,
   when,
 } from "./common.tsx";
+import { EntityLink } from "./navigation.tsx";
 
 // Directory changes: every Microsoft Entra directory audit event Prism365 has collected, newest
 // first, with the changes the rules flagged on top. Microsoft keeps these records 7 or 30 days;
@@ -105,6 +107,41 @@ function Name({ label, onOpen }: { label: string; onOpen: (() => void) | null })
     </button>
   ) : (
     <span>{label}</span>
+  );
+}
+
+// A directory object that has a panel: a group, a Conditional Access policy or an app, by the id
+// the change records. A role or a device is not linked: a change names the role's directory object
+// and the device's Entra object, and the panels are keyed by the role definition and the Intune
+// device, which are different ids.
+export function entityOfTarget(target: ChangeTarget): { kind: EntityKind; id: string } | null {
+  const id = target.id?.trim().toLowerCase() ?? "";
+  if (!GUID.test(id)) return null;
+  const type = target.type?.toLowerCase();
+  if (type === "group") return { kind: "group", id };
+  if (type === "policy") return { kind: "policy", id };
+  if (type === "serviceprincipal") return { kind: "app", id };
+  return null;
+}
+
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function TargetName({
+  target,
+  onOpenPerson,
+  self,
+}: {
+  target: ChangeTarget;
+  onOpenPerson: ((userId: string) => void) | undefined;
+  self: string | undefined;
+}) {
+  const entity = entityOfTarget(target);
+  if (entity) return <EntityLink kind={entity.kind} id={entity.id} name={targetLabel(target)} />;
+  return (
+    <Name
+      label={targetLabel(target)}
+      onOpen={personLink(target.type, target.id, onOpenPerson, self)}
+    />
   );
 }
 
@@ -229,10 +266,7 @@ export function ChangeRow({
             shown.map(({ target, id, first }) => (
               <span key={id}>
                 {first ? "" : ", "}
-                <Name
-                  label={targetLabel(target)}
-                  onOpen={personLink(target.type, target.id, onOpenPerson, self)}
-                />
+                <TargetName target={target} onOpenPerson={onOpenPerson} self={self} />
               </span>
             ))
           )}

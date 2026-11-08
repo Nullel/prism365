@@ -162,3 +162,31 @@ export function CheckIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function CloseIcon(props: IconProps) {
+  return (
+    <svg aria-hidden="true" {...common} {...props}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+export function GroupIcon(props: IconProps) {
+  return (
+    <svg aria-hidden="true" {...common} {...props}>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5" />
+      <circle cx="17" cy="9" r="2.5" />
+      <path d="M17 14c2.4 0 3.7 1.700 3.7 4" />
+    </svg>
+  );
+}
+
+export function DeviceIcon(props: IconProps) {
+  return (
+    <svg aria-hidden="true" {...common} {...props}>
+      <rect x="4" y="5" width="16" height="11" rx="2" />
+      <path d="M2.5 19h19" />
+    </svg>
+  );
+}

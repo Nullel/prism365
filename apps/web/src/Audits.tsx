@@ -31,6 +31,8 @@ import {
   auditSettingsSchema,
   auditStartSchema,
   auditTrendSchema,
+  decodeOwnerList,
+  type EntityKind,
   groupByFamily,
   MAX_AUDIT_SCOPE_DOMAINS,
   nextScheduledRun,
@@ -54,7 +56,7 @@ import {
 import { downloadHandoff } from "./Handoffs.tsx";
 import { ArrowUpRightIcon, CheckIcon, CopyIcon, DownloadIcon } from "./icons.tsx";
 import { auditsLookedUpByName, canLookUp, MailboxName } from "./MailboxName.tsx";
-import type { PersonOrigin } from "./navigation.tsx";
+import { EntityLink, PersonLink, type PersonOrigin } from "./navigation.tsx";
 
 // Audits: checks an administrator runs when they need them. The catalog lists every audit with
 // its last result; an audit's page shows a run as a table the audit describes itself, so a new
@@ -794,12 +796,75 @@ const alertValues = new Set([
   "Locked out",
 ]);
 
+const ENTITY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface EntityRef {
+  kind: EntityKind;
+  id: string;
+}
+
+// A holder of a role that the audit knows is an app opens the app. One it could not sort, a group
+// among them, stays as it is: the audit does not know what it is.
+const holderEntity = (row: AuditRow): EntityRef | null =>
+  row.personId === null && row.cells.holderType === "Service principal"
+    ? { kind: "app", id: String(row.cells.holderId ?? "") }
+    : null;
+
+// The columns that name a group, role, policy, device or app, and what makes the name a link to
+// its panel. A role is named by its role ID, which every row of the audit keeps in a hidden column.
+const entityColumns: Readonly<
+  Record<string, Readonly<Record<string, (row: AuditRow) => EntityRef | null>>>
+> = {
+  "groups.teams": { group: (row) => ({ kind: "group", id: row.key }) },
+  "identity.conditional-access": { policy: (row) => ({ kind: "policy", id: row.key }) },
+  "apps.consents": { app: (row) => ({ kind: "app", id: row.key }) },
+  "directory.privileged-roles": {
+    role: (row) => ({ kind: "role", id: String(row.cells.roleId ?? "") }),
+    holder: holderEntity,
+  },
+  "devices.managed": { device: (row) => ({ kind: "device", id: row.key }) },
+};
+
+// What the cell opens, or null. Only a real ID is a link: a row from an older run may lack one.
+export function entityOfCell(auditId: string, columnKey: string, row: AuditRow): EntityRef | null {
+  const found = entityColumns[auditId]?.[columnKey]?.(row) ?? null;
+  return found && ENTITY_ID.test(found.id) ? found : null;
+}
+
+// The owners of a group as the first two names, the way the table shows any list, with the ones
+// that are accounts opening their pages. The hidden owner list holds the owners in a form that
+// pairs each name with its ID; sorted by name it is the visible Owner names column.
+function OwnerNames({ row, total, from }: { row: AuditRow; total: number; from: PersonOrigin }) {
+  const owners = decodeOwnerList(row.cells.ownerList)
+    .flatMap((owner) => (owner.name ? [{ ...owner, name: owner.name }] : []))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 5);
+  const shown = owners.slice(0, 2);
+  return (
+    <span className="link-list" title={owners.map((owner) => owner.name).join("\n")}>
+      {shown.map((owner, index) => (
+        // The comma belongs to the name before it, so a line never breaks in front of one.
+        <span key={owner.id}>
+          {owner.kind === "user" ? (
+            <PersonLink userId={owner.id} name={owner.name} from={from} />
+          ) : (
+            owner.name
+          )}
+          {index < shown.length - 1 || total > shown.length ? "," : null}{" "}
+        </span>
+      ))}
+      {total > shown.length ? <span className="audit-more">+{total - shown.length}</span> : null}
+    </span>
+  );
+}
+
 function CellValue({
   column,
   cell,
   personId,
   onOpenPerson,
   lookedUp = false,
+  entity = null,
 }: {
   column: AuditColumn;
   cell: AuditCell | undefined;
@@ -807,7 +872,13 @@ function CellValue({
   onOpenPerson: (userId: string) => void;
   // True for the one column of an audit whose rows carry a sign-in name and no account id.
   lookedUp?: boolean;
+  // The panel this cell's name opens, for a column that names a group, role, policy, device or app.
+  entity?: EntityRef | null;
 }) {
+  if (entity && typeof cell === "string" && cell !== "")
+    return <EntityLink kind={entity.kind} id={entity.id} name={cell} />;
+  if (entity && isPerson(cell) && (cell.name ?? cell.principal))
+    return <EntityLink kind={entity.kind} id={entity.id} name={cell.name ?? cell.principal} />;
   if (column.kind === "person") {
     const person = isPerson(cell) ? cell : { name: null, principal: null };
     const name = person.name ?? person.principal ?? "Unnamed account";
@@ -993,7 +1064,11 @@ export function ResultTable({
   const [sort, setSort] = useState(definition.defaultSort);
   const [shown, setShown] = useState<Set<string>>(
     () =>
-      new Set(definition.columns.filter((column) => !column.hidden).map((column) => column.key)),
+      new Set(
+        definition.columns
+          .filter((column) => !column.hidden && !column.internal)
+          .map((column) => column.key),
+      ),
   );
   // How many rows are shown, for the current filters; changing a filter starts again at one page.
   const [page, setPage] = useState({ key: "", limit: PAGE_ROWS });
@@ -1104,24 +1179,26 @@ export function ResultTable({
             <details className="audit-columns">
               <summary className="button button--secondary">Columns</summary>
               <div className="audit-columns__menu">
-                {definition.columns.map((column) => (
-                  <label key={column.key} className="check-row check-row--compact">
-                    <input
-                      type="checkbox"
-                      checked={shown.has(column.key)}
-                      disabled={column.kind === "person"}
-                      onChange={(event) =>
-                        setShown((current) => {
-                          const next = new Set(current);
-                          if (event.target.checked) next.add(column.key);
-                          else next.delete(column.key);
-                          return next;
-                        })
-                      }
-                    />
-                    <span>{column.label}</span>
-                  </label>
-                ))}
+                {definition.columns
+                  .filter((column) => !column.internal)
+                  .map((column) => (
+                    <label key={column.key} className="check-row check-row--compact">
+                      <input
+                        type="checkbox"
+                        checked={shown.has(column.key)}
+                        disabled={column.kind === "person"}
+                        onChange={(event) =>
+                          setShown((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(column.key);
+                            else next.delete(column.key);
+                            return next;
+                          })
+                        }
+                      />
+                      <span>{column.label}</span>
+                    </label>
+                  ))}
               </div>
             </details>
             {hasPeople ? <CopyEmailsButton emails={emails} /> : null}
@@ -1210,6 +1287,7 @@ export function ResultTable({
                             personId={row.personId}
                             onOpenPerson={onOpenPerson}
                             lookedUp={auditsLookedUpByName[definition.id] === column.key}
+                            entity={entityOfCell(definition.id, column.key, row)}
                           />
                         </th>
                       ) : (
@@ -1217,13 +1295,29 @@ export function ResultTable({
                           key={column.key}
                           className={numeric(column) ? "audit-numeric" : undefined}
                         >
-                          <CellValue
-                            column={column}
-                            cell={row.cells[column.key]}
-                            personId={row.personId}
-                            onOpenPerson={onOpenPerson}
-                            lookedUp={auditsLookedUpByName[definition.id] === column.key}
-                          />
+                          {definition.id === "groups.teams" &&
+                          column.key === "ownerNames" &&
+                          Array.isArray(row.cells.ownerNames) &&
+                          decodeOwnerList(row.cells.ownerList).length > 0 ? (
+                            <OwnerNames
+                              row={row}
+                              total={row.cells.ownerNames.length}
+                              from={{
+                                kind: "audit",
+                                auditId: definition.id,
+                                title: definition.title,
+                              }}
+                            />
+                          ) : (
+                            <CellValue
+                              column={column}
+                              cell={row.cells[column.key]}
+                              personId={row.personId}
+                              onOpenPerson={onOpenPerson}
+                              lookedUp={auditsLookedUpByName[definition.id] === column.key}
+                              entity={entityOfCell(definition.id, column.key, row)}
+                            />
+                          )}
                         </td>
                       ),
                     )}

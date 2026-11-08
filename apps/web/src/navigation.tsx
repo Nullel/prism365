@@ -1,17 +1,33 @@
+import type { EntityKind } from "@prism365/contracts";
 import { createContext, Fragment, type ReactNode, useContext } from "react";
 import type { WorkspaceView } from "./App.tsx";
 import { AccountName } from "./common.tsx";
+import { CopyButton } from "./CopyButton.tsx";
 import type { PersonTab } from "./PersonTabs.tsx";
 
-// One way to open a person from anywhere, so a deep component needs no prop chain to do it. The
-// App provides it once. A page that opens people from a known place wraps its content in an
-// OriginScope, and the person's page then says where you came from. The origin lives in memory
-// only: a reload or a pasted link has none, and the address bar holds no trace of it.
+// One way to open a person, or a group, role, policy, device or app, from anywhere, so a deep
+// component needs no prop chain to do it. The App provides it once. A page that opens people from
+// a known place wraps its content in an OriginScope, and the person's page then says where you came
+// from. The origin lives in memory only: a reload or a pasted link has none, and the address bar
+// holds no trace of it.
 
 export type PersonOrigin =
   | { kind: "view"; view: WorkspaceView; label: string }
   | { kind: "audit"; auditId: string; title: string }
-  | { kind: "person"; userId: string; name: string };
+  | { kind: "person"; userId: string; name: string }
+  // A person opened from an entity's panel, which closes when the person's page opens.
+  | { kind: "entity"; entityKind: EntityKind; id: string; name: string };
+
+// What an entity is called in a sentence. Lower case; `capital` starts a label with it.
+export const capital = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+
+export const entityKindLabels: Record<EntityKind, string> = {
+  group: "group",
+  role: "role",
+  policy: "policy",
+  device: "device",
+  app: "app",
+};
 
 export interface Navigation {
   // `from` undefined means "from the page you are on"; null means from nowhere in particular
@@ -20,6 +36,9 @@ export interface Navigation {
   openPerson(userId: string, from?: PersonOrigin | null, tab?: PersonTab): void;
   openAudit(auditId: string): void;
   openView(view: WorkspaceView): void;
+  // Opens the side panel for a group, role, policy, device or app. Opened from inside the panel it
+  // adds a step the panel can go back through; opened from a page it starts the panel afresh.
+  openEntity(kind: EntityKind, id: string): void;
   // Where the open person's page was reached from, if anywhere.
   origin: PersonOrigin | null;
 }
@@ -28,6 +47,7 @@ const idle: Navigation = {
   openPerson: () => {},
   openAudit: () => {},
   openView: () => {},
+  openEntity: () => {},
   origin: null,
 };
 
@@ -56,7 +76,7 @@ export interface Crumb {
 // there is no origin, and the page then shows its usual People part.
 export function originTrail(
   origin: PersonOrigin | null,
-  nav: Pick<Navigation, "openPerson" | "openAudit" | "openView">,
+  nav: Pick<Navigation, "openPerson" | "openAudit" | "openView" | "openEntity">,
 ): Crumb[] {
   if (!origin) return [];
   if (origin.kind === "view")
@@ -66,7 +86,48 @@ export function originTrail(
       { label: "Audits", open: () => nav.openView("audits") },
       { label: origin.title, open: () => nav.openAudit(origin.auditId) },
     ];
+  if (origin.kind === "entity")
+    return [
+      {
+        label: `${capital(entityKindLabels[origin.entityKind])}: ${origin.name}`,
+        open: () => nav.openEntity(origin.entityKind, origin.id),
+      },
+    ];
   return [{ label: origin.name, open: () => nav.openPerson(origin.userId, null) }];
+}
+
+// A group, role, policy, device or app as a link that opens its panel. A thing no stored audit
+// names reads "Unknown group" and keeps its id behind a copy button, so the id can be searched
+// for elsewhere without taking up the line. With no id there is nothing to open, and the name is
+// plain text.
+export function EntityLink({
+  kind,
+  id,
+  name,
+}: {
+  kind: EntityKind;
+  id: string | null;
+  name: string | null;
+}) {
+  const nav = useNavigation();
+  const label = name?.trim() ? name : `Unknown ${entityKindLabels[kind]}`;
+  if (!id) return <span className={name?.trim() ? undefined : "person-muted"}>{label}</span>;
+  const link = (
+    <button
+      className="people-name entity-link"
+      type="button"
+      onClick={() => nav.openEntity(kind, id)}
+    >
+      <strong className="people-name__name">{label}</strong>
+    </button>
+  );
+  if (name?.trim()) return link;
+  return (
+    <span className="copy-line">
+      {link}
+      <CopyButton text={id} label={`Copy the ID of this ${entityKindLabels[kind]}`} />
+    </span>
+  );
 }
 
 // A person's name as a link when the account has an id, and as plain text when it has none (a

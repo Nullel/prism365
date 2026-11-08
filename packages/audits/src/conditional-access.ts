@@ -264,6 +264,11 @@ function userIds(list: readonly string[]): string[] {
   return [...new Set(list.filter((item) => GUID.test(item)).map(lower))];
 }
 
+// The most IDs one hidden list keeps, which is what a cell holds. A policy that names more is cut,
+// and the ones past the cut are not matched to the policy.
+const MAX_NAMED_IDS = 200;
+const idList = (list: readonly string[]) => userIds(list).slice(0, MAX_NAMED_IDS);
+
 export function requiresMfa(policy: Policy): boolean {
   const grant = policy.grantControls;
   return has(grant.builtInControls, "mfa") || grant.authenticationStrength !== null;
@@ -630,7 +635,7 @@ export function createConditionalAccessAudit(options: ConditionalAccessOptions =
   return {
     definition: {
       id: "identity.conditional-access",
-      version: 1,
+      version: 2,
       title: "Conditional Access policies",
       description:
         "Every Conditional Access policy with who it applies to, who it leaves out and what it requires, and whether the tenant blocks legacy authentication and asks administrators for MFA.",
@@ -671,6 +676,23 @@ export function createConditionalAccessAudit(options: ConditionalAccessOptions =
         { key: "excludedUsers", label: "Excluded users", kind: "number", hidden: true },
         { key: "excludedGroups", label: "Excluded groups", kind: "number", hidden: true },
         { key: "excludedRoles", label: "Excluded roles", kind: "number", hidden: true },
+        ...(
+          [
+            ["includeUserIds", "Included user IDs"],
+            ["excludeUserIds", "Excluded user IDs"],
+            ["includeGroupIds", "Included group IDs"],
+            ["excludeGroupIds", "Excluded group IDs"],
+            ["includeRoleIds", "Included role IDs"],
+            ["excludeRoleIds", "Excluded role IDs"],
+          ] as const
+        ).map(([key, label]) => ({
+          key,
+          label,
+          kind: "list" as const,
+          hidden: true,
+          internal: true,
+          help: "Directory IDs the policy names, up to 200, which the page for a group, role or account matches to its policies.",
+        })),
       ],
       views: [
         { id: "all", label: "All policies", tags: [] },
@@ -793,6 +815,12 @@ export function createConditionalAccessAudit(options: ConditionalAccessOptions =
             excludedUsers: userIds(users.excludeUsers).length,
             excludedGroups: users.excludeGroups.length,
             excludedRoles: users.excludeRoles.length,
+            includeUserIds: idList(users.includeUsers),
+            excludeUserIds: idList(users.excludeUsers),
+            includeGroupIds: idList(users.includeGroups),
+            excludeGroupIds: idList(users.excludeGroups),
+            includeRoleIds: idList(users.includeRoles),
+            excludeRoleIds: idList(users.excludeRoles),
           },
         });
       }

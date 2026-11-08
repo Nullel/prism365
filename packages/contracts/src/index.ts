@@ -9,6 +9,7 @@ export * from "./canaries.ts";
 export * from "./changes.ts";
 export * from "./delivery.ts";
 export * from "./digest.ts";
+export * from "./entity.ts";
 export * from "./handoff.ts";
 export * from "./insights.ts";
 export * from "./investigation.ts";

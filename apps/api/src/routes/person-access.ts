@@ -554,6 +554,7 @@ async function ownedDetails(
       applicationPermissions: row.tags.includes("app-permissions"),
       adminConsent: row.tags.includes("admin-consent"),
       userConsent: row.tags.includes("user-consent"),
+      entityId: row.key.slice(0, 200),
     });
   }
   return {

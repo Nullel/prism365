@@ -397,7 +397,7 @@ describe("loading and failing", () => {
     expect(resultStatus("ro", 0)).toBe("No results.");
     expect(resultStatus("ro", 1)).toBe("1 result.");
     expect(resultStatus("ro", 5)).toBe("5 results.");
-    expect(noMatchText("  zzz ")).toBe("No page, audit or person matches “zzz”.");
+    expect(noMatchText("  zzz ")).toBe("No page, audit, person, group or app matches “zzz”.");
   });
 });
 
@@ -444,7 +444,7 @@ describe("the dialog's roles and aria wiring", () => {
     const dialog = one(withRole(nodes, "dialog"));
     expect(dialog.props["aria-modal"]).toBe("true");
     const title = one(findAll(nodes, (host) => host.props.id === dialog.props["aria-labelledby"]));
-    expect(textOf(title)).toBe("Search pages, audits and people");
+    expect(textOf(title)).toBe("Search pages, audits, people, groups and apps");
   });
 
   it("is a combobox over a listbox, and points at the marked option", () => {
@@ -537,7 +537,7 @@ describe("the empty, no-match and failed states", () => {
     expect(input.props["aria-controls"]).toBeUndefined();
     expect(input.props["aria-activedescendant"]).toBeUndefined();
     const markup = html({ query: "zzz", groups: [], empty: noMatchText("zzz") });
-    expect(markup).toContain("No page, audit or person matches “zzz”.");
+    expect(markup).toContain("No page, audit, person, group or app matches “zzz”.");
   });
 
   it("when a source failed, still shows the others and says which could not load", () => {

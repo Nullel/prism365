@@ -334,6 +334,12 @@ export async function getRun(
 // - keys: the rows whose key is one of `keys`, or whose cell at `cell.path` is one of
 //   `cell.values` (an application registration is found by its application id, which the row
 //   carries as a cell). Ids compare in lower case.
+// - ids: the rows that have any of these: a key in `keys`, an account id in `personIds`, or a
+//   cell at one of `cells` that is, or is a list holding, one of its values. This is how a page
+//   for a group, role, policy, device or app finds its rows by the hidden id cells the audits
+//   keep. Ids compare in lower case.
+// - contains: the rows whose cell at `path` holds `text`, letter case ignored (Quick search). With
+//   `distinct`, only the first row for each value of that cell: a role has a row for every holder.
 export type RowPick =
   | { by: "personId"; personId: string }
   | { by: "name"; path: readonly string[]; principal: string }
@@ -342,7 +348,14 @@ export type RowPick =
       by: "keys";
       keys: readonly string[];
       cell?: { path: readonly string[]; values: readonly string[] };
-    };
+    }
+  | {
+      by: "ids";
+      keys?: readonly string[];
+      personIds?: readonly string[];
+      cells?: readonly { path: readonly string[]; values: readonly string[] }[];
+    }
+  | { by: "contains"; path: readonly string[]; text: string; distinct?: readonly string[] };
 
 function cellAt(row: AuditRow, path: readonly string[]): unknown {
   let value: unknown = row.cells;
@@ -379,7 +392,70 @@ export function rowMatches(row: AuditRow, pick: RowPick): boolean {
         pick.cell.values.some((value) => value.toLowerCase() === cell.toLowerCase())
       );
     }
+    case "ids": {
+      const wanted = (list: readonly string[] | undefined) =>
+        new Set((list ?? []).map((value) => value.toLowerCase()));
+      if (wanted(pick.keys).has(row.key.toLowerCase())) return true;
+      if (row.personId !== null && wanted(pick.personIds).has(row.personId.toLowerCase()))
+        return true;
+      return (pick.cells ?? []).some((target) => {
+        const values = wanted(target.values);
+        const cell = cellAt(row, target.path);
+        if (typeof cell === "string") return values.has(cell.toLowerCase());
+        return (
+          Array.isArray(cell) &&
+          cell.some((item) => typeof item === "string" && values.has(item.toLowerCase()))
+        );
+      });
+    }
+    case "contains": {
+      const cell = cellAt(row, pick.path);
+      return typeof cell === "string" && cell.toLowerCase().includes(pick.text.toLowerCase());
+    }
   }
+}
+
+// The where clause and bind parameters of an "ids" pick, numbered from `first`. Nothing a person
+// typed or a stored id holds becomes part of the statement text. A list cell is read element by
+// element, which is how its items compare in lower case.
+function idsClause(
+  pick: Extract<RowPick, { by: "ids" }>,
+  first: number,
+): { where: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const bind = (value: unknown) => {
+    params.push(value);
+    return `$${first + params.length - 1}`;
+  };
+  const lowered = (list: readonly string[]) => list.map((value) => value.toLowerCase());
+  const parts: string[] = [];
+  if (pick.keys && pick.keys.length > 0)
+    parts.push(`lower((e.elem->>'key') COLLATE "C") = ANY(${bind(lowered(pick.keys))}::text[])`);
+  if (pick.personIds && pick.personIds.length > 0)
+    parts.push(
+      `lower((e.elem->>'personId') COLLATE "C") = ANY(${bind(lowered(pick.personIds))}::text[])`,
+    );
+  for (const target of pick.cells ?? []) {
+    if (target.values.length === 0) continue;
+    const path = bind(["cells", ...target.path]);
+    const values = bind(lowered(target.values));
+    parts.push(
+      `(CASE jsonb_typeof(e.elem #> ${path}::text[])
+         WHEN 'string' THEN lower((e.elem #>> ${path}::text[]) COLLATE "C") = ANY(${values}::text[])
+         WHEN 'array' THEN EXISTS (
+           SELECT 1 FROM jsonb_array_elements(e.elem #> ${path}::text[]) AS a(item)
+            WHERE jsonb_typeof(a.item) = 'string'
+              AND lower((a.item #>> '{}') COLLATE "C") = ANY(${values}::text[]))
+         ELSE false END)`,
+    );
+  }
+  return { where: parts.length > 0 ? parts.join(" OR ") : "false", params };
+}
+
+// A LIKE pattern for text that holds `text` anywhere, with the characters LIKE treats as its own
+// (the backslash that escapes, % and _) made plain.
+export function containsPattern(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
 }
 
 export interface PickedRows {
@@ -420,26 +496,61 @@ export async function pickRows(
     return { run: header, rows: matching.slice(0, limit), more: matching.length > limit };
   };
   const fetch = pick.by === "name" ? NAME_CANDIDATES : limit;
-  const where =
-    pick.by === "personId"
-      ? "e.elem->>'personId' = $3"
-      : pick.by === "name"
-        ? `jsonb_typeof(e.elem #> $3::text[]) = 'string' AND (lower(btrim(e.elem #>> $3::text[]) COLLATE "C") = $4 OR (e.elem #>> $3::text[]) ~ '[^ -~]')`
-        : pick.by === "list"
-          ? "jsonb_typeof(e.elem #> $3::text[]) = 'array' AND (e.elem #> $3::text[]) @> $4::jsonb"
-          : `lower((e.elem->>'key') COLLATE "C") = ANY($3::text[]) OR lower((e.elem #>> $4::text[]) COLLATE "C") = ANY($5::text[])`;
-  const params: unknown[] =
-    pick.by === "personId"
-      ? [pick.personId]
-      : pick.by === "name"
-        ? [["cells", ...pick.path], joinKey(pick.principal)]
-        : pick.by === "list"
-          ? [["cells", ...pick.path], JSON.stringify([pick.value])]
-          : [
-              pick.keys.map((key) => key.toLowerCase()),
-              ["cells", ...(pick.cell?.path ?? [])],
-              (pick.cell?.values ?? []).map((value) => value.toLowerCase()),
-            ];
+  const clause = (): { where: string; params: unknown[] } => {
+    switch (pick.by) {
+      case "personId":
+        return { where: "e.elem->>'personId' = $3", params: [pick.personId] };
+      case "name":
+        return {
+          where: `jsonb_typeof(e.elem #> $3::text[]) = 'string' AND (lower(btrim(e.elem #>> $3::text[]) COLLATE "C") = $4 OR (e.elem #>> $3::text[]) ~ '[^ -~]')`,
+          params: [["cells", ...pick.path], joinKey(pick.principal)],
+        };
+      case "list":
+        return {
+          where:
+            "jsonb_typeof(e.elem #> $3::text[]) = 'array' AND (e.elem #> $3::text[]) @> $4::jsonb",
+          params: [["cells", ...pick.path], JSON.stringify([pick.value])],
+        };
+      case "keys":
+        return {
+          where: `lower((e.elem->>'key') COLLATE "C") = ANY($3::text[]) OR lower((e.elem #>> $4::text[]) COLLATE "C") = ANY($5::text[])`,
+          params: [
+            pick.keys.map((key) => key.toLowerCase()),
+            ["cells", ...(pick.cell?.path ?? [])],
+            (pick.cell?.values ?? []).map((value) => value.toLowerCase()),
+          ],
+        };
+      case "ids":
+        return idsClause(pick, 3);
+      case "contains":
+        // The default escape character is used: an ESCAPE clause becomes a function call, which
+        // the module SQL policy does not allow.
+        return {
+          where:
+            "jsonb_typeof(e.elem #> $3::text[]) = 'string' AND (e.elem #>> $3::text[]) ILIKE $4",
+          params: [["cells", ...pick.path], containsPattern(pick.text)],
+        };
+    }
+  };
+  const { where, params } = clause();
+  const distinct = pick.by === "contains" && pick.distinct ? ["cells", ...pick.distinct] : null;
+  const limitAt = params.length + (distinct ? 4 : 3);
+  const matching = distinct
+    ? `SELECT d.elem, d.ord FROM (
+           SELECT DISTINCT ON (e.elem #>> $${params.length + 3}::text[]) e.elem, e.ord
+             FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(l.result_rows) = 'array' THEN l.result_rows ELSE '[]'::jsonb END)
+               WITH ORDINALITY AS e(elem, ord)
+            WHERE ${where}
+            ORDER BY e.elem #>> $${params.length + 3}::text[], e.ord) d
+          ORDER BY d.ord
+          LIMIT $${limitAt}`
+    : `SELECT e.elem, e.ord FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(l.result_rows) = 'array' THEN l.result_rows ELSE '[]'::jsonb END)
+           WITH ORDINALITY AS e(elem, ord)
+          WHERE ${where}
+          ORDER BY e.ord
+          LIMIT $${limitAt}`;
   const result = await sql.query<RunRecord & { elem: unknown }>(
     `WITH latest AS (
        SELECT ${summaryColumns}, result_rows FROM prism365_audit_run
@@ -451,14 +562,9 @@ export async function pickRows(
             l.row_count, l.run_scope, l.domain_counts, l.trigger, m.elem
        FROM latest l
        LEFT JOIN LATERAL (
-         SELECT e.elem, e.ord FROM jsonb_array_elements(
-           CASE WHEN jsonb_typeof(l.result_rows) = 'array' THEN l.result_rows ELSE '[]'::jsonb END)
-           WITH ORDINALITY AS e(elem, ord)
-          WHERE ${where}
-          ORDER BY e.ord
-          LIMIT $${params.length + 3}) m ON true
+         ${matching}) m ON true
       ORDER BY m.ord`,
-    [tenantId, auditId, ...params, fetch + 1],
+    [tenantId, auditId, ...params, ...(distinct ? [distinct] : []), fetch + 1],
   );
   const first = result.rows[0];
   if (!first) return null;
@@ -466,6 +572,16 @@ export async function pickRows(
     row.elem === null ? [] : [row.elem as AuditRow],
   );
   if (pick.by === "name" && candidates.length > fetch) return wholeRun();
-  const found = candidates.filter((row) => rowMatches(row, pick));
+  let found = candidates.filter((row) => rowMatches(row, pick));
+  if (pick.by === "contains" && pick.distinct) {
+    const seen = new Set<string>();
+    const path = pick.distinct;
+    found = found.filter((row) => {
+      const value = JSON.stringify(cellAt(row, path) ?? null);
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+  }
   return { run: toRun(first), rows: found.slice(0, limit), more: found.length > limit };
 }

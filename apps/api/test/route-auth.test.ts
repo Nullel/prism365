@@ -65,6 +65,8 @@ describe("route authorization", () => {
       "/v1/people/user-1/receipts",
       "/v1/people/user-1/access",
       "/v1/people/user-1/summary",
+      "/v1/entities/group/44444444-4444-4444-8444-444444444444",
+      "/v1/entities/search?q=plant",
       "/v1/mailbox-access",
       "/v1/people/44444444-4444-4444-8444-444444444444/mailbox-access",
       "/v1/audit-runs/44444444-4444-4444-8444-444444444444/handoff.json",

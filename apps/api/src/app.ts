@@ -130,6 +130,7 @@ import { registerChangeRoutes } from "./routes/changes.ts";
 import { RouteBoundaryError, type RouteContext } from "./routes/context.ts";
 import { registerDeliveryRoutes } from "./routes/delivery.ts";
 import { digestUnavailable, registerDigestRoutes } from "./routes/digest.ts";
+import { registerEntityRoutes } from "./routes/entities.ts";
 import { registerHandoffRoutes } from "./routes/handoffs.ts";
 import { registerMailboxAccessRoutes } from "./routes/mailbox-access.ts";
 import { registerPersonAccessRoutes } from "./routes/person-access.ts";
@@ -1610,6 +1611,7 @@ export function createApp(options: AppOptions = {}) {
   registerCanaryRoutes(app, routes);
   registerPersonAccessRoutes(app, routes);
   registerPersonSummaryRoutes(app, routes);
+  registerEntityRoutes(app, routes);
   registerMailboxAccessRoutes(app, routes);
   registerDeliveryRoutes(app, routes);
 

@@ -88,6 +88,9 @@ export const accessOwnedDetailSchema = z.discriminatedUnion("kind", [
     adminConsent: z.boolean(),
     // At least one user consented for themselves.
     userConsent: z.boolean(),
+    // The id of the App consents row that matched, which opens the app's panel. An application
+    // registration is matched by its application ID, so its own id is not the row's.
+    entityId: z.string().max(200).optional(),
   }),
 ]);
 export type AccessOwnedDetail = z.infer<typeof accessOwnedDetailSchema>;
@@ -170,7 +173,8 @@ export const accessConditionalAccessSchema = z.discriminatedUnion("status", [
 // stores about the account stays on the audit's own page. The route sends only these, and the page
 // builds its summary lines from them, so this is the one place that says what the tab shows.
 export const ACCESS_AUDIT_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  "directory.privileged-roles": ["role", "privileged", "held", "ends"],
+  // The role ID is not shown: it opens the role's panel from the role's name.
+  "directory.privileged-roles": ["role", "privileged", "held", "ends", "roleId"],
   "mfa.registration": ["registered", "strength", "methods"],
   "devices.managed": [
     "device",

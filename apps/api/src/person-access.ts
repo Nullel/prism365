@@ -5,6 +5,7 @@ import {
   type AccessMembership,
   type AccessMembershipKind,
   type AuditRow,
+  type CombinedRiskRule,
   type CombinedRisksOk,
   cleanText,
   MAX_ACCESS_AUDIT_ROWS,
@@ -246,16 +247,21 @@ const SEVERITY_RANK = { critical: 3, high: 2, medium: 1 } as const;
 const isGapNote = (note: string) =>
   note.startsWith("Not used:") || note.includes(" was not checked");
 
-// One person's answer from a Combined risks run. The rules come from the row's tags, in the rule
-// list's order, so a tag this version does not know is ignored rather than guessed at.
-export function combinedRisksFor(run: CombinedRun, personId: string): CombinedRisksOk {
-  const row = run.rows.find((candidate) => candidate.personId === personId);
-  const tags = new Set(row?.tags ?? []);
-  const rules = RULES.filter((rule) => tags.has(rule.id)).map((rule) => ({
+// The rules a Combined risks row's tags trip, in the rule list's order, so a tag this version does
+// not know is ignored rather than guessed at.
+export function combinedRulesOf(tags: readonly string[]): CombinedRiskRule[] {
+  const present = new Set(tags);
+  return RULES.filter((rule) => present.has(rule.id)).map((rule) => ({
     id: rule.id,
     label: rule.label,
     severity: rule.severity,
   }));
+}
+
+// One person's answer from a Combined risks run.
+export function combinedRisksFor(run: CombinedRun, personId: string): CombinedRisksOk {
+  const row = run.rows.find((candidate) => candidate.personId === personId);
+  const rules = combinedRulesOf(row?.tags ?? []);
   const severity = rules.reduce<CombinedRisksOk["severity"]>(
     (best, rule) =>
       best === null || SEVERITY_RANK[rule.severity] > SEVERITY_RANK[best] ? rule.severity : best,

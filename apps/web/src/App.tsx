@@ -1,11 +1,12 @@
 import {
   type DashboardSummary,
   dashboardSummarySchema,
+  type EntityKind,
   type Metric,
   type PrismSession,
   sessionSchema,
 } from "@prism365/contracts";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Alerts } from "./Alerts.tsx";
 import { Notifications } from "./Attention.tsx";
 import { Audits } from "./Audits.tsx";
@@ -29,6 +30,8 @@ import {
 } from "./icons.tsx";
 import { LiveOverview } from "./LiveOverview.tsx";
 import { MailboxAccess } from "./MailboxAccess.tsx";
+import { EntityPanel } from "./EntityPanel.tsx";
+import { panelReducer } from "./entityPanelState.ts";
 import { NavigationContext, type PersonOrigin } from "./navigation.tsx";
 import { People } from "./People.tsx";
 import { type PersonTab, parsePersonTab } from "./PersonTabs.tsx";
@@ -350,6 +353,8 @@ export function App() {
   // Where the open person's page was reached from. In memory only: a reload, a pasted link and
   // the back button start without one.
   const [origin, setOrigin] = useState<PersonOrigin | null>(null);
+  // The things the side panel has shown, newest last. Empty means the panel is closed.
+  const [entityStack, dispatchEntity] = useReducer(panelReducer, []);
   // Keep the address bar in step with the page, and follow back and forward. A load without
   // a route replaces its entry rather than adding one.
   useEffect(() => {
@@ -368,6 +373,7 @@ export function App() {
       setPersonTab(route.tab ?? "overview");
       setAudit(route.audit);
       setOrigin(null);
+      dispatchEntity({ type: "close" });
     };
     window.addEventListener("popstate", follow);
     window.addEventListener("hashchange", follow);
@@ -384,21 +390,32 @@ export function App() {
   };
   // Without an origin of its own, a person opened from a page comes from that page.
   const openPerson = (userId: string, from?: PersonOrigin | null, tab?: PersonTab) => {
+    // A person's page replaces the panel, which has told it where you came from.
+    dispatchEntity({ type: "close" });
     selectPerson(userId);
     if (tab) setPersonTab(tab);
     setView("people");
     setOrigin(from !== undefined ? from : viewOrigin(view));
   };
   const openAudit = (auditId: string) => {
+    dispatchEntity({ type: "close" });
     setAudit(auditId);
     setView("audits");
   };
   const navigate = (next: WorkspaceView) => {
+    dispatchEntity({ type: "close" });
     if (next === "people") selectPerson(null);
     if (next === "audits") setAudit(null);
     setView(next);
   };
-  const navigation = { openPerson, openAudit, openView: navigate, origin };
+  const navigation = {
+    openPerson,
+    openAudit,
+    openView: navigate,
+    openEntity: (kind: EntityKind, id: string) =>
+      dispatchEntity({ type: "open", target: { kind, id } }),
+    origin,
+  };
   const [searchOpen, setSearchOpen] = useState(false);
   const searchPages = useMemo(() => pageItems(navGroups), []);
   const mac = isMacPlatform(typeof navigator === "undefined" ? undefined : navigator);
@@ -901,7 +918,13 @@ export function App() {
         }}
         onOpenAudit={openAudit}
         onOpenPerson={(userId) => openPerson(userId, null)}
+        onOpenEntity={(kind, id) =>
+          dispatchEntity({ type: "open", target: { kind, id }, fresh: true })
+        }
       />
+      {entityStack.length > 0 ? (
+        <EntityPanel stack={entityStack} dispatch={dispatchEntity} />
+      ) : null}
     </div>
   );
   return <NavigationContext.Provider value={navigation}>{shell}</NavigationContext.Provider>;
