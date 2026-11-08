@@ -2192,6 +2192,13 @@ export function createSyntheticGraph(options: { now: Date; quietFrom?: Date }): 
           ? json(project({ "@odata.type": "#microsoft.graph.user", ...manager }, select))
           : notFound();
       }
+      if (rest === "/directReports") {
+        // The reverse of the manager answer: everyone whose manager is this account.
+        const reports = tenant.users
+          .filter((candidate) => tenant.managers.get(candidate.id) === user.id)
+          .map((report) => ({ "@odata.type": "#microsoft.graph.user", ...report }));
+        return page(url, reports, select);
+      }
       if (rest === "/licenseDetails") return page(url, licenseDetails(user), select);
       // Anything else under a user (their memberships, for one) is a feature's extension to serve.
     }

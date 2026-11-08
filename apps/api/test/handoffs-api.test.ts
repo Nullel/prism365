@@ -856,6 +856,34 @@ describe("receipt import", () => {
 });
 
 describe("receipt reads", () => {
+  it("links an item only when its id and name belong to an account the handoff's run lists", async () => {
+    const exported = handoffSchema.parse(
+      (await get(`/v1/audit-runs/${inactiveRun}/handoff.json?view=d90`)).json(),
+    );
+    const items = [
+      item(),
+      // The tool paired another account's id with this account's name.
+      item({ userPrincipalName: "person1@example.invalid" }),
+      item({ userPrincipalName: null }),
+      item({ userId: "00000099-aaaa-4aaa-8aaa-000000000099", userPrincipalName: null }),
+    ];
+    const withHandoff = randomUUID();
+    expect(
+      (await importReceipt(receipt(withHandoff, items, { handoffId: exported.id }))).statusCode,
+    ).toBe(201);
+    const linked = (await get(`/v1/receipts/${withHandoff}`)).json().items;
+    expect(linked.map((entry: { linked: boolean }) => entry.linked)).toEqual([
+      true,
+      false,
+      true,
+      false,
+    ]);
+    // A receipt that answers no handoff has nothing to check against.
+    const bare = randomUUID();
+    expect((await importReceipt(receipt(bare, [item()]))).statusCode).toBe(201);
+    expect((await get(`/v1/receipts/${bare}`)).json().items[0].linked).toBe(false);
+  });
+
   it("pages a receipt's items in its order", async () => {
     const id = randomUUID();
     const items = Array.from({ length: 5 }, (_, index) =>

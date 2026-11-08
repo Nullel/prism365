@@ -67,7 +67,7 @@ export const permissionPacks = [
     phase: "mvp",
     defaultEnabled: false,
     purpose:
-      "Read selected directory user fields for account inventory and hygiene, a user's manager, a user's direct and nested memberships (groups, directory roles and administrative units), and the groups and applications a user owns.",
+      "Read selected directory user fields for account inventory and hygiene, a user's manager and direct reports, a user's direct and nested memberships (groups, directory roles and administrative units), and the groups and applications a user owns.",
     deniedBehavior: "User inventory is hidden; other reports remain available.",
     clouds: allGraphClouds,
     prerequisites: [],
@@ -77,6 +77,7 @@ export const permissionPacks = [
     documentationUrl: "https://learn.microsoft.com/en-us/graph/api/user-list?view=graph-rest-1.0",
     relatedDocumentationUrls: [
       "https://learn.microsoft.com/en-us/graph/api/user-list-manager?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/user-list-directreports?view=graph-rest-1.0",
       "https://learn.microsoft.com/en-us/graph/api/user-list-memberof?view=graph-rest-1.0",
       "https://learn.microsoft.com/en-us/graph/api/user-list-transitivememberof?view=graph-rest-1.0",
       "https://learn.microsoft.com/en-us/graph/api/user-list-ownedobjects?view=graph-rest-1.0",

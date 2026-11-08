@@ -567,9 +567,16 @@ export const storedReceiptItemSchema = z.object({
 });
 export type StoredReceiptItem = z.infer<typeof storedReceiptItemSchema>;
 
+// A receipt item as the receipt's page shows it. `linked` is true only when the item's account id
+// and principal name match an account in the run behind the handoff the receipt answers, so a
+// name is never made a link on the tool's word alone.
+export const receiptPageItemSchema = storedReceiptItemSchema.extend({
+  linked: z.boolean().default(false),
+});
+
 export const receiptItemPageSchema = z.object({
   receipt: receiptSummarySchema,
-  items: z.array(storedReceiptItemSchema).max(500),
+  items: z.array(receiptPageItemSchema).max(500),
   // The position to continue after, or null on the last page.
   next: count.nullable(),
 });

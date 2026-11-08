@@ -517,14 +517,23 @@ async function main() {
 
   const audits = await record<{ audits: { definition: { id: string } }[] }>("/api/v1/audits");
   const accounts: { id: string; principal: string }[] = [];
+  // The names the Mailbox storage table shows. It carries no account ids, so each name is looked
+  // up when clicked, and the lookup has to be on the recording.
+  const mailboxNames = new Set<string>();
   for (const entry of audits.audits) {
     const id = entry.definition.id;
     await record(`/api/v1/audits/${id}/trend?days=365`);
     const runs = await record<{ runs: { id: string }[] }>(`/api/v1/audits/${id}/runs`);
     for (const run of runs.runs) {
       const detail = await record<{
-        rows: { personId: string | null; cells: { person?: { principal: string | null } } }[];
+        rows: {
+          personId: string | null;
+          cells: { person?: { principal: string | null }; mailbox?: unknown };
+        }[];
       }>(`/api/v1/audit-runs/${run.id}`);
+      if (id === "mail.mailbox-storage")
+        for (const row of detail.rows)
+          if (typeof row.cells.mailbox === "string") mailboxNames.add(row.cells.mailbox);
       // The accounts audit lists everyone in the directory, so its newest run is the list of
       // person pages.
       if (id === "accounts.inactive" && run.id === runs.runs[0]?.id)
@@ -554,6 +563,12 @@ async function main() {
     // it, from this one, and the demo receipt names every account by its id.
     await record(`/api/v1/people/${encodeURIComponent(id)}/receipts`);
   }
+  // A mailbox that is not an account in the accounts audit (a shared mailbox, say) is looked up
+  // too, and a name no account has is recorded as the not-found answer the table then shows.
+  const looked = new Set(accounts.map((account) => account.principal));
+  for (const name of mailboxNames)
+    if (!looked.has(name))
+      await record(`/api/v1/people/lookup?email=${encodeURIComponent(name)}`, [200, 404]);
   log(`Recorded ${Object.keys(responses).length} responses for ${accounts.length} accounts.`);
 
   // 6. Check, write and format.

@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { ChangeRow, startHistory } from "./Changes.tsx";
 import { readJson, SkeletonRows } from "./common.tsx";
+import { useOpenPerson } from "./navigation.tsx";
 
 // Directory changes made to or by one person, newest first, on their page. Read from what
 // collection stored; opening the panel writes its own access-ledger entry on the server.
@@ -23,12 +24,17 @@ export function PersonChangeList({
   error,
   busy,
   onMore,
+  userId,
+  onOpenPerson,
 }: {
   // null while the first page loads.
   page: PersonChangePage | null;
   error: string;
   busy: boolean;
   onMore: () => void;
+  // The page's person, and what opens the other party of a change. Without them nobody links.
+  userId?: string;
+  onOpenPerson?: (userId: string) => void;
 }) {
   return (
     <section
@@ -51,6 +57,8 @@ export function PersonChangeList({
               <ChangeRow
                 key={change.id}
                 change={change}
+                {...(onOpenPerson ? { onOpenPerson } : {})}
+                {...(userId ? { self: userId } : {})}
                 note={<span className="person-muted change-row__note">{involvement(change)}</span>}
               />
             ))}
@@ -86,6 +94,7 @@ export function PersonChanges({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const live = session.mode === "live" && session.authenticated;
+  const openPerson = useOpenPerson();
 
   const load = useCallback(
     async (before: string | null, signal?: AbortSignal) => {
@@ -126,6 +135,8 @@ export function PersonChanges({
       page={page}
       error={error}
       busy={busy}
+      userId={userId}
+      onOpenPerson={openPerson}
       onMore={() => {
         if (!page?.next) return;
         setBusy(true);

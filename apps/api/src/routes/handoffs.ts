@@ -24,6 +24,7 @@ import { auditExportParamsSchema, auditExportQuery } from "../audit-export.ts";
 import {
   findReceipt,
   handoffExists,
+  handoffRunId,
   insertHandoff,
   insertReceipt,
   listHandoffs,
@@ -34,6 +35,7 @@ import {
   type StoredReceipt,
   statusCounts,
 } from "../handoff-store.ts";
+import { itemIsLinked, runAccounts } from "../receipt-links.ts";
 import type { RouteContext } from "./context.ts";
 
 // Handoff lists for action tools, and the receipts they send back (docs/handoff.md).
@@ -369,7 +371,17 @@ export function registerHandoffRoutes(app: FastifyInstance, context: RouteContex
         after: query.data.after ?? null,
         limit: query.data.limit,
       });
-      return { receipt: stored.summary, ...items };
+      // An item is linked to a person only when it names an account the handoff's own run lists.
+      // A run that was pruned, a receipt with no handoff or an unreadable run links nothing.
+      const handoffId = stored.summary.handoff?.id ?? null;
+      const runId = handoffId ? await handoffRunId(sql, tenantId, handoffId) : null;
+      const run = runId ? await getRun(sql, tenantId, runId) : null;
+      const accounts = run ? runAccounts(run.rows) : null;
+      return {
+        receipt: stored.summary,
+        next: items.next,
+        items: items.items.map((item) => ({ ...item, linked: itemIsLinked(item, accounts) })),
+      };
     });
     if (!page)
       return reply

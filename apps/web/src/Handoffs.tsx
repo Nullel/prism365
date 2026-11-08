@@ -14,6 +14,7 @@ import {
 } from "@prism365/contracts";
 import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 import { number, post, RelativeTime, readJson, SkeletonRows, when } from "./common.tsx";
+import { PersonLink } from "./navigation.tsx";
 
 // Handoffs: lists Prism365 exported from audits for the tool that acts on them, and the receipts
 // that tool sent back. Prism365 never calls the tool. A receipt is shown as the tool reported it,
@@ -252,7 +253,12 @@ export function ReceiptItemsTable({
           {page.items.map((item) => (
             <tr key={item.position}>
               <th scope="row" className="person-text">
-                {item.userPrincipalName ?? item.userId}
+                {/* A name opens a page only when the server matched it to an account the handoff's own
+                    run lists; the tool's word alone is not enough. */}
+                <PersonLink
+                  userId={item.linked ? item.userId : null}
+                  name={item.userPrincipalName ?? item.userId ?? "Unnamed account"}
+                />
                 {item.userPrincipalName && item.userId ? (
                   <span className="muted-label"> {item.userId}</span>
                 ) : null}

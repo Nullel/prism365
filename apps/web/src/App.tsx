@@ -29,6 +29,7 @@ import {
 } from "./icons.tsx";
 import { LiveOverview } from "./LiveOverview.tsx";
 import { MailboxAccess } from "./MailboxAccess.tsx";
+import { NavigationContext, type PersonOrigin } from "./navigation.tsx";
 import { People } from "./People.tsx";
 import { type PersonTab, parsePersonTab } from "./PersonTabs.tsx";
 import { isMacPlatform, pageItems, QuickSearch, QuickSearchButton } from "./QuickSearch.tsx";
@@ -329,12 +330,26 @@ const initialRoute = (): Route =>
     audit: null,
   };
 
+const viewLabels = new Map(
+  navGroups.flatMap((group) => group.items.map((item) => [item.view, item.label] as const)),
+);
+
+// The origin of a person opened from a whole page. The People list is where "People / name"
+// already comes from, so it has none.
+export function viewOrigin(view: WorkspaceView): PersonOrigin | null {
+  const label = viewLabels.get(view);
+  return view === "people" || !label ? null : { kind: "view", view, label };
+}
+
 export function App() {
   const [dashboard, setDashboard] = useState<DashboardSummary>(localDemoDashboard);
   const [view, setView] = useState<WorkspaceView>(() => initialRoute().view);
   const [person, setPerson] = useState<string | null>(() => initialRoute().person);
   const [audit, setAudit] = useState<string | null>(() => initialRoute().audit);
   const [personTab, setPersonTab] = useState<PersonTab>(() => initialRoute().tab ?? "overview");
+  // Where the open person's page was reached from. In memory only: a reload, a pasted link and
+  // the back button start without one.
+  const [origin, setOrigin] = useState<PersonOrigin | null>(null);
   // Keep the address bar in step with the page, and follow back and forward. A load without
   // a route replaces its entry rather than adding one.
   useEffect(() => {
@@ -352,6 +367,7 @@ export function App() {
       setPerson(route.person);
       setPersonTab(route.tab ?? "overview");
       setAudit(route.audit);
+      setOrigin(null);
     };
     window.addEventListener("popstate", follow);
     window.addEventListener("hashchange", follow);
@@ -364,10 +380,14 @@ export function App() {
   const selectPerson = (userId: string | null) => {
     setPerson(userId);
     setPersonTab("overview");
+    setOrigin(null);
   };
-  const openPerson = (userId: string) => {
+  // Without an origin of its own, a person opened from a page comes from that page.
+  const openPerson = (userId: string, from?: PersonOrigin | null, tab?: PersonTab) => {
     selectPerson(userId);
+    if (tab) setPersonTab(tab);
     setView("people");
+    setOrigin(from !== undefined ? from : viewOrigin(view));
   };
   const openAudit = (auditId: string) => {
     setAudit(auditId);
@@ -378,6 +398,7 @@ export function App() {
     if (next === "audits") setAudit(null);
     setView(next);
   };
+  const navigation = { openPerson, openAudit, openView: navigate, origin };
   const [searchOpen, setSearchOpen] = useState(false);
   const searchPages = useMemo(() => pageItems(navGroups), []);
   const mac = isMacPlatform(typeof navigator === "undefined" ? undefined : navigator);
@@ -522,7 +543,7 @@ export function App() {
     );
   };
 
-  return (
+  const shell = (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
         Skip to main content
@@ -879,8 +900,9 @@ export function App() {
           if (found) navigate(found);
         }}
         onOpenAudit={openAudit}
-        onOpenPerson={openPerson}
+        onOpenPerson={(userId) => openPerson(userId, null)}
       />
     </div>
   );
+  return <NavigationContext.Provider value={navigation}>{shell}</NavigationContext.Provider>;
 }
