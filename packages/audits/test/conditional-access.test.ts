@@ -501,6 +501,42 @@ describe("exclusions", () => {
     expect(row(result.rows, "legacy").cells.excludes).toEqual([]);
   });
 
+  it("keeps the IDs a policy names in hidden lists, lower case, GUIDs only and bounded", async () => {
+    const many = Array.from(
+      { length: 250 },
+      (_value, index) => `b2000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    );
+    const { result } = await runWith({
+      policies: [
+        withExclusions("scoped", {
+          includeUsers: [BREAK_GLASS_ONE.toUpperCase(), "GuestsOrExternalUsers"],
+          excludeUsers: [BREAK_GLASS_TWO, BREAK_GLASS_TWO],
+          includeGroups: [GROUP],
+          excludeGroups: many,
+          includeRoles: [GLOBAL_ADMIN, "All"],
+          excludeRoles: [SECURITY_ADMIN],
+        }),
+        withExclusions("plain", {}),
+      ],
+    });
+    const scoped = row(result.rows, "scoped").cells;
+    expect(scoped.includeUserIds).toEqual([BREAK_GLASS_ONE]);
+    expect(scoped.excludeUserIds).toEqual([BREAK_GLASS_TWO]);
+    expect(scoped.includeGroupIds).toEqual([GROUP]);
+    expect(scoped.excludeGroupIds).toEqual(many.slice(0, 200));
+    expect(scoped.includeRoleIds).toEqual([GLOBAL_ADMIN]);
+    expect(scoped.excludeRoleIds).toEqual([SECURITY_ADMIN]);
+    // The counts the table shows still count what the policy names, not what the list kept.
+    expect(scoped.excludedGroups).toBe(250);
+    expect(row(result.rows, "plain").cells.includeGroupIds).toEqual([]);
+    for (const item of result.rows) auditRowSchema.parse(item);
+    const hidden = auditDefinition(conditionalAccessAudit).columns.filter((column) =>
+      /^(include|exclude)(User|Group|Role)Ids$/.test(column.key),
+    );
+    expect(hidden).toHaveLength(6);
+    expect(hidden.every((column) => column.hidden && column.kind === "list")).toBe(true);
+  });
+
   it("counts distinct users excluded from enabled MFA policies only", async () => {
     const { result } = await runWith({
       policies: [

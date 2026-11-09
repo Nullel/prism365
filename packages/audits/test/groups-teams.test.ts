@@ -1,4 +1,4 @@
-import { auditRowSchema, queryAuditRows } from "@prism365/contracts";
+import { auditRowSchema, decodeOwnerList, queryAuditRows } from "@prism365/contracts";
 import { describe, expect, it } from "vitest";
 import {
   auditDefinition,
@@ -494,6 +494,56 @@ describe("the owners of a group", () => {
     );
     expect(column).toMatchObject({ hidden: true, kind: "list" });
     for (const item of result.rows) auditRowSchema.parse(item);
+  });
+
+  it("keeps every owner with a name and a kind in a hidden list that follows the owner IDs", async () => {
+    const odd = 'Quote " and \\ slash '.repeat(10);
+    const result = await runWith({
+      groups: [team(1), group(2)],
+      owners: {
+        [gid(1)]: [
+          owner(2),
+          owner(1, { "@odata.type": "#microsoft.graph.servicePrincipal", userPrincipalName: null }),
+          owner(3, { displayName: null, userPrincipalName: null, "@odata.type": undefined }),
+          owner(4, { displayName: odd, "@odata.type": undefined }),
+          owner(5, { "@odata.type": "#microsoft.graph.group" }),
+          owner(6, { displayName: null }),
+        ],
+      },
+    });
+    const list = decodeOwnerList(cells(result, 1).ownerList);
+    expect(list.map((entry) => entry.id)).toEqual(cells(result, 1).ownerIds);
+    expect(list.map((entry) => entry.kind)).toEqual([
+      "user",
+      "servicePrincipal",
+      "other",
+      "user",
+      "other",
+      "user",
+    ]);
+    expect(list.map((entry) => entry.name)).toEqual([
+      "Owner 2",
+      "Owner 1",
+      null,
+      odd.trim().slice(0, 200),
+      "Owner 5",
+      "owner6@a.example",
+    ]);
+    expect(cells(result, 2).ownerList).toBeNull();
+    const column = auditDefinition(groupsTeamsAudit).columns.find(
+      (item) => item.key === "ownerList",
+    );
+    expect(column).toMatchObject({ hidden: true, kind: "list" });
+    // Every item fits a cell, even a name that JSON escaping nearly doubles.
+    for (const item of result.rows) auditRowSchema.parse(item);
+  });
+
+  it("gives an ownerless group an empty owner list, and a bad item reads as no owner", () => {
+    expect(decodeOwnerList([])).toEqual([]);
+    expect(decodeOwnerList(null)).toEqual([]);
+    expect(decodeOwnerList(["not json", "{}", '{"id":"x","name":null,"kind":"robot"}'])).toEqual(
+      [],
+    );
   });
 
   it("gives an ownerless group an empty list, not null", async () => {

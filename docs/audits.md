@@ -127,6 +127,8 @@ All routes need a signed-in administrator; the POST also needs the CSRF header.
 | `POST /v1/settings/audits` | Saves `{ "domains": [...] }` and returns what the GET returns; 400 unless the body is a list of up to 100 domain names |
 
 | `GET /v1/people/{userId}/summary` | Where one account shows up in the latest stored runs (section 23); reads stored results only |
+| `GET /v1/entities/{kind}/{id}` | What the stored audits know about one group, role, policy, device or app (section 24); `kind` is `group`, `role`, `policy`, `device` or `app` and `id` a GUID; reads stored results only |
+| `GET /v1/entities/search?q=` | Groups, roles, policies, devices and apps whose name holds 2 to 100 characters, at most 20, one kind after another (section 24) |
 | `GET /v1/audits/{auditId}/trend?days=365` | The audit's trend points in the last 1 to 3,650 days (default 365), oldest first (section 14) |
 | `GET /v1/settings/audit-schedule` | Every audit with `off`, `daily` or `weekly`, and whether collection is on (section 15) |
 | `POST /v1/settings/audit-schedule` | Saves `{ "audits": { "<auditId>": "daily" } }` for the audits named and returns what the GET returns; 400 unless every value is `off`, `daily` or `weekly`; 403 when an audit turned on is one the saving administrator could not run |
@@ -1355,3 +1357,69 @@ nothing about the account reads "Not in the latest run" for Account activity, MF
 Passwords, "Not flagged in the latest run" for Risky users, and is left out for Privileged roles,
 Guest accounts, Managed devices, Mailbox storage, Microsoft 365 apps and groups, where that is the
 normal case.
+
+## 24. Groups, roles, policies, devices and apps
+
+Every group, role, Conditional Access policy, managed device and consented app opens a side panel
+with everything the stored audits know about it. The panel reads stored results only, so it asks
+Microsoft for nothing and uses no permission of its own. Each section names the audit it comes from,
+when that audit last ran and whether the run could check everything, or says the audit never ran,
+or that the latest run does not list the thing.
+
+| Kind | Id | Sections |
+| --- | --- | --- |
+| Group | the group's object id | Its Groups and Teams row with the owners as links (accounts open a person, apps open an app); the Conditional Access policies that include it or leave it out; the roles held through it or by it. Members are not read, and the panel says so. |
+| Role | the role definition id (the template id for a built-in role) | The Privileged roles rows for it, one per holder, with how it is held; each holder's Combined risks rules; the policies that include the role or leave it out. |
+| Policy | the policy id | Its Conditional Access row, with the people, groups and roles it includes and leaves out. Names come from Account activity, Groups and Teams and the built-in role names; a group or account no stored audit names reads "Unknown group" with its id behind a copy button. |
+| Device | the Intune managed device id | Its Managed devices row, with the owner as a person. |
+| App | the service principal's object id, or the application id | Its App consents row. |
+
+A holder the Privileged roles audit could not sort ("Group or other") opens a group panel only if
+Groups and Teams lists its id, and an app panel only if App consents does; its name is read from
+there. Otherwise it is shown as an unnamed holder with its id behind a copy button. The role panel
+checks every holder row it reads (up to 1,000) against Combined risks, shows the first 25, and says
+how many were checked when the role has more; it never says nothing trips a rule over a partial
+list.
+
+Rows are picked in SQL from the latest succeeded run (`pickRows`, with the `ids` pick: a key, an
+account id, or a hidden id cell that is text or a list), never by loading a run, and `rowMatches`
+still decides each row. Ids compare in lower case. Lists in a section hold at most 20 names and say
+how many more there are; a section holds at most 25 rows. `GET /v1/entities/{kind}/{id}` writes
+`entity.viewed` to the access ledger before it reads, with the kind and nothing else. The search
+writes `entity.searched` with no search words. The search matches the name column of the latest run
+of Groups and Teams, Privileged roles, Conditional Access, Managed devices and App consents with a
+case-insensitive match in which `%` and `_` are plain characters. A role has one row per holder, so
+a role appears once however many people hold it, and only a role that someone holds can be found.
+Quick search asks for it once typing pauses, and lists the matches under Groups, Roles, Policies,
+Devices and Apps, after the people.
+
+### The ids the audits keep
+
+These columns are marked `internal`: machine data for a page to read. Unlike a `hidden` column,
+which is off by default but can be chosen, an internal column is never in the Columns chooser,
+never searched, never in the CSV or a handoff and never in a digest, so it cannot shift the columns
+a script reads by position. They add nothing to what an audit flags. They are what the panel
+matches on. Groups and Teams, Privileged roles and Conditional Access are version 2 of their audits
+because of them: a run made before keeps no ids, so a panel section that reads them says "Run the
+audit again" and never states that nothing reaches the thing. Role search cannot find roles in such
+a run and says the list may be short.
+
+- Privileged roles: `roleId` (the role definition id), `holderId` (the account, group or app that
+  holds the role) and `throughId`. Microsoft names the route of a role a person gets from a group
+  (`memberType` Group) but not the group, so `throughId` is filled only when exactly one group
+  holds the same role at the same scope directly, and only when accounts, apps and groups could all
+  be told apart. Otherwise, or when more than 1,000 holders were looked up, it is empty.
+- Conditional Access: `includeUserIds`, `excludeUserIds`, `includeGroupIds`, `excludeGroupIds`,
+  `includeRoleIds` and `excludeRoleIds`, each the policy's GUIDs in lower case, at most 200. The
+  visible counts still count everything the policy names.
+- Groups and Teams: `ownerList`, each owner as a small JSON record `{ id, name, kind }` (`user`,
+  `servicePrincipal` or `other`, from Microsoft's `@odata.type`) in the order of `ownerIds`, so a
+  page can link the owners that are accounts. A cell holds text, so each record is one text item.
+  The visible Owner names column is the same names sorted and cut to five.
+
+The links: the name cell of Groups and Teams, Conditional Access, App consents, Privileged roles
+(the role) and Managed devices (the device); the owners in Groups and Teams that are accounts; the
+groups, roles, owned groups and apps, policies and devices on a person's Access tab; the groups an
+account owns on its Overview; and the group, policy and service principal targets in Directory
+changes. A role or device target there is not linked: a change names the role's directory object
+and the device's Entra object, which are not the ids the panels are keyed by.

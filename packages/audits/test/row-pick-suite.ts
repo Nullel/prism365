@@ -55,6 +55,14 @@ const appRows: AuditRow[] = [
   row("sp-2", null, { appId: "APP-TWO" }),
 ];
 
+const entityRows: AuditRow[] = [
+  row("E-One", null, { name: "Sales_team 100%", ids: ["AAA-1", "bbb-2"], single: "CCC-3" }),
+  row("e-two", ana, { name: "Salesxteam 1000", ids: [], single: "ddd-4" }),
+  row("e-three", null, { name: "Back\\slash", ids: "not a list", single: 7 }),
+  row("e-four", ben, { name: "SALES lead", ids: ["bbb-2", "EEE-5"], single: null }),
+  row("e-five", null, { ids: null }),
+];
+
 export function rowPickSuite(name: string, open: () => Promise<ModuleDatabase>, enabled = true) {
   describe.skipIf(!enabled)(`${name}: picking rows of the latest run in SQL`, () => {
     let database: ModuleDatabase;
@@ -118,6 +126,21 @@ export function rowPickSuite(name: string, open: () => Promise<ModuleDatabase>, 
       );
       await store(tenant, "groups.teams", 2, groupRows);
       await store(tenant, "apps.consents", 2, appRows);
+      await store(tenant, "entities.demo", 2, entityRows);
+      await store(tenant, "entities.roles", 2, [
+        ...Array.from({ length: 41 }, (_value, index) =>
+          row(`r${index}`, null, { name: "Crowd role", rid: "role-a" }),
+        ),
+        row("r41", null, { name: "Quiet role", rid: "role-b" }),
+        row("r42", null, { name: "Other role", rid: "role-c" }),
+        row("r43", null, { name: "Not it", rid: "role-d" }),
+      ]);
+      await store(tenant, "entities.many", 2, [
+        ...Array.from({ length: 30 }, (_value, index) =>
+          row(`p${index}`, null, { name: `Plain ${index}` }),
+        ),
+        row("odd", null, { name: "Odd_one 50%" }),
+      ]);
       await store(otherTenant, "accounts.activity", 2, [row("x", ana, {})]);
     }, 120_000);
     afterAll(async () => {
@@ -233,6 +256,106 @@ export function rowPickSuite(name: string, open: () => Promise<ModuleDatabase>, 
       expect(keys(await pick("apps.consents", how))).toEqual(["SP-1", "sp-2"]);
       expect(keys(await pick("apps.consents", how))).toEqual(await reference("apps.consents", how));
       expect(keys(await pick("apps.consents", { by: "keys", keys: [] }))).toEqual([]);
+    });
+    it("finds rows by key, account id or an id cell, whether it is text or a list, ignoring case", async () => {
+      const cases: RowPick[] = [
+        { by: "ids", keys: ["e-one", "E-THREE"] },
+        { by: "ids", personIds: [ana.toUpperCase()] },
+        { by: "ids", cells: [{ path: ["ids"], values: ["BBB-2"] }] },
+        { by: "ids", cells: [{ path: ["single"], values: ["ccc-3", "DDD-4"] }] },
+        {
+          by: "ids",
+          keys: ["e-five"],
+          personIds: [ben],
+          cells: [
+            { path: ["ids"], values: ["aaa-1"] },
+            { path: ["single"], values: ["ddd-4"] },
+          ],
+        },
+      ];
+      const expected = [
+        ["E-One", "e-three"],
+        ["e-two"],
+        ["E-One", "e-four"],
+        ["E-One", "e-two"],
+        ["E-One", "e-two", "e-four", "e-five"],
+      ];
+      for (const [index, how] of cases.entries()) {
+        const picked = keys(await pick("entities.demo", how));
+        expect(picked, `case ${index}`).toEqual(expected[index]);
+        expect(picked, `case ${index} against memory`).toEqual(
+          await reference("entities.demo", how),
+        );
+      }
+    });
+
+    it("finds nothing for an id pick with nothing to look for, and never reads a text cell as a list", async () => {
+      const nothing: RowPick[] = [
+        { by: "ids" },
+        { by: "ids", keys: [], personIds: [], cells: [{ path: ["ids"], values: [] }] },
+      ];
+      for (const how of nothing) {
+        expect(keys(await pick("entities.demo", how))).toEqual([]);
+        expect(await reference("entities.demo", how)).toEqual([]);
+      }
+      // A cell that holds text is compared as text, and one that holds a number is not a match.
+      const text: RowPick = { by: "ids", cells: [{ path: ["ids"], values: ["not a list"] }] };
+      expect(keys(await pick("entities.demo", text))).toEqual(["e-three"]);
+      expect(await reference("entities.demo", text)).toEqual(["e-three"]);
+      const number: RowPick = { by: "ids", cells: [{ path: ["single"], values: ["7"] }] };
+      expect(keys(await pick("entities.demo", number))).toEqual([]);
+      expect(await pick("accounts.broken", { by: "ids", keys: ["a1"] })).toMatchObject({
+        rows: [],
+      });
+      expect(await pick("mfa.registration", { by: "ids", keys: ["a1"] })).toBeNull();
+    });
+
+    it("finds a cell that holds the text, ignoring case, and treats % _ and the backslash as plain characters", async () => {
+      const find = async (text: string) => {
+        const how: RowPick = { by: "contains", path: ["name"], text };
+        const picked = keys(await pick("entities.demo", how));
+        expect(picked, text).toEqual(await reference("entities.demo", how));
+        return picked;
+      };
+      expect(await find("sales")).toEqual(["E-One", "e-two", "e-four"]);
+      expect(await find("Sales_t")).toEqual(["E-One"]);
+      expect(await find("100%")).toEqual(["E-One"]);
+      expect(await find("%")).toEqual(["E-One"]);
+      expect(await find("_")).toEqual(["E-One"]);
+      expect(await find("k\\s")).toEqual(["e-three"]);
+      expect(await find("zzz")).toEqual([]);
+    });
+
+    it("lets the database narrow by the characters typed, so % and _ cannot crowd out the rows that match", async () => {
+      // If LIKE read them as wildcards, the first rows of the run would fill the limit and the one
+      // row that holds the characters would never come back.
+      for (const text of ["_", "%", "_one 50%"]) {
+        const picked = await pick("entities.many", { by: "contains", path: ["name"], text }, 3);
+        expect(keys(picked), text).toEqual(["odd"]);
+        expect(picked?.more, text).toBe(false);
+      }
+    });
+
+    it("reads one row for each value of a cell when asked, in the run's order", async () => {
+      const how: RowPick = { by: "contains", path: ["name"], text: "role", distinct: ["rid"] };
+      const picked = await pick("entities.roles", how, 5);
+      expect(keys(picked)).toEqual(["r0", "r41", "r42"]);
+      expect(picked?.more).toBe(false);
+      expect(keys(picked)).toEqual(
+        await reference("entities.roles", { by: "contains", path: ["name"], text: "role" }).then(
+          (all) => all.filter((key) => ["r0", "r41", "r42"].includes(key)),
+        ),
+      );
+      // Cut by distinct roles, not by rows: forty rows of one role do not use up the limit.
+      const cut = await pick("entities.roles", how, 2);
+      expect(keys(cut)).toEqual(["r0", "r41"]);
+      expect(cut?.more).toBe(true);
+    });
+
+    it("cuts a contains pick at the limit and says there were more", async () => {
+      const picked = await pick("entities.demo", { by: "contains", path: ["name"], text: "s" }, 2);
+      expect(picked?.rows).toHaveLength(2);
+      expect(picked?.more).toBe(true);
     });
   });
 }

@@ -40,6 +40,9 @@ export const auditColumnSchema = z.object({
   facet: z.boolean().default(false),
   // Left out of the table unless the administrator shows it. Always exported.
   hidden: z.boolean().default(false),
+  // Machine data a page reads to link things (ids, a list of records as JSON). Unlike `hidden`, it
+  // is never offered in the Columns chooser, never searched, and never exported or handed off.
+  internal: z.boolean().default(false),
   // How the value is worked out, shown on the column header.
   help: text.nullable().default(null),
   // What an empty value means here ("None recorded", "Unknown"). Defaults by kind.
@@ -256,6 +259,7 @@ export function auditFacetOptions(
 function searchText(definition: AuditDefinition, row: AuditRow): string {
   const parts: string[] = [];
   for (const column of definition.columns) {
+    if (column.internal) continue;
     const cell = row.cells[column.key];
     if (isPerson(cell)) parts.push(cell.name ?? "", cell.principal ?? "");
     else if (Array.isArray(cell)) parts.push(...cell);
@@ -328,15 +332,17 @@ function csvField(value: string | number | boolean | null): string {
 // RFC 4180 CSV with a byte-order mark, so spreadsheet apps read names with accents correctly.
 // A person column becomes two: the name and the user principal name.
 export function auditCsv(definition: AuditDefinition, rows: readonly AuditRow[]): string {
+  // The columns a person can see, in their order: machine data would shift every column after it.
+  const columns = definition.columns.filter((column) => !column.internal);
   const header: string[] = [];
-  for (const column of definition.columns) {
+  for (const column of columns) {
     header.push(csvField(column.label));
     if (column.kind === "person") header.push(csvField("User principal name"));
   }
   const lines = [header.join(",")];
   for (const row of rows) {
     const fields: string[] = [];
-    for (const column of definition.columns) {
+    for (const column of columns) {
       const cell = row.cells[column.key] ?? null;
       if (column.kind === "person") {
         const person = isPerson(cell) ? cell : { name: null, principal: null };

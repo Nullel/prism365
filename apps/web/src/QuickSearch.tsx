@@ -1,6 +1,12 @@
 import {
   type AuditCatalog,
   auditCatalogSchema,
+  cleanText,
+  ENTITY_SEARCH_MAX,
+  ENTITY_SEARCH_MIN,
+  type EntityKind,
+  type EntitySearch,
+  entitySearchSchema,
   investigationEmailSchema,
   type PersonList,
   type PrismSession,
@@ -18,7 +24,16 @@ import {
 } from "react";
 import { runResult } from "./Audits.tsx";
 import { readJson } from "./common.tsx";
-import { ChecklistIcon, SearchIcon, UsersIcon } from "./icons.tsx";
+import {
+  ChecklistIcon,
+  DeviceIcon,
+  GridIcon,
+  GroupIcon,
+  LockIcon,
+  SearchIcon,
+  ShieldIcon,
+  UsersIcon,
+} from "./icons.tsx";
 import { lookUpPerson } from "./People.tsx";
 
 // Quick search: Cmd+K (Ctrl+K elsewhere) opens one box that goes straight to a page, an audit or
@@ -33,7 +48,21 @@ import { lookUpPerson } from "./People.tsx";
 
 type IconComponent = typeof SearchIcon;
 
-export type ResultGroupId = "directory" | "pages" | "audits" | "people";
+// The things a stored audit lists, each under a heading of its own after the people. Their ids are
+// the plural of the kind, which is also what picks the panel to open.
+export const entityGroups = ["groups", "roles", "policies", "devices", "apps"] as const;
+export type EntityGroupId = (typeof entityGroups)[number];
+export const entityKindOfGroup: Record<EntityGroupId, EntityKind> = {
+  groups: "group",
+  roles: "role",
+  policies: "policy",
+  devices: "device",
+  apps: "app",
+};
+export const isEntityGroup = (id: ResultGroupId): id is EntityGroupId =>
+  (entityGroups as readonly string[]).includes(id);
+
+export type ResultGroupId = "directory" | "pages" | "audits" | "people" | EntityGroupId;
 
 export interface SearchItem {
   // Unique within its group: a page's view, an audit's id, an account's id or an email address.
@@ -56,6 +85,8 @@ export interface SearchSources {
   pages: readonly SearchItem[];
   audits: readonly SearchItem[];
   people: readonly SearchItem[];
+  // What the server found by name among groups, roles, policies, devices and apps.
+  entities?: Partial<Record<EntityGroupId, readonly SearchItem[]>>;
 }
 
 export const MAX_RESULTS = 8;
@@ -65,6 +96,11 @@ const headings: Record<ResultGroupId, string> = {
   pages: "Pages",
   audits: "Audits",
   people: "People",
+  groups: "Groups",
+  roles: "Roles",
+  policies: "Policies",
+  devices: "Devices",
+  apps: "Apps",
 };
 
 // Words people reach for that a page's label does not hold. Keyed by the page's view; a page
@@ -130,6 +166,43 @@ export function personItems(list: PersonList): SearchItem[] {
       icon: UsersIcon,
     };
   });
+}
+
+const entityIcons: Record<EntityGroupId, IconComponent> = {
+  groups: GroupIcon,
+  roles: ShieldIcon,
+  policies: LockIcon,
+  devices: DeviceIcon,
+  apps: GridIcon,
+};
+
+const entityGroupOf: Record<EntityKind, EntityGroupId> = {
+  group: "groups",
+  role: "roles",
+  policy: "policies",
+  device: "devices",
+  app: "apps",
+};
+
+// What the server found, as results under their own headings. The server matched the name, and
+// the same words are matched again here so every result is ranked the way the others are.
+export function entityItems(found: EntitySearch): Record<EntityGroupId, SearchItem[]> {
+  const items: Record<EntityGroupId, SearchItem[]> = {
+    groups: [],
+    roles: [],
+    policies: [],
+    devices: [],
+    apps: [],
+  };
+  for (const result of found.results)
+    items[entityGroupOf[result.kind]].push({
+      id: result.id,
+      label: result.name,
+      detail: result.detail,
+      keywords: [],
+      icon: entityIcons[entityGroupOf[result.kind]],
+    });
+  return items;
 }
 
 // A full work email is the one thing quick search can look up that it has not stored.
@@ -211,8 +284,19 @@ function rank(group: ResultGroupId, items: readonly SearchItem[], query: string)
   return found;
 }
 
-// Where equal scores go: the lookup the person typed an email for, then pages, audits, people.
-const groupOrder: Record<ResultGroupId, number> = { directory: 0, pages: 1, audits: 2, people: 3 };
+// Where equal scores go: the lookup the person typed an email for, then pages, audits, people, and
+// the groups, roles, policies, devices and apps after them.
+const groupOrder: Record<ResultGroupId, number> = {
+  directory: 0,
+  pages: 1,
+  audits: 2,
+  people: 3,
+  groups: 4,
+  roles: 5,
+  policies: 6,
+  devices: 7,
+  apps: 8,
+};
 const LOOKUP_SCORE = 1_000;
 
 export interface SearchOptions {
@@ -223,8 +307,9 @@ export interface SearchOptions {
 }
 
 // The results for what was typed: the best few across all sources, put under small headings. The
-// group holding the best match comes first, and each group keeps its own best-first order. With
-// nothing typed, the pages.
+// group holding the best match comes first, and each group keeps its own best-first order, except
+// that the groups, roles, policies, devices and apps always follow the others. With nothing typed,
+// the pages.
 export function searchResults(
   sources: SearchSources,
   query: string,
@@ -238,6 +323,7 @@ export function searchResults(
     ...rank("pages", sources.pages, query),
     ...rank("audits", sources.audits, query),
     ...people,
+    ...entityGroups.flatMap((group) => rank(group, sources.entities?.[group] ?? [], query)),
   ];
   if (options.email && people.length === 0)
     found.push({
@@ -258,7 +344,15 @@ export function searchResults(
     }
     group.items.push(entry.item);
   }
-  return groups;
+  // The first group in the list is the one with the best match, as before; the five kinds then
+  // follow in a fixed order, so a heading never jumps about as the words change.
+  const entityOrder = (id: ResultGroupId) => (entityGroups as readonly string[]).indexOf(id);
+  return [
+    ...groups.filter((group) => !isEntityGroup(group.id)),
+    ...groups
+      .filter((group) => isEntityGroup(group.id))
+      .sort((a, b) => entityOrder(a.id) - entityOrder(b.id)),
+  ];
 }
 
 export interface FlatResult {
@@ -325,6 +419,7 @@ export function sourceNotes(
   canRead: boolean,
   audits: Load<unknown>,
   people: Load<unknown>,
+  entities?: Load<EntitySearch>,
 ): string[] {
   if (!canRead) return ["Sign in to search audits and people."];
   if (fold(query).trim() === "") return ["Type to search audits and people as well."];
@@ -333,7 +428,65 @@ export function sourceNotes(
   if (audits.state === "failed") notes.push("Audits could not be loaded.");
   if (people.state === "loading") notes.push("Loading people…");
   if (people.state === "failed") notes.push("People could not be loaded.");
+  if (entities?.state === "failed" || (entities?.state === "ready" && entities.value.partial))
+    notes.push("Groups, roles, policies, devices and apps could not all be searched.");
+  if (entities?.state === "ready" && entities.value.more) notes.push("More matches not shown.");
   return notes;
+}
+
+// How long a pause in typing is before the server is asked about groups, roles, policies, devices
+// and apps. They are searched on the server, since a tenant can have far more of them than a page
+// should hold.
+export const ENTITY_SEARCH_DELAY_MILLISECONDS = 250;
+
+export const entitySearchUrl = (text: string) =>
+  `/api/v1/entities/search?q=${encodeURIComponent(text)}`;
+
+// The words that go to the server: trimmed, and only when there are enough of them to search for.
+export function entityQuery(query: string): string | null {
+  // A half of a pair, which a pasted string can hold, would make the address impossible to build.
+  const text = cleanText(query.trim());
+  if (text.length < ENTITY_SEARCH_MIN) return null;
+  // Cut at whole characters: the server counts UTF-16 units, and half of a pair cannot be sent.
+  let cut = "";
+  for (const character of text) {
+    if (cut.length + character.length > ENTITY_SEARCH_MAX) break;
+    cut += character;
+  }
+  return cut;
+}
+
+// Asks for the things matching `query` once typing pauses, and keeps only the answer to the words
+// as they stand now: an answer to words since changed is never shown, and a failed one is not kept.
+function useEntitySearch(enabled: boolean, query: string): Load<EntitySearch> {
+  const text = entityQuery(query);
+  const [answer, setAnswer] = useState<{ text: string; load: Load<EntitySearch> } | null>(null);
+  useEffect(() => {
+    if (!enabled || text === null) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setAnswer({ text, load: { state: "loading" } });
+      // Anything that goes wrong, building the address included, ends as a failure and never
+      // leaves the search waiting.
+      Promise.resolve()
+        .then(() =>
+          readJson(entitySearchUrl(text), (value) => entitySearchSchema.parse(value), {
+            signal: controller.signal,
+          }),
+        )
+        .then(
+          (value) => setAnswer({ text, load: { state: "ready", value } }),
+          () => {
+            if (!controller.signal.aborted) setAnswer({ text, load: { state: "failed" } });
+          },
+        );
+    }, ENTITY_SEARCH_DELAY_MILLISECONDS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [enabled, text]);
+  return enabled && text !== null && answer?.text === text ? answer.load : { state: "idle" };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -532,7 +685,7 @@ export interface QuickSearchViewProps {
 
 export const optionId = (idBase: string, index: number) => `${idBase}-option-${index}`;
 
-const placeholder = "Search pages, audits and people";
+const placeholder = "Search pages, audits, people, groups and apps";
 
 // The dialog as the ARIA combobox and listbox pattern: focus stays in the input, and the option
 // it points at with aria-activedescendant is the one Enter opens.
@@ -578,7 +731,7 @@ export function QuickSearchView({
         }}
       >
         <h2 className="visually-hidden" id={titleId}>
-          Search pages, audits and people
+          {placeholder}
         </h2>
         <div className="quick-search__field">
           <SearchIcon />
@@ -669,7 +822,7 @@ export function resultStatus(query: string, count: number): string {
 }
 
 export function noMatchText(query: string): string {
-  return `No page, audit or person matches “${query.trim()}”.`;
+  return `No page, audit, person, group or app matches “${query.trim()}”.`;
 }
 
 export interface QuickSearchProps {
@@ -680,6 +833,7 @@ export interface QuickSearchProps {
   onNavigate(view: string): void;
   onOpenAudit(auditId: string): void;
   onOpenPerson(userId: string): void;
+  onOpenEntity(kind: EntityKind, id: string): void;
 }
 
 // Owns the box: what is typed, which result is marked, the listener for the shortcut, and the
@@ -692,6 +846,7 @@ export function QuickSearch({
   onNavigate,
   onOpenAudit,
   onOpenPerson,
+  onOpenEntity,
 }: QuickSearchProps) {
   const idBase = useId();
   const input = useRef<HTMLInputElement>(null);
@@ -711,6 +866,8 @@ export function QuickSearch({
   const canLookUp = session?.mode === "live" && session.authenticated;
   const audits = useLoadOnce(open && canRead, loadAudits);
   const people = useLoadOnce(open && canRead, loadPeople);
+  // The demo's recorded session counts as live, and answers this with the one query it recorded.
+  const entities = useEntitySearch(open && Boolean(canLookUp), query);
 
   useEffect(() => {
     const listener = (event: globalThis.KeyboardEvent) =>
@@ -730,8 +887,9 @@ export function QuickSearch({
       pages,
       audits: audits.state === "ready" ? auditItems(audits.value) : [],
       people: people.state === "ready" ? personItems(people.value) : [],
+      entities: entities.state === "ready" ? entityItems(entities.value) : {},
     }),
-    [pages, audits, people],
+    [pages, audits, people, entities],
   );
   // Only offered once the stored people have been searched, so it never appears and then goes.
   const email =
@@ -741,8 +899,13 @@ export function QuickSearch({
   const groups = useMemo(() => searchResults(sources, query, { email }), [sources, query, email]);
   const results = flatten(groups);
   const marked = Math.min(active, Math.max(0, results.length - 1));
-  const notes = sourceNotes(query, canRead, audits, people);
-  const stillLoading = audits.state === "loading" || people.state === "loading";
+  const notes = sourceNotes(query, canRead, audits, people, entities);
+  // The first words typed have not been answered yet, so "no match" would be a guess.
+  const entitiesPending =
+    Boolean(canLookUp) &&
+    entityQuery(query) !== null &&
+    (entities.state === "idle" || entities.state === "loading");
+  const stillLoading = audits.state === "loading" || people.state === "loading" || entitiesPending;
 
   useEffect(() => {
     if (!open) return;
@@ -786,6 +949,8 @@ export function QuickSearch({
     close();
     if (chosen.group === "pages") onNavigate(chosen.item.id);
     else if (chosen.group === "audits") onOpenAudit(chosen.item.id);
+    else if (isEntityGroup(chosen.group))
+      onOpenEntity(entityKindOfGroup[chosen.group], chosen.item.id);
     else onOpenPerson(chosen.item.id);
   }
 

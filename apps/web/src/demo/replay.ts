@@ -931,6 +931,14 @@ function fromRecording(state: DemoState, request: DemoRequest): DemoResponse {
 function handleGet(state: DemoState, path: string, url: URL, request: DemoRequest): DemoResponse {
   const segments = path.split("/").filter(Boolean);
   const [first, second, third] = segments;
+  // Quick search asks for groups, roles and devices by whatever is typed. The recording holds the
+  // one query it was made with; any other finds nothing here, as the demo cannot search a tenant.
+  if (path === "/entities/search") {
+    const recorded = state.responses[normalizeKey("GET", request.url)];
+    return recorded
+      ? json(recorded.status, recorded.body)
+      : json(200, { results: [], more: false, partial: false });
+  }
   let answer: DemoResponse | null = null;
   if (path === "/attention") answer = listAttention(state, url);
   else if (path === "/findings") answer = listFindings(state, url);

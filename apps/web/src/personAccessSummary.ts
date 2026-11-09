@@ -20,6 +20,8 @@ export interface SummaryLine {
   title: string | null;
   // A role that can change the tenant, marked in the shared severity style.
   privileged?: boolean;
+  // The panel the title opens, when the row says which role or device it is.
+  entity?: { kind: "role" | "device"; id: string };
   parts: SummaryPart[];
 }
 
@@ -53,6 +55,12 @@ const plural = (count: number, one: string) =>
 // Roles worth listing apart from the ones held now: the rest of the page already shows those.
 const NOT_HELD_NOW = new Set(["Time-bound", "Activated", "Eligible", "Eligible time-bound"]);
 
+// The role a row is about, for the link on its name. Older results lack the hidden role ID.
+const roleOf = (row: Row): Pick<SummaryLine, "entity"> => {
+  const id = textOf(row, "roleId");
+  return id ? { entity: { kind: "role", id } } : {};
+};
+
 function roleLines(rows: readonly Row[]): SummaryLine[] {
   return rows
     .filter((row) => NOT_HELD_NOW.has(textOf(row, "held") ?? ""))
@@ -60,6 +68,7 @@ function roleLines(rows: readonly Row[]): SummaryLine[] {
       const ends = textOf(row, "ends");
       return {
         title: textOf(row, "role") ?? "A role",
+        ...roleOf(row),
         privileged: flagOf(row, "privileged") === true,
         parts: compact([
           textOf(row, "held") ? { text: textOf(row, "held") as string } : null,
@@ -105,6 +114,7 @@ function deviceLines(rows: readonly Row[]): SummaryLine[] {
     const encrypted = flagOf(row, "encrypted");
     return {
       title: textOf(row, "device") ?? "A device",
+      entity: { kind: "device" as const, id: row.key },
       parts: compact([
         system ? { text: system } : null,
         compliance ? { text: compliance, tone: complianceTone(compliance) } : null,

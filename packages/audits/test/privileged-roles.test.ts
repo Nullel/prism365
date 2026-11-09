@@ -161,6 +161,107 @@ const only =
   (url) =>
     url.pathname.endsWith(suffix) ? new Response("{}", { status }) : undefined;
 
+describe("the IDs a role row keeps", () => {
+  const alice = id(1);
+  const bob = id(2);
+  const staff = id(40);
+  const admins = id(41);
+  const lab = id(50);
+
+  it("keeps the role and the holder, lower case", async () => {
+    const { result } = await run({
+      assignments: [assignment(1, alice.toUpperCase(), GLOBAL_ADMIN.toUpperCase())],
+      users: [person(1)],
+    });
+    expect(result.rows[0]?.cells).toMatchObject({
+      roleId: GLOBAL_ADMIN,
+      holderId: alice,
+      throughId: null,
+    });
+    for (const row of result.rows) auditRowSchema.parse(row);
+    const hidden = auditDefinition(privilegedRolesAudit).columns.filter((column) =>
+      ["roleId", "holderId", "throughId"].includes(column.key),
+    );
+    expect(hidden.map((column) => column.hidden)).toEqual([true, true, true]);
+  });
+
+  it("names the group a role comes through when exactly one group holds that role at that scope", async () => {
+    const { result } = await run({
+      assignments: [assignment(1, staff, HELPDESK)],
+      active: [
+        assigned(staff, HELPDESK, "a-1"),
+        instance(alice, HELPDESK, { memberType: "Group", assignmentType: "Assigned" }),
+        instance(alice, GLOBAL_ADMIN, { memberType: "Group", assignmentType: "Assigned" }),
+      ],
+      users: [person(1)],
+    });
+    const through = (role: string) =>
+      result.rows.find((row) => row.key.includes(`|${alice}|${role}`))?.cells;
+    expect(through(HELPDESK)).toMatchObject({ through: "Group", throughId: staff });
+    // Nothing holds the Global Administrator role as a group, so the group is not known.
+    expect(through(GLOBAL_ADMIN)).toMatchObject({ through: "Group", throughId: null });
+    // The group's own row is held directly and is not "through" anything.
+    expect(result.rows.find((row) => row.key.includes(`|${staff}|`))?.cells.throughId).toBeNull();
+  });
+
+  it("says nothing when more holders than are looked up leave some unsorted", async () => {
+    // A list holds at most a thousand records, so the crowd is spread over two lists.
+    const crowd = Array.from({ length: 1_100 }, (_value, index) => id(100 + index));
+    const { result } = await run({
+      assignments: [
+        assignment(1, staff, HELPDESK),
+        ...crowd
+          .slice(0, 550)
+          .map((principal, index) => assignment(index + 10, principal, USER_ADMIN)),
+      ],
+      active: [
+        assigned(staff, HELPDESK, "a-1"),
+        instance(alice, HELPDESK, { memberType: "Group", assignmentType: "Assigned" }),
+      ],
+      eligible: crowd.slice(550).map((principal) => instance(principal, USER_ADMIN)),
+      users: [person(1)],
+    });
+    expect(result.notes.join(" ")).toContain("Only the first 1,000 holders were named");
+    expect(result.rows.find((row) => row.key.includes(`|${alice}|`))?.cells.throughId).toBeNull();
+  });
+
+  it("is a newer version of the audit than the runs made before the ids were kept", () => {
+    expect(privilegedRolesAudit.definition.version).toBeGreaterThanOrEqual(2);
+  });
+
+  it("says nothing when two groups could be the route, or when holders could not be told apart", async () => {
+    const tenant: Tenant = {
+      assignments: [assignment(1, staff, HELPDESK), assignment(2, admins, HELPDESK)],
+      active: [
+        assigned(staff, HELPDESK, "a-1"),
+        assigned(admins, HELPDESK, "a-2"),
+        instance(alice, HELPDESK, { memberType: "Group", assignmentType: "Assigned" }),
+      ],
+      users: [person(1)],
+    };
+    const two = await run(tenant);
+    expect(
+      two.result.rows.find((row) => row.key.includes(`|${alice}|`))?.cells.throughId,
+    ).toBeNull();
+    // Without the applications read, an app holding the role would look like a group.
+    const apps = await run(
+      {
+        ...tenant,
+        assignments: [assignment(1, lab, HELPDESK)],
+        active: [
+          assigned(lab, HELPDESK, "a-1"),
+          instance(bob, HELPDESK, { memberType: "Group", assignmentType: "Assigned" }),
+        ],
+        users: [person(2)],
+      },
+      { granted: ["RoleManagement.Read.Directory", "User.Read.All"] },
+    );
+    expect(
+      apps.result.rows.find((row) => row.key.includes(`|${bob}|`))?.cells.throughId,
+    ).toBeNull();
+  });
+});
+
 describe("how a role is held", () => {
   const alice = id(1);
   const bob = id(2);

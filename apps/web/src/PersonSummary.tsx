@@ -2,6 +2,7 @@ import { type PersonSummary as PersonSummaryData, personSummarySchema } from "@p
 import { useEffect, useState } from "react";
 import { RelativeTime, readJson, SeverityDot, SkeletonRows } from "./common.tsx";
 import { ChevronIcon } from "./icons.tsx";
+import { EntityLink } from "./navigation.tsx";
 import { accessibleName, type Jump, type SummaryItem, summaryItems } from "./personSummaryLines.ts";
 import type { PersonTab } from "./PersonTabs.tsx";
 
@@ -104,6 +105,20 @@ function Row({
         </span>
         <ChevronIcon className="person-summary__chevron" />
       </a>
+      {entry.entities && entry.entities.length > 0 ? (
+        // Outside the row's link, which is one link to the detail: a link cannot hold another.
+        <p className="person-summary__things link-list">
+          {entry.entities.map((entity, index) => (
+            <span key={entity.id}>
+              <EntityLink kind={entity.kind} id={entity.id} name={entity.name} />
+              {index < (entry.entities?.length ?? 0) - 1 || entry.entitiesMore ? "," : null}{" "}
+            </span>
+          ))}
+          {entry.entitiesMore ? (
+            <span className="person-muted"> and {entry.entitiesMore} more</span>
+          ) : null}
+        </p>
+      ) : null}
     </li>
   );
 }

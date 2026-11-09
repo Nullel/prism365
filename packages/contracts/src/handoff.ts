@@ -163,7 +163,7 @@ export function handoffColumns(
 ): AuditDefinition["columns"] {
   const named = shown ? new Set(shown) : null;
   return definition.columns
-    .filter((column) => column.kind !== "person")
+    .filter((column) => column.kind !== "person" && !column.internal)
     .filter((column) => (named ? named.has(column.key) : !column.hidden))
     .slice(0, MAX_HANDOFF_EVIDENCE);
 }

@@ -41,6 +41,10 @@ export interface SummaryItem {
   jump: Jump;
   // Where the row goes, in words: "the Access tab".
   destination: string;
+  // Things the sentence is about that open their own panel, such as the first few groups an
+  // account owns, and how many more there are. Shown under the row, outside its link.
+  entities?: { kind: "group"; id: string; name: string }[];
+  entitiesMore?: number;
 }
 
 export interface SummaryLines {
@@ -76,6 +80,9 @@ const severityNames: Record<Severity, string> = {
   low: "low",
   info: "info",
 };
+
+// How many of the groups an account owns are named under its row; the Access tab lists them all.
+const OWNED_LINKED = 3;
 
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${number.format(count)} ${count === 1 ? one : many}`;
@@ -511,6 +518,12 @@ export function summaryItems(summary: PersonSummary, now: number = Date.now()): 
         ...(concerns > 0 ? { tone: "warning" as const } : {}),
         ranAt: owned.finishedAt,
         incomplete: !owned.complete,
+        entities: owned.entries.slice(0, OWNED_LINKED).map((entry) => ({
+          kind: "group" as const,
+          id: entry.id,
+          name: entry.name,
+        })),
+        entitiesMore: Math.max(0, owned.entries.length - OWNED_LINKED),
       }),
     );
   }

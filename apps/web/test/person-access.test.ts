@@ -218,7 +218,7 @@ describe("the Access tab", () => {
     const words = draw(answer());
     expect(words).toContain("Require MFA");
     expect(words).toContain("Applies through all users");
-    expect(words).toContain("Left out by name.");
+    expect(words).toContain("Left out by name");
     expect(words).toContain("through the group All plant staff");
     expect(words).toContain("Off");
     expect(words).toContain(
@@ -253,7 +253,7 @@ describe("the Access tab", () => {
       words.indexOf("Policies that apply"),
     );
     expect(words).toContain("Excluded");
-    expect(words).toContain("Left out through the group Break glass.");
+    expect(words).toContain("Left out through the group Break glass");
     expect(words).not.toContain("Medium");
     // With the exclusion on an off policy, the applying policies lead.
     const calm = draw(answer());

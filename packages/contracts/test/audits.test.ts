@@ -6,6 +6,7 @@ import {
   auditFacetOptions,
   auditScopeSchema,
   auditSettingsSchema,
+  handoffColumns,
   queryAuditRows,
 } from "../src/index.ts";
 
@@ -189,5 +190,57 @@ describe("audit scope", () => {
       auditSettingsSchema.safeParse({ scope: { domains: [] }, domains: [{ domain: "a.example" }] })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("internal columns", () => {
+  // A column that holds machine data for a page to read: ids, a list of records as JSON.
+  const withInternal = auditDefinitionSchema.parse({
+    ...definition,
+    columns: [
+      ...definition.columns,
+      { key: "ownerIds", label: "Owner IDs", kind: "list", hidden: true },
+      { key: "ownerList", label: "Owners with kinds", kind: "list", hidden: true, internal: true },
+      { key: "roleId", label: "Role ID", kind: "text", hidden: true, internal: true },
+    ],
+  });
+  const machine = {
+    ownerIds: ["aa-1"],
+    ownerList: ['{"id":"aa-1","name":null,"kind":"user"}'],
+    roleId: "id-of-a-role",
+  };
+  const mixed: AuditRow[] = [
+    { key: "a", personId: null, tags: [], cells: { ...rows[0]?.cells, ...machine } },
+  ];
+
+  it("is off unless a column says so, and the hidden columns are not internal", () => {
+    expect(definition.columns.every((column) => !column.internal)).toBe(true);
+    const flags = (key: string) => withInternal.columns.find((column) => column.key === key);
+    expect(flags("ownerIds")).toMatchObject({ hidden: true, internal: false });
+    expect(flags("ownerList")).toMatchObject({ hidden: true, internal: true });
+  });
+
+  it("is never searched, while a hidden column still is", () => {
+    const found = (search: string) =>
+      queryAuditRows(withInternal, mixed, { search }).map((row) => row.key);
+    for (const text of ["user", "null", "kind", "name", "of a role"])
+      expect(found(text), text).not.toContain("a");
+    expect(found("aa-1")).toEqual(["a"]);
+  });
+
+  it("is never handed off, even when a page names it", () => {
+    const names = (shown: string[] | null) =>
+      handoffColumns(withInternal, shown).map((column) => column.key);
+    expect(names(["ownerIds", "ownerList", "roleId"])).toEqual(["ownerIds"]);
+    expect(names(null)).not.toContain("ownerList");
+  });
+
+  it("is never exported: the CSV keeps its columns, their order and their cells", () => {
+    expect(auditCsv(withInternal, mixed).split("\r\n")[0]?.replace(',"Owner IDs"', "")).toBe(
+      auditCsv(definition, mixed).split("\r\n")[0],
+    );
+    const csv = auditCsv(withInternal, mixed);
+    expect(csv).toContain('"Owner IDs"');
+    expect(csv).not.toMatch(/Owners with kinds|Role ID|id-of-a-role|"kind"/);
   });
 });

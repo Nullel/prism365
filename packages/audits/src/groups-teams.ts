@@ -1,4 +1,10 @@
-import { type AuditDefinitionInput, type AuditRow, cleanText } from "@prism365/contracts";
+import {
+  type AuditDefinitionInput,
+  type AuditRow,
+  cleanText,
+  encodeOwnerEntry,
+  type OwnerEntry,
+} from "@prism365/contracts";
 import {
   CSV_MAX_ROWS,
   type CsvTable,
@@ -115,6 +121,7 @@ const groupSchema = z.object({
 });
 
 const ownerSchema = z.object({
+  "@odata.type": text,
   id: z.string().min(1).max(200),
   displayName: text,
   userPrincipalName: text,
@@ -210,6 +217,9 @@ interface Owners {
   names: string[];
   // Directory object IDs of every owner read, for the Combined risks audit to join on.
   ids: string[];
+  // The same owners in the same order, with the name and kind the visible names cannot be paired
+  // with: they are sorted, cut to five and skip owners without a name.
+  list: OwnerEntry[];
 }
 
 interface OwnerRead {
@@ -225,8 +235,18 @@ interface OwnerRead {
   status: number | null;
 }
 
+// Microsoft says what an owner is in @odata.type. A record without it that has a sign-in name is
+// an account, since only accounts have one; anything else is not claimed to be one.
+function ownerKindOf(owner: z.output<typeof ownerSchema>): OwnerEntry["kind"] {
+  const type = (owner["@odata.type"] ?? "").toLowerCase();
+  if (type.endsWith(".user")) return "user";
+  if (type.endsWith(".serviceprincipal")) return "servicePrincipal";
+  if (type === "" && owner.userPrincipalName) return "user";
+  return "other";
+}
+
 function ownersOf(items: readonly unknown[]): { owners: Owners; unreadable: number } {
-  const owners: Owners = { count: 0, enabled: 0, disabled: 0, names: [], ids: [] };
+  const owners: Owners = { count: 0, enabled: 0, disabled: 0, names: [], ids: [], list: [] };
   let unreadable = 0;
   for (const raw of items) {
     const parsed = ownerSchema.safeParse(raw);
@@ -237,6 +257,11 @@ function ownersOf(items: readonly unknown[]): { owners: Owners; unreadable: numb
     const owner = parsed.data;
     owners.count += 1;
     owners.ids.push(owner.id);
+    owners.list.push({
+      id: owner.id,
+      name: (owner.displayName ?? owner.userPrincipalName ?? "").trim().slice(0, 200) || null,
+      kind: ownerKindOf(owner),
+    });
     // A service principal or a record that does not carry the field is unknown, not enabled.
     if (owner.accountEnabled === true) owners.enabled += 1;
     else if (owner.accountEnabled === false) owners.disabled += 1;
@@ -518,6 +543,15 @@ const columns: Column[] = [
     empty: "Not read",
     help: "The directory IDs of the owners, which Combined risks matches to accounts.",
   },
+  {
+    key: "ownerList",
+    label: "Owners with kinds",
+    kind: "list",
+    hidden: true,
+    internal: true,
+    empty: "Not read",
+    help: "Every owner as an ID, a name and a kind, in the order of the Owner IDs, so a page can link the owners that are accounts.",
+  },
   { key: "created", label: "Created", kind: "date", empty: "Not recorded" },
   {
     key: "expires",
@@ -576,7 +610,7 @@ export function createGroupsTeamsAudit(limits: GroupsTeamsLimits = {}): Audit {
     definition: {
       id: "groups.teams",
       handoff: false,
-      version: 1,
+      version: 2,
       title: "Groups and Teams",
       description:
         "Which groups and teams have nobody looking after them: no owners, only disabled owners, a single owner, no use for 90 days, or an expiry date close. Owners are named; members are not read.",
@@ -698,6 +732,7 @@ export function createGroupsTeamsAudit(limits: GroupsTeamsLimits = {}): Audit {
             enabledOwners: ownerList?.enabled ?? null,
             ownerNames: ownerList?.names ?? null,
             ownerIds: ownerList?.ids ?? null,
+            ownerList: ownerList ? ownerList.list.map(encodeOwnerEntry) : null,
             created: group.created,
             expires: group.expires,
             renewed: group.renewed,

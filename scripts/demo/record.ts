@@ -41,6 +41,10 @@ import {
 // demo shows exactly what Prism365 produced. Nothing touches Microsoft, Docker, or any running
 // server: the API is never listened on, requests go straight into it.
 
+// The words the demo's Quick search example looks groups, roles and devices up by: the company's
+// own name, which the invented groups, policies and devices carry.
+const DEMO_SEARCH = "larkspur";
+
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -520,6 +524,23 @@ async function main() {
   // The names the Mailbox storage table shows. It carries no account ids, so each name is looked
   // up when clicked, and the lookup has to be on the recording.
   const mailboxNames = new Set<string>();
+  // The groups, roles, policies, devices and apps the audit tables list, which open a panel.
+  const entities = new Map<string, { kind: string; id: string }>();
+  const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const addEntity = (kind: string, id: unknown) => {
+    if (typeof id !== "string" || !GUID.test(id)) return;
+    entities.set(`${kind}/${id.toLowerCase()}`, { kind, id: id.toLowerCase() });
+  };
+  const entityOfAudit: Record<
+    string,
+    (row: { key: string; cells: Record<string, unknown> }) => void
+  > = {
+    "groups.teams": (row) => addEntity("group", row.key),
+    "directory.privileged-roles": (row) => addEntity("role", row.cells.roleId),
+    "identity.conditional-access": (row) => addEntity("policy", row.key),
+    "devices.managed": (row) => addEntity("device", row.key),
+    "apps.consents": (row) => addEntity("app", row.key),
+  };
   for (const entry of audits.audits) {
     const id = entry.definition.id;
     await record(`/api/v1/audits/${id}/trend?days=365`);
@@ -527,10 +548,15 @@ async function main() {
     for (const run of runs.runs) {
       const detail = await record<{
         rows: {
+          key: string;
           personId: string | null;
-          cells: { person?: { principal: string | null }; mailbox?: unknown };
+          cells: { person?: { principal: string | null }; mailbox?: unknown } & Record<
+            string,
+            unknown
+          >;
         }[];
       }>(`/api/v1/audit-runs/${run.id}`);
+      for (const row of detail.rows) entityOfAudit[id]?.(row);
       if (id === "mail.mailbox-storage")
         for (const row of detail.rows)
           if (typeof row.cells.mailbox === "string") mailboxNames.add(row.cells.mailbox);
@@ -565,6 +591,36 @@ async function main() {
     // it, from this one, and the demo receipt names every account by its id.
     await record(`/api/v1/people/${encodeURIComponent(id)}/receipts`);
   }
+  // What each person's Access tab and Overview name that has a panel too: the groups they are in
+  // and own, the roles they hold, the policies that reach them and the apps they own.
+  for (const { id } of accounts) {
+    const key = (suffix: string) =>
+      normalizeKey("GET", `/api/v1/people/${encodeURIComponent(id)}/${suffix}`);
+    const access = responses[key("access")]?.body as
+      | {
+          memberships?: { entries?: { kind: string; id: string; roleTemplateId: string | null }[] };
+          owned?: {
+            entries?: { kind: string; id: string }[];
+            details?: { kind: string; entityId?: string }[];
+          };
+          conditionalAccess?: { policies?: { id: string }[] };
+        }
+      | undefined;
+    for (const entry of access?.memberships?.entries ?? [])
+      if (entry.kind === "role") addEntity("role", entry.roleTemplateId);
+      else if (entry.kind !== "administrative-unit" && entry.kind !== "hidden")
+        addEntity("group", entry.id);
+    for (const entry of access?.owned?.entries ?? [])
+      if (entry.kind === "group" || entry.kind === "team") addEntity("group", entry.id);
+      else if (entry.kind === "service-principal") addEntity("app", entry.id);
+    for (const detail of access?.owned?.details ?? [])
+      if (detail.kind === "app") addEntity("app", detail.entityId);
+    for (const policy of access?.conditionalAccess?.policies ?? []) addEntity("policy", policy.id);
+  }
+  // Each panel, and the one search the demo's Quick search example makes.
+  for (const { kind, id } of entities.values()) await record(`/api/v1/entities/${kind}/${id}`);
+  await record(`/api/v1/entities/search?q=${encodeURIComponent(DEMO_SEARCH)}`);
+  log(`Recorded ${entities.size} entity panels.`);
   // A mailbox that is not an account in the accounts audit (a shared mailbox, say) is looked up
   // too, and a name no account has is recorded as the not-found answer the table then shows.
   const looked = new Set(accounts.map((account) => account.principal));
