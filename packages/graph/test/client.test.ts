@@ -11,6 +11,7 @@ const context = {
   feature: "audit.signins.read",
   permission: "AuditLog.Read.All",
 } as const;
+const GUID = "0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8";
 const userContext = { feature: "directory.users.read", permission: "User.Read.All" } as const;
 
 describe("read packs added for the change feed and the consent-batch audits", () => {
@@ -42,13 +43,30 @@ describe("read packs added for the change feed and the consent-batch audits", ()
     );
   });
 
-  it("lets the application packs read applications, their app role assignments and grants only", async () => {
+  it("lets the application packs read enterprise applications, registrations, owners and grants only", async () => {
     const apps = ["directory.applications.read", "Application.Read.All"] as const;
     expect(await allowed("servicePrincipals", ...apps)).toBe(true);
     expect(await allowed("servicePrincipals/sp-1/appRoleAssignments", ...apps)).toBe(true);
     expect(await allowed("servicePrincipals/sp-1/appRoleAssignedTo", ...apps)).toBe(false);
+    expect(await allowed("applications", ...apps)).toBe(true);
+    expect(await allowed(`applications/${GUID}/owners`, ...apps)).toBe(true);
+    // Owners are read by object ID only, and nothing else under a registration is open.
     expect(await allowed("servicePrincipals/sp-1/owners", ...apps)).toBe(false);
-    expect(await allowed("applications", ...apps)).toBe(false);
+    expect(await allowed("applications/app-1/owners", ...apps)).toBe(false);
+    for (const path of [
+      `applications/${GUID}`,
+      `applications/${GUID}/owners/${GUID}`,
+      `applications/${GUID}/owners/$count`,
+      `applications/${GUID}/extensionProperties`,
+      `applications/${GUID}/federatedIdentityCredentials`,
+      `applications/${GUID}/tokenIssuancePolicies`,
+      `servicePrincipals/${GUID}/owners`,
+      `servicePrincipals/${GUID}/owners/${GUID}`,
+      "applications/$count",
+      "applications/delta",
+      `x/applications/${GUID}/owners`,
+    ])
+      expect(await allowed(path, ...apps)).toBe(false);
     const grants = ["directory.permission-grants.read", "Directory.Read.All"] as const;
     expect(await allowed("oauth2PermissionGrants", ...grants)).toBe(true);
     expect(await allowed("users", ...grants)).toBe(false);
@@ -87,6 +105,7 @@ describe("read packs added for the change feed and the consent-batch audits", ()
       "servicePrincipals/sp-1/transitiveMemberOf",
       "servicePrincipals/sp-1/appRoleAssignments/extra",
       "servicePrincipals/x%2Fowners",
+      `applications/${GUID}%2Fowners`,
     ])
       expect(await allowed(path, ...apps)).toBe(false);
     const audit = ["audit.directory.read", "AuditLog.Read.All"] as const;

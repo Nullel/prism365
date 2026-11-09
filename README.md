@@ -80,7 +80,8 @@ inactive accounts, MFA registration (admins without MFA, phone-only methods), gu
 license capacity, Conditional Access policies (legacy authentication, MFA for administrators,
 exclusions), risky users, privileged roles (permanent, time-bound, activated and eligible, with
 the disabled accounts, guests and apps among the holders), passwords (age, expiry and the
-accounts set never to expire), managed devices, app consents (high-risk and unverified apps),
+accounts set never to expire), managed devices, app consents (high-risk and unverified apps), app credentials (secrets and
+certificates that expired, expire soon or never expire, and apps with no owner),
 groups and Teams (no owners, only disabled owners, inactive teams), mailbox storage (mailboxes
 close to their quotas), Microsoft 365 app usage and account activity (is an account really
 unused, and does anyone still open its files) and combined risks (the accounts that trip several

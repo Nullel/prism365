@@ -147,7 +147,7 @@ interface ClientGrants {
 }
 
 // One shared count of Graph requests for the whole run.
-class RequestBudget {
+export class RequestBudget {
   used = 0;
   readonly #limit: number;
   constructor(limit: number) {

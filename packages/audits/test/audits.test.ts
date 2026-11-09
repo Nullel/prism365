@@ -296,6 +296,7 @@ const row = (rows: { key: string }[], key: string) => {
 const ownTenant = new Set([
   "devices.managed",
   "apps.consents",
+  "apps.credentials",
   "usage.m365-apps",
   "accounts.activity",
   "directory.privileged-roles",

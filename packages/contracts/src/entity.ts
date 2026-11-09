@@ -184,6 +184,21 @@ export const ENTITY_AUDIT_FIELDS: Readonly<Record<string, readonly string[]>> = 
     "userScopes",
     "appId",
   ],
+  "apps.credentials": [
+    "status",
+    "audience",
+    "created",
+    "secrets",
+    "certificates",
+    "nextExpiry",
+    "expiresIn",
+    "expired",
+    "oldestAge",
+    "owners",
+    // The owners themselves follow as links, so their names are not repeated as a field.
+    "redirects",
+    "appId",
+  ],
 };
 
 export const entitySearchQuerySchema = z.object({
