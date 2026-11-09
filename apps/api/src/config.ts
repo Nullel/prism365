@@ -17,6 +17,7 @@ export const supportedReadFeatures = {
   "service.messages.read": "ServiceMessage.Read.All",
   "audit.directory.read": "AuditLog.Read.All",
   "identity.conditional-access.read": "Policy.Read.All",
+  "identity.policies.read": "Policy.Read.All",
   "identity.risk.read": "IdentityRiskyUser.Read.All",
   "devices.intune.read": "DeviceManagementManagedDevices.Read.All",
   "directory.applications.read": "Application.Read.All",

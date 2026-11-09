@@ -8,7 +8,9 @@ import { COMBINED_RISKS_AUDIT_ID } from "@prism365/contracts";
 //   paced      Conditional Access policies and Risky users, which Microsoft limits to one request a
 //              second for the whole tenant
 //   reports    the usage-report audits; Microsoft allows 14 report downloads in ten minutes
-//   summary    Combined risks, which joins the stored results of the rest
+//   summary    the audits that read other audits' stored results, after those audits have run:
+//              Tenant settings (the Conditional Access policies run), then Combined risks, which
+//              joins the stored results of every other audit and so comes last
 
 export type ReviewStage = "directory" | "paced" | "reports" | "summary";
 
@@ -33,6 +35,7 @@ export const REVIEW_ORDER: readonly ReviewStep[] = [
   step("accounts.passwords", "directory"),
   step("directory.privileged-roles", "directory"),
   step("apps.consents", "directory"),
+  step("apps.credentials", "directory"),
   step("devices.managed", "directory"),
   step("licenses.capacity", "directory"),
   step("identity.conditional-access", "paced"),
@@ -42,6 +45,7 @@ export const REVIEW_ORDER: readonly ReviewStep[] = [
   step("usage.m365-apps", "reports", 2),
   step("mail.mailbox-storage", "reports", 1),
   step("groups.teams", "reports", 1),
+  step("tenant.settings", "summary"),
   step(COMBINED_RISKS_AUDIT_ID, "summary"),
 ];
 

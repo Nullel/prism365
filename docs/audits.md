@@ -18,10 +18,12 @@ changes the tenant.
 | MFA registration (`mfa.registration`) | Who has no strong method registered, which admins lack MFA, who relies on text or calls? | `AuditLog.Read.All`, a role such as Reports Reader, Security Reader, Security Administrator or Global Reader |
 | Guest accounts (`guests.review`) | Which invitations were never accepted, which guests never signed in or went quiet, from which domains? | `User.Read.All`; sign-in dates as above, or invitation states only |
 | License capacity (`licenses.capacity`) | Which products have no seats left, more assigned than owned, an expired or suspended subscription, or unassigned seats? | `LicenseAssignment.Read.All`, a role such as Directory Readers, Global Reader or License Administrator |
+| Tenant settings (`tenant.settings`) | Are security defaults on, does the tenant still allow text-message sign-in, who can invite guests, can users register applications and consent to them, and can they ask for an app to be approved (section 25)? | `Policy.Read.All` and a role such as Global Reader or Security Reader |
 | Conditional Access policies (`identity.conditional-access`) | Which policies exist and what do they require and leave out? Does any enabled policy block legacy authentication or ask administrators for MFA? | `Policy.Read.All`, a role such as Global Reader, Security Reader, Security Administrator or Conditional Access Administrator, Microsoft Entra ID P1; `User.Read.All` and `LicenseAssignment.Read.All` add detail |
 | Risky users (`identity.risky-users`) | Which accounts does Microsoft Entra ID Protection mark as at risk or compromised, how high, and has the risk been dealt with? | `IdentityRiskyUser.Read.All`, a role such as Global Reader, Security Reader, Security Operator or Security Administrator, Microsoft Entra ID P2 |
 | Managed devices (`devices.managed`) | Which Intune devices are not compliant, have not checked in for 30 days, are personal, unencrypted or jailbroken? | `DeviceManagementManagedDevices.Read.All`, an Intune license, a role that can read Intune devices such as Global Reader or Intune Administrator |
 | App consents (`apps.consents`) | Which applications hold permissions here, which are unverified or hold high-risk permissions, and where did an administrator consent for everyone? | `Application.Read.All` and a role such as Directory Readers or Application Administrator; `Directory.Read.All` adds delegated consents |
+| App credentials (`apps.credentials`) | Which application registrations have a secret or certificate that has expired, expires within 30 or 90 days, never expires or is more than two years old, which have no owner, and which accept sign-ins from other organisations or send people back over plain HTTP (section 12a)? | `Application.Read.All` and a role that can read applications and their owners, such as Directory Readers or Application Administrator |
 | Microsoft 365 app usage (`usage.m365-apps`) | Which accounts used none of Outlook, Word, Excel, PowerPoint, OneNote or Teams in 90 days, and which use only Teams, only the web or only a phone? | `Reports.Read.All` and Reports Reader or a service administrator role; `ReportSettings.Read.All` tells whether names are concealed |
 | Account activity (`accounts.activity`) | Is this account really unused, and does anyone depend on it? One row per account with sign-ins, mail, Teams, OneDrive and SharePoint use, mailbox size, licenses, groups and directory roles, and a verdict (section 16). | `User.Read.All`, `AuditLog.Read.All`, Microsoft Entra ID P1 or P2, a role such as Reports Reader, Security Reader or Global Reader; `Reports.Read.All` with Reports Reader or a service administrator role adds the workload columns, `ReportSettings.Read.All` tells whether names are concealed, `LicenseAssignment.Read.All` names the licenses |
 | Privileged roles (`directory.privileged-roles`) | Who holds Global Administrator and the other administrator roles, permanently, for a time, after an activation or only as eligible, and which holders are disabled accounts, guests or apps (section 17)? | `RoleManagement.Read.Directory` and a role such as Global Reader or Privileged Role Administrator; Microsoft Entra ID P2 or ID Governance for eligible and time-bound roles; `User.Read.All`, `Application.Read.All` and `AuditLog.Read.All` add names and MFA registration |
@@ -468,6 +470,102 @@ What it cannot see:
   Directory Readers, Application Administrator or Cloud Application Administrator among others.
   Microsoft does not list Global Reader for that call, so a Global Reader session may be refused
   there although it can list the applications; the failure message names the roles.
+
+## 12a. App credentials
+
+`apps.credentials` answers which application registrations are about to break, already broke or
+have no one looking after them. An expiring secret stops an integration; an expired one that no one
+noticed often means the app has no owner; a secret older than two years is a finding in published
+baselines. It reads, with `Application.Read.All`, which the App consents pack already holds, one
+page at a time with `$top=100`. The field names were checked against Microsoft's references on
+2026-11-09:
+
+1. `GET /applications?$select=id,appId,displayName,createdDateTime,signInAudience,passwordCredentials,keyCredentials,web,spa,publicClient`,
+   at most 2,000 applications. Past that the run is partial and says so.
+2. `GET /servicePrincipals?$select=id,appId,displayName,servicePrincipalType,passwordCredentials,keyCredentials`,
+   at most 2,000, only those of type `Application`. Their secrets and certificates are added to
+   the registration with the same application ID, and the service principal's ID is kept in a
+   hidden column so the app's panel can be opened. A SAML signing certificate is stored there as a
+   `Sign` and a `Verify` key credential plus a password credential for its private key. It is
+   counted once, by the `Verify` key: a `Sign` key with the same thumbprint is skipped, and so is a
+   password credential whose thumbprint (`customKeyIdentifier`) matches one of those keys. The
+   thumbprint is public, is read only to pair them and is never stored or shown. A password that
+   pairs with nothing is counted as a secret.
+3. `GET /applications/{id}/owners?$select=id,displayName,userPrincipalName`, first page only, for
+   each application that holds a secret or certificate (active or expired) or shows a redirect or
+   audience flag. An application with no credential and nothing else to flag is not asked, and its
+   owners read "Not read". Applications are asked in order of urgency (expired first, then expiring
+   within 30 days, then 90), so a tenant too large for the budget loses the quiet ones first.
+
+All of it shares one budget of 600 requests per run. When it runs out the remaining applications
+read "Owners not read", carry the tag `owners-not-read` and the run is partial. If Microsoft asks
+the run to slow down, or refuses the owner list, the run keeps what it read, says so and is partial.
+An application deleted after it was listed is left without owners and costs nothing else.
+
+"Active" means not yet past its end date. An expired credential is counted once, in Expired
+credentials, and in nothing else: not in Secrets, Certificates, the next expiry, the oldest age or
+any tag but `expired` or `expired-leftover`. An end date more than a hundred years away (Microsoft
+uses the year 2299 for a secret created as "never") is treated as no end date, in every rule below. A credential whose date Microsoft returns in a form that cannot be read is
+left out, counted in a note and makes the run partial; it is never taken for one that does not end.
+
+A row is an application registration, keyed by its object ID. Columns:
+
+- Application, Status, Who can sign in, Created. Status is the first that applies: Expired (a
+  credential has passed its end date and none is active, so the app has nothing that works),
+  Expires within 30 days, Expires within 90 days (the soonest end date among the active
+  credentials, measured from the time the run started, 30 and 90 days included), Expired leftovers
+  (an expired credential is still there beside an active one, the usual state after a rotation),
+  No credentials (none at all, expired or not), otherwise OK. Who can sign in is the
+  sign-in audience: This tenant, Any organisation, Any organisation or personal account, or
+  Personal accounts.
+- Secrets and Certificates count the active ones. Next expiry is the soonest end date among the
+  active credentials and empty when there is none or none of them ends. Days until expiry rounds
+  up to whole days, counts to the soonest active credential and is empty when none is active, so
+  an application whose every credential has expired shows none. Expired credentials and
+  Oldest credential (days since the oldest active credential started) complete the picture.
+- Owners counts the first page. Owner names lists up to five, accounts only: an owner that is not
+  an account (an app or a group, or a record with neither a type nor a sign-in name) counts but is
+  not named. Two internal columns keep the owners with their kinds, so the panel can link the
+  accounts, and the enterprise application's ID.
+- Application ID (hidden) and Redirect URIs to check: plain HTTP to a host other than this
+  computer, wildcards, and addresses on this computer (`localhost`, `127.0.0.1`, `[::1]`), at most
+  ten, from the web, single-page and public client lists.
+
+Tags and views: `expired` (expired credentials and no active one); `expired-leftover` (expired
+credentials and an active one too); `expiring-30`; `expiring-90` (which includes those within 30 days, so
+the view shows everything that ends within 90); `never-expires` (an active credential with no end
+date, or one more than a hundred years away); `old-secret` (an active secret that started more than 730 days ago, or any active credential
+that never ends and started more than 730 days ago); `many-secrets` (five or more active secrets);
+`no-credentials`; `no-owner` (owners were read and there are none); `owners-not-read`;
+`insecure-redirect` (a redirect URI that is `http://` and not on this computer, or holds a
+wildcard); `localhost-redirect`; `multi-tenant` (any audience but This tenant). Each has a view.
+
+Tiles: Expired credentials (critical), Expired credentials left in place (a plain count),
+Expiring within 30 days, No owner, Secrets older than 2
+years and Insecure redirect URIs (warning), and Applications. Every tile counts applications, so
+the number matches the rows of the view it opens. The No owner tile is neutral, not clear, while
+some owners were not read.
+
+What it cannot see:
+
+- Secret values. Microsoft never returns them, only when each secret or certificate starts and
+  ends, so Prism365 cannot say which credential an integration actually uses, or whether an
+  expired one was already replaced elsewhere.
+- How a certificate is used. A key credential is counted, not classified (signing, verifying or
+  sign-in).
+- Applications the signed-in role cannot list, and anything past the first 2,000 registrations or
+  2,000 service principals.
+- Owners past the first page of an application, and owners of an application the budget did not
+  reach.
+- Federated credentials, which have no secret to expire and are not read.
+
+The app panel shows a Credentials section from this audit's latest run, matched by application ID
+(the panel is keyed by the enterprise application, this audit by the registration), with the owners
+that are accounts as links. Quick search lists the audit's application names under Apps, once per
+application however many audits list it. Tests: `packages/audits/test/app-credentials.test.ts`,
+the pack cases in `packages/graph/test/client.test.ts`, the panel and search in
+`apps/api/test/entities-api.test.ts`, and `scripts/demo/graph/apps-devices-usage.test.ts` for the
+six synthetic registrations.
 
 ## 13. Microsoft 365 app usage
 
@@ -1138,6 +1236,7 @@ Inputs, and how each is matched to an account:
 | Managed devices | account ID (the device owner) | compliance and encryption of each device |
 | Mailbox storage | sign-in name, in any letter case | whether the mailbox is shared, a room or equipment |
 | Groups and Teams | owner IDs | owning a group (see "What is not checked") |
+| Tenant settings | its security defaults row | whether security defaults are on, so no one can be left out of MFA (see "Conditional Access") |
 | Sign-in findings | account ID (the subject) | open findings of medium severity or above |
 
 A hashed mailbox name is never matched to anyone. Rows with no account ID, such as an app holding a
@@ -1184,6 +1283,12 @@ out when a policy would include it but names it in an exclusion and no other pol
 account no MFA policy is aimed at is a different finding, the Conditional Access audit's, and is not
 flagged here.
 
+When the newest Tenant settings run is fresh and its security defaults row says On, Microsoft
+requires MFA of every account, so no one is counted as left out of a policy and the policy list is
+not read. The two MFA rules then look at MFA registration alone, and a note says "Security defaults
+are on, so no one is left out of MFA". A row that is Meets only because a policy stands in for
+security defaults (its value reads Off) does not count, and without a fresh run nothing changes.
+
 Only direct group memberships are matched, from Account activity, and nested groups are not followed.
 Roles are matched by role template ID for the privileged built-in roles. Apps, locations, platforms
 and risk levels are not weighed, as in the Conditional Access audit. Guests are matched by the
@@ -1225,22 +1330,25 @@ pack or table.
 
 Every built-in audit whose read packs are enabled and whose permissions the session granted (the
 rule the Run button uses). The others are listed as skipped with the same reason the Run button
-gives. If only Combined risks could run, nothing starts (HTTP 403), because it would join old results
+gives. If only Combined risks could run, nothing starts (HTTP 403; an audit with a read pack of its own,
+Tenant settings included, counts as something to run), because it would join old results
 and read nothing new.
 
 The order is fixed in `packages/audits/src/review-order.ts`, and a test fails when an audit is missing
 from it or sits in the wrong stage:
 
 1. Directory audits: Inactive accounts, Licenses to reclaim, MFA registration, Guest accounts,
-   Passwords, Privileged roles, App consents, Managed devices and License capacity. Their endpoints
-   have generous limits of their own.
+   Passwords, Privileged roles, App consents, App credentials, Managed devices and License
+   capacity. Their endpoints have generous limits of their own.
 2. The paced audits: Conditional Access policies, then Risky users. Microsoft allows one request a
    second for the tenant on these endpoints, so each audit spaces its own requests, and the review
    waits 1.1 seconds after one ends before the next audit that reads such an endpoint (Risky users,
    and Combined risks, which reads the Conditional Access policies).
 3. The usage-report audits: Account activity, Microsoft 365 app usage, Mailbox storage, and Groups
    and Teams.
-4. Combined risks, last.
+4. The audits that read other audits' stored results: Tenant settings, which reads the
+   Conditional Access policies run this review just made, then Combined risks, last, which joins
+   every other audit's result, Tenant settings included.
 
 An audit that fails does not stop the review. Combined risks still runs and uses the newest result
 it has for that input, with its usual freshness note.
@@ -1372,7 +1480,7 @@ or that the latest run does not list the thing.
 | Role | the role definition id (the template id for a built-in role) | The Privileged roles rows for it, one per holder, with how it is held; each holder's Combined risks rules; the policies that include the role or leave it out. |
 | Policy | the policy id | Its Conditional Access row, with the people, groups and roles it includes and leaves out. Names come from Account activity, Groups and Teams and the built-in role names; a group or account no stored audit names reads "Unknown group" with its id behind a copy button. |
 | Device | the Intune managed device id | Its Managed devices row, with the owner as a person. |
-| App | the service principal's object id, or the application id | Its App consents row. |
+| App | the service principal's object id, or the application id | Its App consents row, and its App credentials row (found by application ID) with the owners that are accounts as links. |
 
 A holder the Privileged roles audit could not sort ("Group or other") opens a group panel only if
 Groups and Teams lists its id, and an app panel only if App consents does; its name is read from
@@ -1387,7 +1495,7 @@ still decides each row. Ids compare in lower case. Lists in a section hold at mo
 how many more there are; a section holds at most 25 rows. `GET /v1/entities/{kind}/{id}` writes
 `entity.viewed` to the access ledger before it reads, with the kind and nothing else. The search
 writes `entity.searched` with no search words. The search matches the name column of the latest run
-of Groups and Teams, Privileged roles, Conditional Access, Managed devices and App consents with a
+of Groups and Teams, Privileged roles, Conditional Access, Managed devices, App consents and App credentials (an app both list is shown once) with a
 case-insensitive match in which `%` and `_` are plain characters. A role has one row per holder, so
 a role appears once however many people hold it, and only a role that someone holds can be found.
 Quick search asks for it once typing pauses, and lists the matches under Groups, Roles, Policies,
@@ -1423,3 +1531,94 @@ groups, roles, owned groups and apps, policies and devices on a person's Access 
 account owns on its Overview; and the group, policy and service principal targets in Directory
 changes. A role or device target there is not linked: a change names the role's directory object
 and the device's Entra object, which are not the ids the panels are keyed by.
+
+## 25. Tenant settings
+
+`tenant.settings` answers "how is the tenant itself set up?" It lists the settings that apply to
+everyone, each with the value Microsoft reports, the value Prism365 expects and a status. It is the
+first page of most tenant reviews, and it is where Combined risks learns that security defaults
+already require MFA of everyone. One row per setting; the audit is not scoped, has no handoff and
+shows no accounts.
+
+### What it reads
+
+Five single reads under `Policy.Read.All`, one request each, through the read pack
+`identity.policies.read` (off by default, like the other packs; enabling the Conditional Access pack
+does not enable it, nor the reverse):
+
+- `/policies/identitySecurityDefaultsEnforcementPolicy`
+- `/policies/authenticationMethodsPolicy`, which carries each method's configuration inline
+- `/policies/authorizationPolicy`
+- `/policies/adminConsentRequestPolicy`
+- `/policies/permissionGrantPolicies`, the list, used only to name the consent policies in the
+  user consent row
+
+Nothing deeper is reachable: not one method's configuration, not Conditional Access, not one grant
+policy. The audit also reads the latest stored Conditional Access policies run, from the audit store
+and not from Microsoft, and only when security defaults are off.
+
+### Status
+
+Meets when the value is the expected one. Review when it differs: the word is not Fails, because a
+tenant can have a reason. Not read when Microsoft did not return the setting, which includes a field
+missing from an answer that otherwise came back; a missing value is never read as meeting. A policy
+that cannot be read leaves its rows Not read with a plain reason ("Microsoft refused (HTTP 403)"), a
+note names it, and the run is partial. A session that ended is not hidden this way; the runner
+explains it.
+
+| Setting | Area | Expected |
+|---|---|---|
+| Security defaults | Security defaults | On, or off with an enabled Conditional Access policy that requires MFA for all users |
+| Text message, Voice call | Authentication methods | Disabled |
+| Security keys and passkeys, Microsoft Authenticator, Temporary Access Pass | Authentication methods | Enabled |
+| Email one-time passcode, Authenticator apps with codes, Certificate-based sign-in | Authentication methods | Your choice (shown, always Meets) |
+| Registration campaign | Authentication methods | Enabled. "Managed by Microsoft" (state default) is Review |
+| Legacy MFA and password reset policies | Authentication methods | Complete (`migrationComplete`); anything else is Review |
+| Who can invite guests | Guests | Only administrators and guest inviters, or no one |
+| What guests can see | Guests | Restricted access (`2af84b1e-32c8-42b7-82bc-daa82404023b`). Limited access (`10dae51f-b6af-4016-8d66-8c2a99b929b3`) and same access as members (`a0b1b346-4d3e-4e8b-98f8-753987be4970`) are Review, and any other id is named as one Prism365 does not recognise |
+| Join by email verification, Email-based subscription sign-up | Users | Not allowed |
+| Users can create security groups, read other users, use self-service password reset; the retired MSOnline PowerShell module | Users | Your choice |
+| Users can register applications | Applications | Not allowed |
+| User consent to apps | Consent | Off, or only `ManagePermissionGrantsForSelf.microsoft-user-default-low` (verified publishers, low impact). Anything else is Review |
+| Admin consent workflow | Consent | On when user consent is off or limited. When users can consent to more, it is Your choice and Meets. When the consent row could not be read, an Off workflow is Review |
+
+The policies in the user consent value are named from the grant policy list where Microsoft gives a
+display name, then by what the two long-standing policies mean, then by their id. If the list cannot
+be read, the values keep their ids, a note says so and the run is partial.
+
+### Security defaults and Conditional Access
+
+When security defaults are on the row is Meets and nothing else is read. When they are off, Prism365
+reads the newest Conditional Access policies run through the stored accessor. The row is Meets when
+that run finished within seven days (exactly seven is still fresh) and has a row tagged `enabled` and
+`mfa` whose Applies to is "All users", the words the Conditional Access audit writes for a policy
+that includes everyone (`ALL_USERS` in `conditional-access.ts`, so a change there is a compile
+error here). The note names the run's date and the policy, and says when the policy lists
+exclusions, which this audit does not weigh. It is Review with "No enabled Conditional Access policy
+requires MFA for all users" when the run has none (and says if that run was partial), and Review with
+"Run Conditional Access policies first" when there is no run from the last seven days. Run Conditional
+Access first when running Tenant settings on its own; a full review runs Tenant settings after
+Conditional Access, so it reads the run that review just made (section 22).
+
+### Columns, views and tiles
+
+Columns: Setting, Area, Value, Expected, Status, What it controls, and a hidden Read from (the
+policy and field). Views: All settings (the default), Review, Meets, Not read, and one per area.
+Rows are stored with Review first, then Not read, then Meets, each in area order, and the default
+sort on Status (descending) keeps that order. Tiles: Review (warning), Meets (good), Not read
+(neutral).
+
+### Combined risks
+
+Tenant settings is an optional input of Combined risks: its newest run, if it finished in the last
+seven days. See section 21, Conditional Access.
+
+### What it cannot see
+
+- Per-user authentication method settings, and the targets and exclusions of a method or the
+  registration campaign. It reads whether the tenant-wide switch is on.
+- Self-service password reset configuration beyond whether users may use it.
+- Conditional Access coverage beyond the all-users MFA check: apps, locations, risk levels,
+  exclusions and report-only policies are not weighed here.
+- Settings under other policies, such as token lifetime, cross-tenant access and B2B domain lists.
+- Whether a setting has a reason. Review is a question.

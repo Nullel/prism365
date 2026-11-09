@@ -324,9 +324,13 @@ function guestsText(selection: { types: string[] } | null, literal: boolean): st
     : "Guests and external users";
 }
 
+// What the Applies to column says for a policy that includes everyone. Tenant settings reads it
+// back to find an MFA policy for all users, so it is named once.
+export const ALL_USERS = "All users";
+
 function appliesTo(policy: Policy): string {
   const { users, clientApplications } = policy.conditions;
-  if (has(users.includeUsers, "All")) return "All users";
+  if (has(users.includeUsers, "All")) return ALL_USERS;
   const parts: string[] = [];
   const ids = userIds(users.includeUsers);
   if (ids.length > 0) parts.push(plural(ids.length, "user", "users"));

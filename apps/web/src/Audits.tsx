@@ -818,6 +818,11 @@ const entityColumns: Readonly<
   "groups.teams": { group: (row) => ({ kind: "group", id: row.key }) },
   "identity.conditional-access": { policy: (row) => ({ kind: "policy", id: row.key }) },
   "apps.consents": { app: (row) => ({ kind: "app", id: row.key }) },
+  // This audit's rows are application registrations; the app panel is keyed by the enterprise
+  // application, whose ID the row keeps in a hidden column.
+  "apps.credentials": {
+    app: (row) => ({ kind: "app", id: String(row.cells.servicePrincipalId ?? "") }),
+  },
   "directory.privileged-roles": {
     role: (row) => ({ kind: "role", id: String(row.cells.roleId ?? "") }),
     holder: holderEntity,

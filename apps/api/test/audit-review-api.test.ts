@@ -70,7 +70,7 @@ describe("the review routes", { timeout: 60_000 }, () => {
     const started = await h.post("/v1/audits/review");
     expect(started.statusCode).toBe(202);
     const first = auditReviewResponseSchema.parse({ review: started.json().review }).review;
-    expect(first?.audits).toHaveLength(16);
+    expect(first?.audits).toHaveLength(18);
     expect(first?.audits.at(-1)?.auditId).toBe("identity.combined-risks");
     const review = await finished(h);
     expect(review.state).toBe("finished");
@@ -148,6 +148,28 @@ describe("the review routes", { timeout: 60_000 }, () => {
     expect(response.json().error).toBe("nothing_to_run");
     expect(types(h)).not.toContain("audit.review.started");
     expect(h.reads).toEqual([]);
+  });
+
+  // Tenant settings has its own read pack and also reads a stored run. It still reads Microsoft,
+  // so a review with only it and Combined risks available has something to run.
+  it("start when only Tenant settings and Combined risks can run, and refuse when only Combined risks can", async () => {
+    const only = await harness({
+      scopes: ["User.Read", "Policy.Read.All"],
+      features: ["identity.policies.read"],
+    });
+    const started = await only.post("/v1/audits/review");
+    expect(started.statusCode).toBe(202);
+    const review = await finished(only);
+    const ran = review.audits.filter((item) => item.state !== "skipped").map((a) => a.auditId);
+    expect(ran).toEqual(["tenant.settings", "identity.combined-risks"]);
+    expect(types(only)).toContain("audit.review.started");
+
+    // Nothing granted that any pack-reading audit needs: Combined risks alone does not start one.
+    const none = await harness({ scopes: ["User.Read"], features: ["identity.policies.read"] });
+    const refused = await none.post("/v1/audits/review");
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error).toBe("nothing_to_run");
+    expect(types(none)).not.toContain("audit.review.started");
   });
 });
 

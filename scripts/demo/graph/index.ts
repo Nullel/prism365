@@ -6,6 +6,7 @@ import { demoGroups } from "./groups.ts";
 import { personAccess } from "./person-access.ts";
 import { riskyUsers } from "./risky-users.ts";
 import { directoryRoles } from "./roles.ts";
+import { tenantSettings } from "./tenant-settings.ts";
 import type { DemoGraphExtension } from "./types.ts";
 import { usageReports } from "./usage-reports.ts";
 
@@ -15,6 +16,7 @@ export type { DemoGraphExtension, DemoGraphRequest, DemoGraphTools } from "./typ
 export const demoGraphExtensions: readonly DemoGraphExtension[] = [
   directoryAudits,
   conditionalAccess,
+  tenantSettings,
   riskyUsers,
   managedDevices,
   applications,

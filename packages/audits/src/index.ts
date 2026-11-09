@@ -2,6 +2,7 @@ import { type AuditDefinition, auditDefinitionSchema } from "@prism365/contracts
 import { type GraphFeatureId, permissionPacks } from "@prism365/graph";
 import { accountActivityAudit } from "./account-activity.ts";
 import { appConsentsAudit } from "./app-consents.ts";
+import { appCredentialsAudit } from "./app-credentials.ts";
 import { licenseCapacityAudit } from "./capacity.ts";
 import { combinedRisksAudit } from "./combined-risks.ts";
 import { conditionalAccessAudit } from "./conditional-access.ts";
@@ -17,6 +18,7 @@ import { passwordsAudit } from "./passwords.ts";
 import { privilegedRolesAudit } from "./privileged-roles.ts";
 import { licenseReclaimAudit } from "./reclaim.ts";
 import { riskyUsersAudit } from "./risky-users.ts";
+import { tenantSettingsAudit } from "./tenant-settings.ts";
 
 // The devices, app consents and Microsoft 365 app usage audits, and what they share.
 export {
@@ -43,6 +45,14 @@ export {
   MICROSOFT_TENANTS,
   ownerOf,
 } from "./app-consents.ts";
+export {
+  AUDIENCES,
+  analyseCredentials,
+  appCredentialsAudit,
+  isInsecureRedirect,
+  isLocalhostRedirect,
+  MAX_APPLICATIONS,
+} from "./app-credentials.ts";
 export {
   combinedRisksAudit,
   createCombinedRisksAudit,
@@ -107,6 +117,13 @@ export * from "./schedule.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
 export * from "./stored.ts";
+export {
+  AREAS as TENANT_SETTING_AREAS,
+  SECURITY_DEFAULTS_KEY,
+  SECURITY_DEFAULTS_ON,
+  TENANT_SETTINGS_AUDIT_ID,
+  tenantSettingsAudit,
+} from "./tenant-settings.ts";
 export * from "./trend.ts";
 export {
   guestAccountsAudit,
@@ -125,10 +142,12 @@ export const builtInAudits: readonly Audit[] = [
   mfaRegistrationAudit,
   guestAccountsAudit,
   licenseCapacityAudit,
+  tenantSettingsAudit,
   conditionalAccessAudit,
   riskyUsersAudit,
   managedDevicesAudit,
   appConsentsAudit,
+  appCredentialsAudit,
   m365AppUsageAudit,
   accountActivityAudit,
   privilegedRolesAudit,
