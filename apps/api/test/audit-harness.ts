@@ -5,7 +5,7 @@ import { expect } from "vitest";
 import { createApp } from "../src/app.ts";
 import type { ScheduleTimers } from "../src/audit-schedule.ts";
 import { AuditRunner } from "../src/audits.ts";
-import type { AppConfig, IdentityConfig } from "../src/config.ts";
+import type { AppConfig, IdentityConfig, SupportedReadFeature } from "../src/config.ts";
 import { IdentityService, type MicrosoftIdentityProvider } from "../src/identity.ts";
 import { createModuleRegistry } from "../src/modules.ts";
 
@@ -18,7 +18,7 @@ export const actorId = "22222222-2222-4222-8222-222222222222";
 export const otherActorId = "44444444-4444-4444-8444-444444444444";
 export const origin = "http://localhost:5173";
 const features = ["directory.users.read", "audit.signins.read"] as const;
-const identityConfig: IdentityConfig = {
+const baseIdentity: IdentityConfig = {
   tenantId,
   clientId: "33333333-3333-4333-8333-333333333333",
   origin,
@@ -27,10 +27,10 @@ const identityConfig: IdentityConfig = {
   enabledFeatures: [...features],
   credential: { clientSecret: "synthetic-only" },
 };
-const config: AppConfig = {
+const baseConfig: AppConfig = {
   mode: "live",
   origin,
-  identity: identityConfig,
+  identity: baseIdentity,
   production: false,
   missingConfiguration: [],
   enabledFeatures: [...features],
@@ -110,9 +110,14 @@ export async function auditHarness(
     scopes?: string[];
     // Scopes for the second administrator; the first one's by default.
     otherScopes?: string[];
+    // Read packs enabled for the installation; the users and sign-in packs by default.
+    features?: readonly SupportedReadFeature[];
     now?: () => Date;
   } = {},
 ) {
+  const enabled = [...(options.features ?? features)];
+  const identityConfig: IdentityConfig = { ...baseIdentity, enabledFeatures: enabled };
+  const config: AppConfig = { ...baseConfig, identity: identityConfig, enabledFeatures: enabled };
   const scopes = options.scopes ?? ["User.Read", "User.Read.All", "AuditLog.Read.All"];
   const scopesOf = (actor: string) =>
     actor === otherActorId ? (options.otherScopes ?? scopes) : scopes;
@@ -173,7 +178,7 @@ export async function auditHarness(
   const identity = new IdentityService(identityConfig, store, provider);
   const signIn = async (actor = actorId): Promise<Session> => {
     signingIn = actor;
-    const login = await identity.startLogin("directory.users.read");
+    const login = await identity.startLogin(enabled[0] ?? "directory.users.read");
     const loggedIn = await identity.finishLogin("synthetic-code", login.state, login.state);
     return {
       cookie: `prism365_session=${loggedIn.handle}`,

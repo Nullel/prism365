@@ -60,6 +60,13 @@ export const readPacks: readonly { id: string; label: string; scope: string; det
     detail: "Conditional Access policy definitions.",
   },
   {
+    id: "identity.policies.read",
+    label: "Tenant policies",
+    scope: "Policy.Read.All",
+    detail:
+      "Security defaults, authentication methods, guest and application defaults, user consent.",
+  },
+  {
     id: "identity.risk.read",
     label: "Identity Protection risk",
     scope: "IdentityRiskyUser.Read.All",

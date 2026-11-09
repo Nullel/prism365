@@ -18,6 +18,7 @@ changes the tenant.
 | MFA registration (`mfa.registration`) | Who has no strong method registered, which admins lack MFA, who relies on text or calls? | `AuditLog.Read.All`, a role such as Reports Reader, Security Reader, Security Administrator or Global Reader |
 | Guest accounts (`guests.review`) | Which invitations were never accepted, which guests never signed in or went quiet, from which domains? | `User.Read.All`; sign-in dates as above, or invitation states only |
 | License capacity (`licenses.capacity`) | Which products have no seats left, more assigned than owned, an expired or suspended subscription, or unassigned seats? | `LicenseAssignment.Read.All`, a role such as Directory Readers, Global Reader or License Administrator |
+| Tenant settings (`tenant.settings`) | Are security defaults on, does the tenant still allow text-message sign-in, who can invite guests, can users register applications and consent to them, and can they ask for an app to be approved (section 25)? | `Policy.Read.All` and a role such as Global Reader or Security Reader |
 | Conditional Access policies (`identity.conditional-access`) | Which policies exist and what do they require and leave out? Does any enabled policy block legacy authentication or ask administrators for MFA? | `Policy.Read.All`, a role such as Global Reader, Security Reader, Security Administrator or Conditional Access Administrator, Microsoft Entra ID P1; `User.Read.All` and `LicenseAssignment.Read.All` add detail |
 | Risky users (`identity.risky-users`) | Which accounts does Microsoft Entra ID Protection mark as at risk or compromised, how high, and has the risk been dealt with? | `IdentityRiskyUser.Read.All`, a role such as Global Reader, Security Reader, Security Operator or Security Administrator, Microsoft Entra ID P2 |
 | Managed devices (`devices.managed`) | Which Intune devices are not compliant, have not checked in for 30 days, are personal, unencrypted or jailbroken? | `DeviceManagementManagedDevices.Read.All`, an Intune license, a role that can read Intune devices such as Global Reader or Intune Administrator |
@@ -1138,6 +1139,7 @@ Inputs, and how each is matched to an account:
 | Managed devices | account ID (the device owner) | compliance and encryption of each device |
 | Mailbox storage | sign-in name, in any letter case | whether the mailbox is shared, a room or equipment |
 | Groups and Teams | owner IDs | owning a group (see "What is not checked") |
+| Tenant settings | its security defaults row | whether security defaults are on, so no one can be left out of MFA (see "Conditional Access") |
 | Sign-in findings | account ID (the subject) | open findings of medium severity or above |
 
 A hashed mailbox name is never matched to anyone. Rows with no account ID, such as an app holding a
@@ -1184,6 +1186,12 @@ out when a policy would include it but names it in an exclusion and no other pol
 account no MFA policy is aimed at is a different finding, the Conditional Access audit's, and is not
 flagged here.
 
+When the newest Tenant settings run is fresh and its security defaults row says On, Microsoft
+requires MFA of every account, so no one is counted as left out of a policy and the policy list is
+not read. The two MFA rules then look at MFA registration alone, and a note says "Security defaults
+are on, so no one is left out of MFA". A row that is Meets only because a policy stands in for
+security defaults (its value reads Off) does not count, and without a fresh run nothing changes.
+
 Only direct group memberships are matched, from Account activity, and nested groups are not followed.
 Roles are matched by role template ID for the privileged built-in roles. Apps, locations, platforms
 and risk levels are not weighed, as in the Conditional Access audit. Guests are matched by the
@@ -1225,22 +1233,25 @@ pack or table.
 
 Every built-in audit whose read packs are enabled and whose permissions the session granted (the
 rule the Run button uses). The others are listed as skipped with the same reason the Run button
-gives. If only Combined risks could run, nothing starts (HTTP 403), because it would join old results
+gives. If only Combined risks could run, nothing starts (HTTP 403; an audit with a read pack of its own,
+Tenant settings included, counts as something to run), because it would join old results
 and read nothing new.
 
 The order is fixed in `packages/audits/src/review-order.ts`, and a test fails when an audit is missing
 from it or sits in the wrong stage:
 
 1. Directory audits: Inactive accounts, Licenses to reclaim, MFA registration, Guest accounts,
-   Passwords, Privileged roles, App consents, Managed devices and License capacity. Their endpoints
-   have generous limits of their own.
+   Passwords, Privileged roles, App consents, Managed devices and License capacity. Their
+   endpoints have generous limits of their own.
 2. The paced audits: Conditional Access policies, then Risky users. Microsoft allows one request a
    second for the tenant on these endpoints, so each audit spaces its own requests, and the review
    waits 1.1 seconds after one ends before the next audit that reads such an endpoint (Risky users,
    and Combined risks, which reads the Conditional Access policies).
 3. The usage-report audits: Account activity, Microsoft 365 app usage, Mailbox storage, and Groups
    and Teams.
-4. Combined risks, last.
+4. The audits that read other audits' stored results: Tenant settings, which reads the
+   Conditional Access policies run this review just made, then Combined risks, last, which joins
+   every other audit's result, Tenant settings included.
 
 An audit that fails does not stop the review. Combined risks still runs and uses the newest result
 it has for that input, with its usual freshness note.
@@ -1423,3 +1434,94 @@ groups, roles, owned groups and apps, policies and devices on a person's Access 
 account owns on its Overview; and the group, policy and service principal targets in Directory
 changes. A role or device target there is not linked: a change names the role's directory object
 and the device's Entra object, which are not the ids the panels are keyed by.
+
+## 25. Tenant settings
+
+`tenant.settings` answers "how is the tenant itself set up?" It lists the settings that apply to
+everyone, each with the value Microsoft reports, the value Prism365 expects and a status. It is the
+first page of most tenant reviews, and it is where Combined risks learns that security defaults
+already require MFA of everyone. One row per setting; the audit is not scoped, has no handoff and
+shows no accounts.
+
+### What it reads
+
+Five single reads under `Policy.Read.All`, one request each, through the read pack
+`identity.policies.read` (off by default, like the other packs; enabling the Conditional Access pack
+does not enable it, nor the reverse):
+
+- `/policies/identitySecurityDefaultsEnforcementPolicy`
+- `/policies/authenticationMethodsPolicy`, which carries each method's configuration inline
+- `/policies/authorizationPolicy`
+- `/policies/adminConsentRequestPolicy`
+- `/policies/permissionGrantPolicies`, the list, used only to name the consent policies in the
+  user consent row
+
+Nothing deeper is reachable: not one method's configuration, not Conditional Access, not one grant
+policy. The audit also reads the latest stored Conditional Access policies run, from the audit store
+and not from Microsoft, and only when security defaults are off.
+
+### Status
+
+Meets when the value is the expected one. Review when it differs: the word is not Fails, because a
+tenant can have a reason. Not read when Microsoft did not return the setting, which includes a field
+missing from an answer that otherwise came back; a missing value is never read as meeting. A policy
+that cannot be read leaves its rows Not read with a plain reason ("Microsoft refused (HTTP 403)"), a
+note names it, and the run is partial. A session that ended is not hidden this way; the runner
+explains it.
+
+| Setting | Area | Expected |
+|---|---|---|
+| Security defaults | Security defaults | On, or off with an enabled Conditional Access policy that requires MFA for all users |
+| Text message, Voice call | Authentication methods | Disabled |
+| Security keys and passkeys, Microsoft Authenticator, Temporary Access Pass | Authentication methods | Enabled |
+| Email one-time passcode, Authenticator apps with codes, Certificate-based sign-in | Authentication methods | Your choice (shown, always Meets) |
+| Registration campaign | Authentication methods | Enabled. "Managed by Microsoft" (state default) is Review |
+| Legacy MFA and password reset policies | Authentication methods | Complete (`migrationComplete`); anything else is Review |
+| Who can invite guests | Guests | Only administrators and guest inviters, or no one |
+| What guests can see | Guests | Restricted access (`2af84b1e-32c8-42b7-82bc-daa82404023b`). Limited access (`10dae51f-b6af-4016-8d66-8c2a99b929b3`) and same access as members (`a0b1b346-4d3e-4e8b-98f8-753987be4970`) are Review, and any other id is named as one Prism365 does not recognise |
+| Join by email verification, Email-based subscription sign-up | Users | Not allowed |
+| Users can create security groups, read other users, use self-service password reset; the retired MSOnline PowerShell module | Users | Your choice |
+| Users can register applications | Applications | Not allowed |
+| User consent to apps | Consent | Off, or only `ManagePermissionGrantsForSelf.microsoft-user-default-low` (verified publishers, low impact). Anything else is Review |
+| Admin consent workflow | Consent | On when user consent is off or limited. When users can consent to more, it is Your choice and Meets. When the consent row could not be read, an Off workflow is Review |
+
+The policies in the user consent value are named from the grant policy list where Microsoft gives a
+display name, then by what the two long-standing policies mean, then by their id. If the list cannot
+be read, the values keep their ids, a note says so and the run is partial.
+
+### Security defaults and Conditional Access
+
+When security defaults are on the row is Meets and nothing else is read. When they are off, Prism365
+reads the newest Conditional Access policies run through the stored accessor. The row is Meets when
+that run finished within seven days (exactly seven is still fresh) and has a row tagged `enabled` and
+`mfa` whose Applies to is "All users", the words the Conditional Access audit writes for a policy
+that includes everyone (`ALL_USERS` in `conditional-access.ts`, so a change there is a compile
+error here). The note names the run's date and the policy, and says when the policy lists
+exclusions, which this audit does not weigh. It is Review with "No enabled Conditional Access policy
+requires MFA for all users" when the run has none (and says if that run was partial), and Review with
+"Run Conditional Access policies first" when there is no run from the last seven days. Run Conditional
+Access first when running Tenant settings on its own; a full review runs Tenant settings after
+Conditional Access, so it reads the run that review just made (section 22).
+
+### Columns, views and tiles
+
+Columns: Setting, Area, Value, Expected, Status, What it controls, and a hidden Read from (the
+policy and field). Views: All settings (the default), Review, Meets, Not read, and one per area.
+Rows are stored with Review first, then Not read, then Meets, each in area order, and the default
+sort on Status (descending) keeps that order. Tiles: Review (warning), Meets (good), Not read
+(neutral).
+
+### Combined risks
+
+Tenant settings is an optional input of Combined risks: its newest run, if it finished in the last
+seven days. See section 21, Conditional Access.
+
+### What it cannot see
+
+- Per-user authentication method settings, and the targets and exclusions of a method or the
+  registration campaign. It reads whether the tenant-wide switch is on.
+- Self-service password reset configuration beyond whether users may use it.
+- Conditional Access coverage beyond the all-users MFA check: apps, locations, risk levels,
+  exclusions and report-only policies are not weighed here.
+- Settings under other policies, such as token lifetime, cross-tenant access and B2B domain lists.
+- Whether a setting has a reason. Review is a question.

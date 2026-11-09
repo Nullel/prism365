@@ -191,6 +191,11 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
     /^\/v1\.0\/reports\/authenticationMethods\/userRegistrationDetails(?:\/[^/]+)?\/?$/i,
   "identity.conditional-access.read":
     /^\/v1\.0\/identity\/conditionalAccess\/(?:policies|namedLocations)(?:\/[A-Za-z0-9._:-]+)?\/?$/i,
+  // The five tenant-wide policies the Tenant settings audit reads, each by its fixed name and
+  // nothing deeper: not one authentication method's configuration, not Conditional Access, not
+  // one permission grant policy.
+  "identity.policies.read":
+    /^\/v1\.0\/policies\/(?:identitySecurityDefaultsEnforcementPolicy|authenticationMethodsPolicy|authorizationPolicy|adminConsentRequestPolicy|permissionGrantPolicies)\/?$/i,
   // Enterprise applications, one of them, or the application permissions granted to one.
   "directory.applications.read":
     /^\/v1\.0\/servicePrincipals(?:\/[A-Za-z0-9._:-]+(?:\/appRoleAssignments)?)?\/?$/i,

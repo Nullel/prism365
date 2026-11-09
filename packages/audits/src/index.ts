@@ -17,6 +17,7 @@ import { passwordsAudit } from "./passwords.ts";
 import { privilegedRolesAudit } from "./privileged-roles.ts";
 import { licenseReclaimAudit } from "./reclaim.ts";
 import { riskyUsersAudit } from "./risky-users.ts";
+import { tenantSettingsAudit } from "./tenant-settings.ts";
 
 // The devices, app consents and Microsoft 365 app usage audits, and what they share.
 export {
@@ -107,6 +108,13 @@ export * from "./schedule.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
 export * from "./stored.ts";
+export {
+  AREAS as TENANT_SETTING_AREAS,
+  SECURITY_DEFAULTS_KEY,
+  SECURITY_DEFAULTS_ON,
+  TENANT_SETTINGS_AUDIT_ID,
+  tenantSettingsAudit,
+} from "./tenant-settings.ts";
 export * from "./trend.ts";
 export {
   guestAccountsAudit,
@@ -125,6 +133,7 @@ export const builtInAudits: readonly Audit[] = [
   mfaRegistrationAudit,
   guestAccountsAudit,
   licenseCapacityAudit,
+  tenantSettingsAudit,
   conditionalAccessAudit,
   riskyUsersAudit,
   managedDevicesAudit,

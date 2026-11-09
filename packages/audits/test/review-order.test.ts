@@ -1,4 +1,9 @@
-import { AUDIT_FAMILIES, auditFamilyOf, groupByFamily } from "@prism365/contracts";
+import {
+  AUDIT_FAMILIES,
+  auditFamilyOf,
+  COMBINED_RISKS_AUDIT_ID,
+  groupByFamily,
+} from "@prism365/contracts";
 import { describe, expect, it } from "vitest";
 import {
   ACTIVITY_REPORT_COUNT,
@@ -26,11 +31,33 @@ describe("the review order", () => {
     );
   });
 
-  it("puts the audit that joins stored results last, and only that one", () => {
-    const joining = builtInAudits.filter((audit) => audit.usesStoredResults);
+  it("runs the audits that read stored results in the summary stage, Combined risks last", () => {
+    const reading = builtInAudits
+      .filter((audit) => audit.usesStoredResults)
+      .map((audit) => audit.definition.id)
+      .sort();
+    const summary = REVIEW_ORDER.filter((item) => item.stage === "summary")
+      .map((item) => item.auditId)
+      .sort();
+    expect(summary).toEqual(reading);
+    // Combined risks joins every other audit, Tenant settings among them, so it runs last.
+    const joining = builtInAudits.filter(
+      (audit) => audit.usesStoredResults && audit.packs.length === 0,
+    );
     expect(joining).toHaveLength(1);
     expect(REVIEW_ORDER.at(-1)?.auditId).toBe(joining[0]?.definition.id);
-    expect(REVIEW_ORDER.filter((item) => item.stage === "summary")).toHaveLength(1);
+  });
+
+  it("runs Tenant settings after the Conditional Access run it reads, so both come from one review", () => {
+    const ids = REVIEW_ORDER.map((item) => item.auditId);
+    const settings = REVIEW_ORDER.find((item) => item.auditId === "tenant.settings");
+    expect(settings).toMatchObject({ stage: "summary", reportDownloads: 0 });
+    expect(ids.indexOf("tenant.settings")).toBeGreaterThan(
+      ids.indexOf("identity.conditional-access"),
+    );
+    expect(ids.indexOf("tenant.settings")).toBeLessThan(ids.indexOf(COMBINED_RISKS_AUDIT_ID));
+    expect(auditFamilyOf("tenant.settings")?.id).toBe("tenant-setup");
+    expect(auditFamilyOf("licenses.capacity")?.id).toBe("tenant-setup");
   });
 
   it("puts an audit in the reports stage exactly when its packs include the usage reports", () => {

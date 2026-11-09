@@ -75,7 +75,7 @@ By default the registration asks for the core packs only: `directory.users.read`
 are what the People page, the audits, the sign-in audit, the change feed, service health and
 Message center read, and each is a read permission a reporting tool is expected to hold.
 
-The other packs (Conditional Access, risky users, Intune devices, enterprise applications, usage
+The other packs (Conditional Access, tenant policies, risky users, Intune devices, enterprise applications, usage
 reports and the usage-report privacy setting) reach further into the tenant, and the admin
 consent link grants whatever the registration asks for. So they are asked for only when you
 name them, as in `--features directory.users.read,identity.risk.read`, or with `--features all`.
@@ -386,6 +386,7 @@ against it, and the role and licence columns summarise the notes kept there.
 | `service.messages.read` | `ServiceMessage.Read.All` | Message Center Reader or Global Reader | Only services the tenant subscribes to |
 | `audit.directory.read` | `AuditLog.Read.All` | Reports Reader, Security Reader or Global Reader | Kept 7 days without Entra ID P1 or P2, 30 days with it |
 | `identity.conditional-access.read` | `Policy.Read.All` | Security Reader or Global Reader | Some outcomes need Entra ID P1 or P2 |
+| `identity.policies.read` | `Policy.Read.All` | Global Reader or Security Reader | No extra licence |
 | `identity.risk.read` | `IdentityRiskyUser.Read.All` | A supported Entra role | Needs Entra ID P2 |
 | `devices.intune.read` | `DeviceManagementManagedDevices.Read.All` | An Intune role | Needs an active Intune licence |
 | `directory.applications.read` | `Application.Read.All` | Global Reader or Cloud Application Administrator | No extra licence |
@@ -511,10 +512,12 @@ services count as important. See `docs/modules/service-health.md` and ADR-0007.
 
 Audits, in the sidebar under Audit, runs point-in-time checks when you press Run: inactive
 accounts by days since last sign-in, licenses to reclaim, MFA registration, guest accounts,
-license capacity, Conditional Access policies and risky users. They use `directory.users.read`,
+license capacity, Conditional Access policies, tenant settings and risky users. They use `directory.users.read`,
 `audit.signins.read`, `tenant.licenses.read`, `reports.authentication-methods.read`,
-`identity.conditional-access.read` and `identity.risk.read`. The first four are in the setup's
-default list; the last two are asked for only when you name them or pass `--features all`.
+`identity.conditional-access.read`, `identity.policies.read` and `identity.risk.read`. The first four
+are in the setup's default list; the rest are asked for only when you name them or pass
+`--features all`. Tenant settings (`identity.policies.read`) reads the same `Policy.Read.All`
+permission as Conditional Access but is its own pack: list it in `ENABLED_READ_FEATURES` as well.
 Inactivity needs Microsoft Entra ID P1 or P2 and a role such as Reports Reader, Security Reader
 or Global Reader; risky users need Entra ID P2. Results are kept (the last 10 successful runs
 per audit) and can be exported as CSV. See `docs/audits.md`.

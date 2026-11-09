@@ -63,6 +63,7 @@ const features = [
   "service.messages.read",
   "audit.directory.read",
   "identity.conditional-access.read",
+  "identity.policies.read",
   "identity.risk.read",
   "devices.intune.read",
   "directory.applications.read",

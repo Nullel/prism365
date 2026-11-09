@@ -44,10 +44,11 @@ export function registerAuditReviewRoutes(app: FastifyInstance, context: RouteCo
     const { reviewer, modules } = context;
     if (!reviewer || !modules) return reply.status(409).send(auditsUnavailable);
     // Combined risks reads no permission of its own, so it is always available; a review with
-    // only that to run would join old results and read nothing new.
+    // only that to run would join old results and read nothing new. An audit that reads Microsoft
+    // through a pack of its own (Tenant settings also looks at a stored run) counts.
     const runnable = builtInAudits.filter(
       (audit) =>
-        !audit.usesStoredResults && context.auditAvailability(audit, session).state === "available",
+        audit.packs.length > 0 && context.auditAvailability(audit, session).state === "available",
     );
     if (runnable.length === 0)
       return reply.status(403).send({

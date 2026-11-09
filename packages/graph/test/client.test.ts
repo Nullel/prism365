@@ -580,3 +580,60 @@ describe("GraphHttpClient deadlines and cancellation", () => {
     expect(requests).toBe(2);
   });
 });
+
+describe("the tenant policies pack", () => {
+  const client = () =>
+    new GraphHttpClient({
+      getAccessToken: async () => "synthetic-token",
+      fetchImplementation: async () => Response.json({ value: [] }),
+    });
+  const allowed = async (path: string, feature: string, permission: string) =>
+    client()
+      .request(path, { feature, permission } as never)
+      .then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof Error && /does not belong/.test(error.message)) return false;
+          throw error;
+        },
+      );
+  const policies = ["identity.policies.read", "Policy.Read.All"] as const;
+  const conditionalAccess = ["identity.conditional-access.read", "Policy.Read.All"] as const;
+
+  it("reads the five tenant-wide policies and nothing deeper", async () => {
+    for (const path of [
+      "policies/identitySecurityDefaultsEnforcementPolicy",
+      "policies/authenticationMethodsPolicy",
+      "policies/authorizationPolicy",
+      "policies/adminConsentRequestPolicy",
+      "policies/permissionGrantPolicies",
+    ])
+      expect(await allowed(path, ...policies), path).toBe(true);
+  });
+
+  it("refuses the neighbours of those paths", async () => {
+    for (const path of [
+      "policies/authenticationMethodsPolicy/authenticationMethodConfigurations/sms",
+      "policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
+      "policies/conditionalAccessPolicies",
+      "policies/tokenLifetimePolicies",
+      "policies/permissionGrantPolicies/policy-1",
+      "policies/permissionGrantPolicies/policy-1/includes",
+      "policies/authorizationPolicy/extra",
+      "policies",
+      "identity/conditionalAccess/policies",
+    ])
+      expect(await allowed(path, ...policies), path).toBe(false);
+  });
+
+  it("keeps the pack apart from the Conditional Access pack that shares its permission", async () => {
+    expect(
+      await allowed("policies/authorizationPolicy", ...conditionalAccess),
+      "Conditional Access pack on a tenant policy",
+    ).toBe(false);
+    expect(
+      await allowed("identity/conditionalAccess/policies", ...policies),
+      "tenant policies pack on Conditional Access",
+    ).toBe(false);
+  });
+});

@@ -242,6 +242,32 @@ export const permissionPacks = [
     documentationLastVerified: "2026-10-13",
   },
   {
+    id: "identity.policies.read",
+    label: "Tenant policies",
+    source: "microsoftGraph",
+    permission: "Policy.Read.All",
+    mode: "either",
+    phase: "experimental",
+    defaultEnabled: false,
+    purpose:
+      "Read the tenant-wide settings behind the Tenant settings audit: security defaults, authentication methods, guest and application defaults, user consent and the admin consent workflow.",
+    deniedBehavior: "The Tenant settings audit cannot run; other audits are unaffected.",
+    clouds: allGraphClouds,
+    prerequisites: [],
+    roleNotes:
+      "Delegated callers require a supported role such as Global Reader or Security Reader.",
+    licenseNotes: "No extra licence; these policies exist in every Microsoft Entra tenant.",
+    documentationUrl:
+      "https://learn.microsoft.com/en-us/graph/api/identitysecuritydefaultsenforcementpolicy-get?view=graph-rest-1.0",
+    relatedDocumentationUrls: [
+      "https://learn.microsoft.com/en-us/graph/api/authenticationmethodspolicy-get?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/authorizationpolicy-get?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/adminconsentrequestpolicy-get?view=graph-rest-1.0",
+      "https://learn.microsoft.com/en-us/graph/api/permissiongrantpolicy-list?view=graph-rest-1.0",
+    ],
+    documentationLastVerified: "2026-11-09",
+  },
+  {
     id: "identity.risk.read",
     label: "Identity Protection risk",
     source: "microsoftGraph",

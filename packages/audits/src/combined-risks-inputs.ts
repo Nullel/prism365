@@ -20,6 +20,7 @@ export const INPUT_IDS = [
   "devices",
   "mailbox",
   "groups",
+  "settings",
 ] as const;
 export type InputId = (typeof INPUT_IDS)[number];
 
@@ -81,6 +82,13 @@ export const INPUTS: Record<InputId, InputSpec> = {
     auditId: "groups.teams",
     title: "Groups and Teams",
     columns: ["group", "ownerIds"],
+  },
+  // Not joined per person. Its security defaults row says whether Microsoft's baseline MFA
+  // already covers everyone, which no Conditional Access policy needs to then.
+  settings: {
+    auditId: "tenant.settings",
+    title: "Tenant settings",
+    columns: ["setting", "value", "status"],
   },
 };
 
@@ -245,7 +253,8 @@ export function joinInputs(
   const partial: InputId[] = [];
   for (const id of INPUT_IDS) {
     const input = inputs[id];
-    if (!usable.has(id) || input.state !== "fresh") continue;
+    // Tenant settings holds no accounts, so a partial or limited run of it leaves none out.
+    if (id === "settings" || !usable.has(id) || input.state !== "fresh") continue;
     if (input.run.scope && input.run.scope.length > 0) limited.push(id);
     if (!input.run.complete) partial.push(id);
   }

@@ -650,6 +650,7 @@ const samplePaths: Record<GraphFeatureId, string> = {
   "audit.directory.read": "auditLogs/directoryAudits",
   "reports.authentication-methods.read": "reports/authenticationMethods/userRegistrationDetails",
   "identity.conditional-access.read": "identity/conditionalAccess/policies",
+  "identity.policies.read": "policies/authorizationPolicy",
   "directory.applications.read": "servicePrincipals",
   "directory.permission-grants.read": "oauth2PermissionGrants",
   "directory.roles.read": "roleManagement/directory/roleAssignments",

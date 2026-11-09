@@ -45,6 +45,7 @@ export const probePaths: Partial<
   "service.health.read": () => "admin/serviceAnnouncement/healthOverviews?$select=id",
   "service.messages.read": () => "admin/serviceAnnouncement/messages?$top=1&$select=id",
   "identity.conditional-access.read": () => "identity/conditionalAccess/policies?$top=1&$select=id",
+  "identity.policies.read": () => "policies/identitySecurityDefaultsEnforcementPolicy",
   "identity.risk.read": () => "identityProtection/riskyUsers?$top=1&$select=id",
   "devices.intune.read": () => "deviceManagement/managedDevices?$top=1&$select=id",
   "directory.applications.read": () => "servicePrincipals?$top=1&$select=id",

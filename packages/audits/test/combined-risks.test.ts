@@ -10,6 +10,8 @@ import {
   INPUT_IDS,
   INPUTS,
   RULES,
+  SECURITY_DEFAULTS_KEY,
+  SECURITY_DEFAULTS_ON,
 } from "../src/index.ts";
 import { fake } from "./apps-devices-usage-support.ts";
 import {
@@ -89,7 +91,13 @@ describe("the published definition", () => {
       handoff: true,
     });
     expect(combinedRisksAudit.usesStoredResults).toBe(true);
-    expect(builtInAudits.filter((audit) => audit.usesStoredResults)).toHaveLength(1);
+    // Tenant settings reads one stored run as well, but it also has a pack of its own.
+    expect(
+      builtInAudits
+        .filter((audit) => audit.usesStoredResults)
+        .map((audit) => audit.definition.id)
+        .sort(),
+    ).toEqual(["identity.combined-risks", "tenant.settings"]);
   });
 
   it("has a view for every rule, every severity, and a default that exists", () => {
@@ -539,6 +547,141 @@ describe("Conditional Access", () => {
     };
     const { result } = await run({ runs, granted: ["Policy.Read.All"], policies: [mfaPolicy()] });
     expect(result.notes.join("\n")).toContain("did not list group IDs");
+  });
+});
+
+describe("Tenant settings", () => {
+  const defaultsRow = (value: string, status = "Meets") =>
+    row(SECURITY_DEFAULTS_KEY, null, { setting: "Security defaults", value, status });
+  const settingsRun = (
+    value: string,
+    over: { status?: string; days?: number; complete?: boolean; scope?: string[] } = {},
+  ) => ({
+    rows: [defaultsRow(value, over.status)],
+    finishedAt: daysAgo(over.days ?? 1),
+    ...(over.complete === undefined ? {} : { complete: over.complete }),
+    ...(over.scope ? { scope: over.scope } : {}),
+  });
+  // Ada has MFA registered but is left out of the policy by her group, so only the policy half of
+  // the rule can trip for her.
+  const leftOut = () => {
+    const runs = fixture();
+    runs.mfa = {
+      rows: [row(ids.ada, ids.ada, { person: names.ada, registered: true, type: "Member" })],
+    };
+    const policy = mfaPolicy({
+      conditions: { users: { includeUsers: ["All"], excludeGroups: ["G-ADMINS"] } },
+    });
+    return { runs, policy };
+  };
+  // Ada with MFA registered and no policy aimed at her at all.
+  const registered = () => {
+    const runs = fixture();
+    runs.mfa = {
+      rows: [row(ids.ada, ids.ada, { person: names.ada, registered: true, type: "Member" })],
+    };
+    return runs;
+  };
+  const trips = (result: Awaited<ReturnType<typeof run>>["result"]) =>
+    result.rows.some((item) => item.key === ids.ada) &&
+    ruleLabels(ids.ada, result).includes(label("admin-unprotected"));
+
+  it("reads the policies live and flags the admin even when a stored run says security defaults are on", async () => {
+    const { runs, policy } = leftOut();
+    runs.settings = settingsRun(SECURITY_DEFAULTS_ON);
+    const { result, requests } = await run({
+      runs,
+      granted: ["Policy.Read.All"],
+      policies: [policy],
+    });
+    expect(requests.map((url) => url.pathname)).toEqual([POLICY_PATH]);
+    expect(trips(result)).toBe(true);
+    expect(result.notes.join("\n")).not.toContain("Security defaults are on");
+  });
+
+  it("uses a fresh security defaults row when the pack is not granted, so no one is left out", async () => {
+    const runs = registered();
+    runs.settings = settingsRun(SECURITY_DEFAULTS_ON);
+    const { result, requests } = await run({ runs });
+    expect(requests).toEqual([]);
+    expect(trips(result)).toBe(false);
+    const notes = result.notes.join("\n");
+    expect(notes).toContain("Security defaults are on (Tenant settings, 2026-10-21)");
+    expect(notes).toContain("so no one is left out of MFA");
+    expect(notes).not.toContain("not enabled or granted");
+    expect(result.complete).toBe(true);
+    expect(notes).toContain("Tenant settings (2026-10-21)");
+  });
+
+  it("uses the same row when Microsoft refuses the policies, and says so", async () => {
+    const { result } = await run({
+      runs: Object.assign(registered(), { settings: settingsRun(SECURITY_DEFAULTS_ON) }),
+      granted: ["Policy.Read.All"],
+      policies: new Response("{}", { status: 403 }),
+    });
+    const notes = result.notes.join("\n");
+    expect(notes).toContain("Microsoft would not return the Conditional Access policies.");
+    expect(notes).toContain("Security defaults are on (Tenant settings");
+    expect(result.complete).toBe(true);
+  });
+
+  it("does not check the left-out part without a fresh run and without the pack, as before", async () => {
+    const none = await run({ runs: registered() });
+    expect(none.result.notes.join("\n")).toContain("looked at MFA registration only");
+    expect(none.result.notes.join("\n")).not.toContain("Security defaults are on");
+    expect(none.result.notes.join("\n")).not.toContain("Tenant settings");
+    const stale = registered();
+    stale.settings = settingsRun(SECURITY_DEFAULTS_ON, { days: 8 });
+    const old = await run({ runs: stale });
+    expect(old.result.notes.join("\n")).not.toContain("Security defaults are on");
+  });
+
+  it("uses a run exactly seven days old, and ignores a row that is not security defaults on", async () => {
+    const edge = registered();
+    edge.settings = settingsRun(SECURITY_DEFAULTS_ON, { days: 7 });
+    expect((await run({ runs: edge })).result.notes.join("\n")).toContain(
+      "Security defaults are on",
+    );
+    for (const settings of [
+      settingsRun("Off, with a Conditional Access policy that requires MFA for all users"),
+      settingsRun("Off. No enabled Conditional Access policy requires MFA for all users", {
+        status: "Review",
+      }),
+      settingsRun(SECURITY_DEFAULTS_ON, { status: "Not read" }),
+    ]) {
+      const runs = registered();
+      runs.settings = settings;
+      const { result } = await run({ runs });
+      expect(result.notes.join("\n")).not.toContain("Security defaults are on");
+    }
+  });
+
+  it("still flags an administrator with no MFA registered, and says nothing about a policy", async () => {
+    const runs = fixture();
+    runs.settings = settingsRun(SECURITY_DEFAULTS_ON);
+    const { result } = await run({ runs });
+    const ada = rowFor(result.rows, ids.ada);
+    expect(ada.cells.reasons as string).toContain(
+      "Holds Global Administrator (permanent) and has no MFA registered.",
+    );
+    expect(ada.cells.reasons as string).not.toContain("left out of");
+  });
+
+  it("does not call Combined risks partial or limited because Tenant settings was, and lists it only when used", async () => {
+    const runs = fixture();
+    runs.settings = settingsRun(SECURITY_DEFAULTS_ON, { complete: false, scope: ["a.example"] });
+    const { result } = await run({ runs, granted: ["Policy.Read.All"], policies: [mfaPolicy()] });
+    const notes = result.notes.join("\n");
+    expect(notes).not.toContain("Tenant settings");
+    expect(notes).not.toContain("partial result, so an account may be missing");
+    expect(notes).not.toContain("ran limited to some domains");
+    expect(result.complete).toBe(true);
+    const used = await run({
+      runs: Object.assign(registered(), {
+        settings: settingsRun(SECURITY_DEFAULTS_ON, { complete: false }),
+      }),
+    });
+    expect(used.result.notes.join("\n")).not.toContain("an account may be missing");
   });
 });
 

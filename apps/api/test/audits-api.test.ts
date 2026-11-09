@@ -184,6 +184,7 @@ describe("audits API", () => {
       "mfa.registration",
       "guests.review",
       "licenses.capacity",
+      "tenant.settings",
       "identity.conditional-access",
       "identity.risky-users",
       "devices.managed",
@@ -232,6 +233,11 @@ describe("audits API", () => {
     expect(by("licenses.capacity")).toMatchObject({
       state: "not_enabled",
       enable: ["tenant.licenses.read"],
+    });
+    // It shares Policy.Read.All with Conditional Access but is its own pack to enable.
+    expect(by("tenant.settings")).toMatchObject({
+      state: "not_enabled",
+      enable: ["identity.policies.read"],
     });
   });
 

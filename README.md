@@ -77,7 +77,7 @@ directory users and Conditional Access read packs; a section that cannot be read
 Checks you run when you need them: inactive accounts by days since the last
 successful sign-in (7, 30, 60, 90, 120, 180 and 365 days, or never), licenses on disabled or
 inactive accounts, MFA registration (admins without MFA, phone-only methods), guest accounts,
-license capacity, Conditional Access policies (legacy authentication, MFA for administrators,
+license capacity, tenant settings (security defaults, sign-in methods, guest and application defaults, user consent), Conditional Access policies (legacy authentication, MFA for administrators,
 exclusions), risky users, privileged roles (permanent, time-bound, activated and eligible, with
 the disabled accounts, guests and apps among the holders), passwords (age, expiry and the
 accounts set never to expire), managed devices, app consents (high-risk and unverified apps),

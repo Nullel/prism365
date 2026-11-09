@@ -39,6 +39,7 @@ This table groups the intended scope for review.
 | `reports.authentication-methods.read` | Graph | `AuditLog.Read.All` | MVP | MFA registration audit; Reports Reader, Security Reader, Security Administrator or Global Reader; excludes disabled accounts |
 | `reports.usage.read`, `reports.settings.read` | Graph | `Reports.Read.All`, `ReportSettings.Read.All` | MVP | Eight per-user reports by period (D7, D30, D90, D180): Microsoft 365 apps (also as JSON), active users, email, Teams, OneDrive activity, OneDrive usage, SharePoint and mailbox usage; plus the name-concealment setting. The CSV reports come through Microsoft's pre-authenticated download on `reports.office.com`, which gets no token (ADR-0010); Microsoft allows 14 CSV report requests per ten minutes per app per tenant. Per-user detail needs Reports Reader or a service admin role; global/GCC target only. The Account activity audit reads seven of them (D90) once each per run, the Mailbox storage audit reads the mailbox one, the Microsoft 365 app usage audit reads the JSON apps report, and the Groups and Teams audit reads the per-team Teams activity report (`getTeamsTeamActivityDetail`, D90, matched to groups by team ID) |
 | `identity.conditional-access.read` | Graph | `Policy.Read.All` | Experimental | Conditional Access policies audit; Global Reader, Security Reader, Security Administrator or Conditional Access Administrator; Entra ID P1; 1 request per second per tenant, shared with risky users |
+| `identity.policies.read` | Graph | `Policy.Read.All` | Experimental | Tenant settings audit: five single reads, `/policies/identitySecurityDefaultsEnforcementPolicy`, `/authenticationMethodsPolicy`, `/authorizationPolicy`, `/adminConsentRequestPolicy` and the list `/permissionGrantPolicies`, and nothing deeper. Global Reader or Security Reader; no extra licence. Shares its permission with the Conditional Access pack, and enabling one does not enable the other |
 | `identity.risk.read` | Graph | `IdentityRiskyUser.Read.All` | Experimental | Risky users audit; Entra ID P2; Global Reader, Security Reader, Security Operator or Security Administrator; 1 request per second per tenant, shared with Conditional Access; not targeted for China |
 | `security.score.read` | Graph | `SecurityEvents.Read.All` | Experimental | Applicable subscriptions; not targeted for China |
 | `security.incidents.read` | Graph | `SecurityIncident.Read.All` | Experimental | Defender entitlement and security role; not targeted for China |
@@ -155,6 +156,11 @@ permissions and holds its own credentials; Prism365 shares none with it.
 - [Usage-report authorization](https://learn.microsoft.com/en-us/graph/reportroot-authorization)
 - [Read report privacy settings](https://learn.microsoft.com/en-us/graph/api/adminreportsettings-get?view=graph-rest-1.0)
 - [List Conditional Access policies](https://learn.microsoft.com/en-us/graph/api/conditionalaccessroot-list-policies?view=graph-rest-1.0)
+- [Get the security defaults policy](https://learn.microsoft.com/en-us/graph/api/identitysecuritydefaultsenforcementpolicy-get?view=graph-rest-1.0)
+- [Get the authentication methods policy](https://learn.microsoft.com/en-us/graph/api/authenticationmethodspolicy-get?view=graph-rest-1.0)
+- [Get the authorization policy](https://learn.microsoft.com/en-us/graph/api/authorizationpolicy-get?view=graph-rest-1.0)
+- [Get the admin consent request policy](https://learn.microsoft.com/en-us/graph/api/adminconsentrequestpolicy-get?view=graph-rest-1.0)
+- [List permission grant policies](https://learn.microsoft.com/en-us/graph/api/permissiongrantpolicy-list?view=graph-rest-1.0)
 - [Get a risky user](https://learn.microsoft.com/en-us/graph/api/riskyuser-get?view=graph-rest-1.0)
 - [List Secure Scores](https://learn.microsoft.com/en-us/graph/api/security-list-securescores?view=graph-rest-1.0)
 - [List Defender incidents](https://learn.microsoft.com/en-us/graph/api/security-list-incidents?view=graph-rest-1.0)
@@ -175,7 +181,7 @@ therefore enforces the pack itself: a module collects, an audit runs, and a rout
 every pack it uses is in `ENABLED_READ_FEATURES`, whatever the session's token would allow.
 
 Rolling back to a build older than 2026-10-23: remove `audit.directory.read`,
-`identity.conditional-access.read`, `identity.risk.read`, `devices.intune.read`,
+`identity.conditional-access.read`, `identity.policies.read`, `identity.risk.read`, `devices.intune.read`,
 `directory.applications.read`, `directory.permission-grants.read`, `reports.usage.read` and
 `reports.settings.read` from `ENABLED_READ_FEATURES` first. Older builds refuse to start when the
 list names a feature they do not know.

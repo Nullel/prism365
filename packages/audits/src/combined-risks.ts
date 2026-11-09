@@ -30,6 +30,7 @@ import {
   principalDomain,
   scopeNote,
 } from "./scope.ts";
+import { SECURITY_DEFAULTS_KEY, SECURITY_DEFAULTS_ON } from "./tenant-settings.ts";
 
 // Each audit looks at one thing; the accounts that matter most trip several at once. This audit
 // joins the latest results of the others per person and flags the dangerous combinations, with
@@ -121,6 +122,9 @@ const unmetGroups = (rule: Rule, usable: ReadonlySet<InputId>) =>
 
 type PolicyRead =
   | { state: "read"; policies: MfaPolicy[]; skipped: number; truncated: boolean }
+  // The policies were not read (the pack is not granted, or Microsoft refused), but a fresh Tenant
+  // settings run says security defaults are on, so no one can be left out of a policy.
+  | { state: "security-defaults"; date: string; afterFailure: boolean }
   | { state: "not-granted" }
   | { state: "failed" };
 
@@ -145,7 +149,7 @@ export function createCombinedRisksAudit(options: CombinedRisksOptions = {}): Au
       defaultSort: { column: "severity", direction: "asc" },
       requirements: [
         "Run the audits it joins first: Account activity, MFA registration, Privileged roles, Risky users, Guest accounts, Passwords, Managed devices, Mailbox storage and Groups and Teams. A result older than seven days is not used.",
-        "Conditional Access policies are read when the Conditional Access read pack is enabled and granted. Without them only MFA registration is checked.",
+        "Conditional Access policies are read when the Conditional Access read pack is enabled and granted. Without them only MFA registration is checked. Tenant settings is optional: when its latest run, from the last seven days, shows security defaults on, no one is counted as left out of a policy that requires MFA.",
       ],
       handoff: true,
     },
@@ -182,6 +186,21 @@ export function createCombinedRisksAudit(options: CombinedRisksOptions = {}): Au
         (rule) => rule.id === "admin-unprotected" || rule.id === "risky-unprotected",
       );
       let policyRead: PolicyRead = { state: "not-granted" };
+      // Tenant settings can say security defaults are on, and Microsoft then requires MFA of
+      // everyone. It is only a fallback: the live policy list is always read when the pack is
+      // granted, because a stored run can be days old. Only a fresh run counts, and only the row
+      // that is Meets because the setting is on, not because a policy stands in for it (its value
+      // then reads Off).
+      const settings = inputs.settings;
+      const defaultsOn =
+        usable.has("settings") &&
+        settings.state === "fresh" &&
+        settings.run.rows.some(
+          (item) =>
+            item.key === SECURITY_DEFAULTS_KEY &&
+            item.cells.status === "Meets" &&
+            item.cells.value === SECURITY_DEFAULTS_ON,
+        );
       if (wantsPolicies && context.granted.has(policyContext.permission)) {
         try {
           const read = await readPaced(
@@ -204,6 +223,17 @@ export function createCombinedRisksAudit(options: CombinedRisksOptions = {}): Au
           policyRead = { state: "failed" };
         }
       }
+      if (
+        wantsPolicies &&
+        defaultsOn &&
+        settings.state === "fresh" &&
+        (policyRead.state === "not-granted" || policyRead.state === "failed")
+      )
+        policyRead = {
+          state: "security-defaults",
+          date: dateOf(settings.finishedAt),
+          afterFailure: policyRead.state === "failed",
+        };
       const policies = policyRead.state === "read" ? policyRead.policies : null;
 
       const joined = joinInputs(inputs, findings, usable);
@@ -308,9 +338,10 @@ export function createCombinedRisksAudit(options: CombinedRisksOptions = {}): Au
         const freshness = inputs[id];
         return freshness.state === "fresh" ? dateOf(freshness.finishedAt) : "";
       };
-      const usedInputs = INPUT_IDS.filter((id) => usable.has(id)).map(
-        (id) => `${INPUTS[id].title} (${date(id)})`,
-      );
+      // Tenant settings is listed only when its security defaults row stood in for the policies.
+      const usedInputs = INPUT_IDS.filter(
+        (id) => usable.has(id) && (id !== "settings" || policyRead.state === "security-defaults"),
+      ).map((id) => `${INPUTS[id].title} (${date(id)})`);
       const notes: string[] = [];
       const limited = scopeNote(context.scope);
       if (limited) notes.push(limited);
@@ -347,6 +378,10 @@ export function createCombinedRisksAudit(options: CombinedRisksOptions = {}): Au
           notes.push(
             "Account activity did not list group IDs, so policies aimed at groups were not matched. Run Account activity again.",
           );
+      } else if (policyRead.state === "security-defaults") {
+        notes.push(
+          `${policyRead.afterFailure ? "Microsoft would not return the Conditional Access policies. " : ""}Security defaults are on (Tenant settings, ${policyRead.date}), so no one is left out of MFA. The rules about MFA looked at MFA registration only.`,
+        );
       } else if (wantsPolicies)
         notes.push(
           policyRead.state === "failed"
