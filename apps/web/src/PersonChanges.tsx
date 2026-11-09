@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { ChangeRow, startHistory } from "./Changes.tsx";
 import { readJson, SkeletonRows } from "./common.tsx";
+import { sectionIds } from "./personSummaryLines.ts";
 import { useOpenPerson } from "./navigation.tsx";
 
 // Directory changes made to or by one person, newest first, on their page. Read from what
@@ -38,6 +39,7 @@ export function PersonChangeList({
 }) {
   return (
     <section
+      id={sectionIds.changes}
       className="panel signin-table person-grid person-changes"
       aria-label="Directory changes"
     >

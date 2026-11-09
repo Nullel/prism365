@@ -71,6 +71,26 @@ describe("runtime statement guard", () => {
       expect(() => assertRuntimeStatement(statement, access), statement).not.toThrow();
   });
 
+  it("allows jsonb_array_elements, with ordinality, and no other set-returning function", () => {
+    expect(() =>
+      assertRuntimeStatement(
+        "SELECT e.elem FROM mod_x_y m LEFT JOIN LATERAL (SELECT elem FROM jsonb_array_elements(m.rows) WITH ORDINALITY AS e(elem, ord) LIMIT 1) e ON true",
+        access,
+      ),
+    ).not.toThrow();
+    for (const statement of [
+      "SELECT * FROM jsonb_to_recordset('[]'::jsonb) AS r(a int)",
+      "SELECT * FROM jsonb_to_record('{}'::jsonb) AS r(a int)",
+      "SELECT jsonb_array_elements_text(rows) FROM mod_x_y",
+      "SELECT jsonb_each(rows) FROM mod_x_y",
+      "SELECT jsonb_path_query(rows, '$') FROM mod_x_y",
+      "SELECT * FROM generate_series(1, 10)",
+      "SELECT * FROM unnest(ARRAY[1,2])",
+      "SELECT * FROM pg_catalog.jsonb_each(rows)",
+    ])
+      expect(() => assertRuntimeStatement(statement, access), statement).toThrow(SqlGuardError);
+  });
+
   it("refuses the bypasses an adversarial review reproduced", () => {
     for (const statement of [
       `SELECT "set_config"('prism365.tenant_id', $1, true)`,

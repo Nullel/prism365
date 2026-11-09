@@ -48,6 +48,7 @@ const allowedFunctions: ReadonlySet<string> = new Set([
   "json_agg",
   "jsonb_build_object",
   "jsonb_array_length",
+  "jsonb_array_elements",
   "jsonb_typeof",
   "lower",
   "upper",

@@ -238,14 +238,20 @@ async function harness(
     requests,
     storeRun,
     seedSignin,
+    database,
     ledgerAtFirstRequest: () => ledgerAtFirstRequest,
   };
 }
 
-const row = (key: string, personId: string | null, cells: AuditRow["cells"]): AuditRow => ({
+const row = (
+  key: string,
+  personId: string | null,
+  cells: AuditRow["cells"],
+  tags: string[] = [],
+): AuditRow => ({
   key,
   personId,
-  tags: [],
+  tags,
   cells,
 });
 
@@ -368,7 +374,7 @@ describe("person access API", () => {
   it("finds no stored results for an audit that never ran", async () => {
     const { audits } = await body(h);
     expect(audits.status).toBe("ok");
-    expect(audits.results).toHaveLength(9);
+    expect(audits.results).toHaveLength(10);
     expect(audits.results.every((result: { status: string }) => result.status === "no_run")).toBe(
       true,
     );
@@ -427,6 +433,171 @@ describe("person access API, stored audit results", () => {
     );
     expect(mailbox).toMatchObject({ status: "ok", matchedBy: "sign-in name" });
     expect(mailbox.rows.map((entry: { key: string }) => entry.key)).toEqual(["pat"]);
+    await h.app.close();
+  }, 60_000);
+
+  it("looks owned objects up in the audits: groups by id, services by id, applications by appId", async () => {
+    const h = await harness({
+      handler: (url) => {
+        const path = url.pathname.replace("/v1.0/", "");
+        if (path === `users/${person}`)
+          return Response.json({
+            id: person,
+            userPrincipalName: "pat@example.invalid",
+            userType: "Member",
+          });
+        if (path === `users/${person}/ownedObjects`)
+          return Response.json({
+            value: [
+              {
+                "@odata.type": "#microsoft.graph.group",
+                id: "O1",
+                displayName: "Plant operators",
+                resourceProvisioningOptions: [],
+              },
+              {
+                "@odata.type": "#microsoft.graph.group",
+                id: "o2",
+                displayName: "Plant team",
+                resourceProvisioningOptions: ["Team"],
+              },
+              {
+                "@odata.type": "#microsoft.graph.application",
+                id: "obj-3",
+                appId: "APP-3",
+                displayName: "Plant dashboard",
+              },
+              {
+                "@odata.type": "#microsoft.graph.serviceprincipal",
+                id: "sp-4",
+                appId: "app-4",
+                displayName: "Plant sync",
+              },
+              {
+                "@odata.type": "#microsoft.graph.application",
+                id: "obj-5",
+                appId: "app-5",
+                displayName: "No row",
+              },
+            ],
+          });
+        return undefined;
+      },
+    });
+    await h.storeRun("groups.teams", [
+      row("o1", null, { group: "Plant operators", status: "No owners" }, ["no-owners", "inactive"]),
+      row("other", null, { group: "Other", status: "OK" }),
+    ]);
+    await h.storeRun("apps.consents", [
+      row("elsewhere", null, { appId: "app-3" }, ["high-risk", "app-permissions", "admin-consent"]),
+      row("sp-4", null, { appId: "app-4" }, ["user-consent"]),
+      row("decoy", null, { appId: "app-9" }, ["high-risk"]),
+    ]);
+    const { owned } = await body(h);
+    expect(owned.entries.map((entry: { id: string }) => entry.id)).toEqual([
+      "O1",
+      "o2",
+      "obj-3",
+      "sp-4",
+      "obj-5",
+    ]);
+    // An application registration is found by its application id, a service principal by its id.
+    expect(owned.details).toEqual([
+      { kind: "group", id: "O1", status: "No owners", tags: ["no-owners", "inactive"] },
+      {
+        kind: "app",
+        id: "obj-3",
+        highRisk: true,
+        applicationPermissions: true,
+        adminConsent: true,
+        userConsent: false,
+      },
+      {
+        kind: "app",
+        id: "sp-4",
+        highRisk: false,
+        applicationPermissions: false,
+        adminConsent: false,
+        userConsent: true,
+      },
+    ]);
+    expect(owned.lookups.groups.status).toBe("ok");
+    expect(owned.lookups.apps).toMatchObject({
+      status: "ok",
+      finishedAt: "2026-10-20T10:05:00.000Z",
+    });
+    // appId is read with the owned objects and never sent to the page.
+    expect(h.requests.find((path) => path.includes("ownedObjects"))).toContain("appId");
+    expect(JSON.stringify(owned.entries)).not.toContain("APP-3");
+    await h.app.close();
+  }, 60_000);
+
+  it("shows the Guest section only for guests and the app usage by sign-in name", async () => {
+    const h = await harness({
+      handler: (url) =>
+        url.pathname.endsWith(`/users/${person}`)
+          ? Response.json({
+              id: person,
+              userPrincipalName: "pat@example.invalid",
+              userType: "Guest",
+            })
+          : undefined,
+    });
+    await h.storeRun("guests.review", [
+      row("g", person, { invitation: "Accepted", status: "OK", licenses: ["x"] }),
+    ]);
+    await h.storeRun("usage.m365-apps", [
+      row("pat@example.invalid", null, {
+        person: { name: "Pat", principal: "PAT@example.invalid" },
+        days: 3,
+        apps: ["Teams"],
+      }),
+    ]);
+    const { audits } = await body(h);
+    const find = (id: string) => audits.results.find((r: { auditId: string }) => r.auditId === id);
+    expect(find("guests.review")).toMatchObject({ status: "ok", matchedBy: "account" });
+    expect(find("guests.review").rows[0].cells.map((c: { key: string }) => c.key)).toEqual([
+      "invitation",
+      "status",
+    ]);
+    expect(find("usage.m365-apps")).toMatchObject({ status: "ok", matchedBy: "sign-in name" });
+    await h.app.close();
+    // A member is never asked about guests.
+    const member = await harness();
+    await member.storeRun("guests.review", [row("g", person, { invitation: "Accepted" })]);
+    const members = (await body(member)).audits.results;
+    expect(members.some((r: { auditId: string }) => r.auditId === "guests.review")).toBe(false);
+    await member.app.close();
+  }, 60_000);
+
+  it("reads a run whose rows are not a list as empty, and still answers every other audit", async () => {
+    const h = await harness();
+    await h.storeRun("mfa.registration", [row("a", person, { registered: true })]);
+    await h.storeRun("accounts.passwords", [row("p", person, { status: "OK" })]);
+    await h.database.tenant(tenantId, (sql) =>
+      sql.query(
+        `UPDATE prism365_audit_run SET result_rows = '{"not":"a list"}'::jsonb WHERE tenant_id=$1 AND audit_id='mfa.registration'`,
+        [tenantId],
+      ),
+    );
+    const { audits } = await body(h);
+    expect(audits.status).toBe("ok");
+    const by = (id: string) => audits.results.find((r: { auditId: string }) => r.auditId === id);
+    expect(by("mfa.registration")).toMatchObject({ status: "ok", rows: [] });
+    expect(by("accounts.passwords").rows).toHaveLength(1);
+    await h.app.close();
+  }, 60_000);
+
+  it("answers an id written in capitals the same as the one Microsoft writes", async () => {
+    const h = await harness();
+    await h.storeRun("mfa.registration", [row("a", person, { registered: true })]);
+    const lower = await body(h);
+    const upper = await body(h, `/v1/people/${person.toUpperCase()}/access`);
+    expect(upper.audits).toEqual(lower.audits);
+    const mfa = upper.audits.results.find(
+      (r: { auditId: string }) => r.auditId === "mfa.registration",
+    );
+    expect(mfa.rows).toHaveLength(1);
     await h.app.close();
   }, 60_000);
 

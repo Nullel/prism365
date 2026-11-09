@@ -81,3 +81,26 @@ export async function storedPrincipals(
   for (const row of result.rows) found.set(row.user_id, row.upn);
   return found;
 }
+
+// Whether another account signed in with this sign-in name after this account last did. A name is
+// reused when its owner is renamed and the old name goes to a new hire, so a stored name that
+// someone else has signed in with since is no longer this account's, as far as stored sign-ins can
+// tell. Names compare in lower case.
+export async function principalTakenSince(
+  sql: SqlClient,
+  tenantId: string,
+  userId: string,
+  principal: string,
+): Promise<boolean> {
+  const result = await sql.query<{ taken: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM ${events} o
+        WHERE o.tenant_id = $1 AND o.user_id <> $2 AND lower(o.upn) = lower($3)
+          AND o.created_at >= COALESCE(
+            (SELECT max(m.created_at) FROM ${events} m
+              WHERE m.tenant_id = $1 AND m.user_id = $2 AND lower(m.upn) = lower($3)),
+            '-infinity'::timestamptz)) AS taken`,
+    [tenantId, userId, principal],
+  );
+  return result.rows[0]?.taken === true;
+}

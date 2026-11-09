@@ -126,6 +126,7 @@ All routes need a signed-in administrator; the POST also needs the CSRF header.
 | `GET /v1/settings/audits` | The saved scope and the domains to choose from, with how many accounts each holds (section 9) |
 | `POST /v1/settings/audits` | Saves `{ "domains": [...] }` and returns what the GET returns; 400 unless the body is a list of up to 100 domain names |
 
+| `GET /v1/people/{userId}/summary` | Where one account shows up in the latest stored runs (section 23); reads stored results only |
 | `GET /v1/audits/{auditId}/trend?days=365` | The audit's trend points in the last 1 to 3,650 days (default 365), oldest first (section 14) |
 | `GET /v1/settings/audit-schedule` | Every audit with `off`, `daily` or `weekly`, and whether collection is on (section 15) |
 | `POST /v1/settings/audit-schedule` | Saves `{ "audits": { "<auditId>": "daily" } }` for the audits named and returns what the GET returns; 400 unless every value is `off`, `daily` or `weekly`; 403 when an audit turned on is one the saving administrator could not run |
@@ -1308,3 +1309,49 @@ before anything runs, stopping, failures, the paced gap, the report spacing acro
 clock, the stored state, the schedule and the scheduler), `report-budget.test.ts`,
 `audit-review-api.test.ts` (the routes), `packages/audits/test/review-order.test.ts` (the order and the
 families), and `apps/web/test/audit-review.test.ts` (the panel in each state).
+
+## 23. Where an audit's answer appears on a person
+
+The person page shows what each person-level audit last said about the account in two places. The
+Overview's "Where they show up" panel gives one line per source with the date of the run behind it
+and a link to the detail. The Access tab gives the detail: Sign-in methods (MFA registration),
+Devices, Mailbox (Mailbox storage), Password, Risk (Risky users), Activity (Account activity, with
+Inactive accounts and Licenses to reclaim folded in), Guest (Guest accounts, shown only for
+guests) and Microsoft 365 apps. Privileged roles appear under Groups and roles, Combined risks
+first on the tab, and Groups and Teams and App consents under Owns.
+
+How a run's rows are matched to the account:
+
+- By the account id the row carries (`personId`) for every audit except the next two.
+- By sign-in name for Mailbox storage and Microsoft 365 app usage, which carry no account id. Names
+  are compared as the audits compare them (NFKC, trimmed, lower case); a hashed name is never
+  matched. The sign-in name comes from stored sign-ins, or from the account cell of the account's
+  own rows in another audit. Without one the line says it could not be matched.
+- By the hidden Owner IDs column for Groups and Teams: the groups whose owners include the account.
+- For owned objects, a group or team by its id in Groups and Teams, a service principal by its id
+  in App consents, and an application registration by its application ID.
+
+The summary and the Access tab pick the account's rows in SQL from the latest succeeded run
+(`pickRows` in `packages/audits/src/store.ts`, over the run's JSON rows), so a page view does not
+load the whole run. Two paths still read a whole run: a name comparison that finds more than 200
+cells needing a closer look (a name with full-width letters or odd white space is settled in
+JavaScript, and a run with that many of them is read whole), and every other reader of a run, such
+as the audit's own page, the exports, the digest and the person record's Combined risks chip. The
+database only narrows the rows: the same `rowMatches` function decides each one. Names are
+compared with the `C` collation, so a database locale cannot change which names are equal. A run
+whose stored rows are not a list reads as having none. The summary route writes
+`person.summary.viewed` to the access ledger before it reads, and names datasets, never the
+account.
+
+A sign-in name is used to find a mailbox or app usage row only when it is this account's current
+name as far as stored data can tell. The name in the account's own rows of the newest run comes
+first; stored sign-ins are the fallback, and only when no other account has signed in with that
+name since. A name that a row of a different account carries, or that the account's own rows give
+two ways, is not used, and the line says it could not be matched. This keeps a renamed account
+from showing the mailbox or usage of whoever was given its old name.
+
+Sources that have never run are folded into one "Not run yet" line. A source that ran and says
+nothing about the account reads "Not in the latest run" for Account activity, MFA registration and
+Passwords, "Not flagged in the latest run" for Risky users, and is left out for Privileged roles,
+Guest accounts, Managed devices, Mailbox storage, Microsoft 365 apps and groups, where that is the
+normal case.

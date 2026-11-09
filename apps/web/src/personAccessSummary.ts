@@ -1,5 +1,5 @@
 import type { AccessAuditResult } from "@prism365/contracts";
-import { number } from "./common.tsx";
+import { number, relativeTime } from "./common.tsx";
 
 // What the Access tab says about an account from each audit's stored rows: a few fields in a line,
 // not the audit's table. Which columns arrive is ACCESS_AUDIT_FIELDS in the contract; this decides
@@ -246,7 +246,84 @@ function activityLines(activity: Rows, inactive: Rows, reclaim: Rows): SummaryLi
   return lines;
 }
 
+function guestLines(rows: Rows): SummaryLine[] {
+  const row = rows[0];
+  if (!row) return [];
+  const invitation = textOf(row, "invitation");
+  const invited = textOf(row, "invited");
+  const days = numberOf(row, "days");
+  const last = textOf(row, "lastSuccess");
+  const status = textOf(row, "status");
+  return [
+    {
+      title: null,
+      parts: compact([
+        invitation
+          ? invitation === "Not accepted"
+            ? { text: invitation, tone: "warning" }
+            : { text: invitation }
+          : null,
+        invited ? { prefix: "Invited", date: invited } : null,
+        last ? { prefix: "Last successful sign-in", date: last } : null,
+        days !== null && days >= INACTIVE_FROM_DAYS
+          ? { text: `Inactive for ${plural(days, "day")}`, tone: "warning" }
+          : null,
+        status && status !== "OK" ? { text: status, tone: "warning" } : null,
+      ]),
+    },
+  ];
+}
+
+// "Outlook, Word and Teams".
+export function joinWords(words: readonly string[]): string {
+  if (words.length <= 1) return words.join("");
+  return `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+
+// One sentence: "Last active 2 days ago in Outlook, Word and Teams, on Windows and Web". The time
+// is worded from the clock when the page draws, so a section drawn later reads later.
+function appUsageLines(rows: Rows): SummaryLine[] {
+  const row = rows[0];
+  if (!row) return [];
+  const last = textOf(row, "lastActivity");
+  const apps = listOf(row, "apps");
+  const platforms = listOf(row, "platforms");
+  if (!last)
+    return [{ title: null, parts: [{ text: "No app activity in 90 days", tone: "warning" }] }];
+  const where = platforms.length > 0 ? `, on ${joinWords(platforms)}` : "";
+  return [
+    {
+      title: null,
+      parts: [
+        {
+          text: `Last active ${relativeTime(last)}${apps.length > 0 ? ` in ${joinWords(apps)}` : ""}${where}`,
+        },
+      ],
+    },
+  ];
+}
+
+// Every role the audit lists for the account, held now or not, for the summary panel. The Access
+// tab lists the roles held now with the groups and keeps only the others here (roleLines).
+export function heldRoleLines(results: ReadonlyMap<string, AccessAuditResult>): SummaryLine[] {
+  const result = results.get("directory.privileged-roles");
+  const rows = result?.status === "ok" ? result.rows : [];
+  return rows.map((row) => {
+    const ends = textOf(row, "ends");
+    return {
+      title: textOf(row, "role") ?? "A role",
+      privileged: flagOf(row, "privileged") === true,
+      parts: compact([
+        textOf(row, "held") ? { text: textOf(row, "held") as string } : null,
+        ends ? { prefix: "ends", date: ends } : null,
+      ]),
+    };
+  });
+}
+
 const builders: Record<string, (rows: Rows) => SummaryLine[]> = {
+  "guests.review": guestLines,
+  "usage.m365-apps": appUsageLines,
   "directory.privileged-roles": roleLines,
   "mfa.registration": methodLines,
   "devices.managed": deviceLines,

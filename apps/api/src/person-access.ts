@@ -1,5 +1,7 @@
-import { HASHED, joinKey, RULES } from "@prism365/audits";
+import { type Audit, RULES, type RowPick } from "@prism365/audits";
 import {
+  ACCESS_AUDIT_FIELDS,
+  type AccessAuditResult,
   type AccessMembership,
   type AccessMembershipKind,
   type AuditRow,
@@ -35,6 +37,8 @@ export const directoryObjectSchema = z.object({
   securityEnabled: flag,
   membershipRule: text,
   roleTemplateId: text,
+  // Read with the owned objects, to find an application registration in App consents.
+  appId: text,
   resourceProvisioningOptions: z.array(z.unknown()).max(20).nullish().catch(null),
 });
 export type DirectoryObject = z.output<typeof directoryObjectSchema>;
@@ -119,21 +123,29 @@ export interface OwnedEntry {
   kind: OwnedKind;
   name: string | null;
 }
+// An owned object as the route keeps it: the entry the page shows, and the application id an
+// application registration is looked up by. The id is not sent to the page.
+export interface OwnedObject extends OwnedEntry {
+  appId: string | null;
+}
 
 // Groups, teams, applications and service principals. Devices and other objects a person can own
 // are not part of this page.
-export function classifyOwned(object: DirectoryObject): OwnedEntry | null {
+export function classifyOwned(object: DirectoryObject): OwnedObject | null {
   const type = typeOf(object);
   const name = object.displayName;
+  const appId = object.appId;
   if (type === "#microsoft.graph.group")
     return {
       id: object.id,
       kind: has(object.resourceProvisioningOptions, "team") ? "team" : "group",
       name,
+      appId: null,
     };
-  if (type === "#microsoft.graph.application") return { id: object.id, kind: "application", name };
+  if (type === "#microsoft.graph.application")
+    return { id: object.id, kind: "application", name, appId };
   if (type === "#microsoft.graph.serviceprincipal")
-    return { id: object.id, kind: "service-principal", name };
+    return { id: object.id, kind: "service-principal", name, appId };
   return null;
 }
 
@@ -141,10 +153,10 @@ export function classifyOwned(object: DirectoryObject): OwnedEntry | null {
 // way it is cut here: an object of another kind is left out because it is not part of this page,
 // not because anything was missed.
 export function ownedEntries(objects: readonly DirectoryObject[]): {
-  entries: OwnedEntry[];
+  entries: OwnedObject[];
   more: boolean;
 } {
-  const entries: OwnedEntry[] = [];
+  const entries: OwnedObject[] = [];
   for (const object of objects) {
     const entry = classifyOwned(object);
     if (!entry) continue;
@@ -176,36 +188,50 @@ export interface StoredRun {
   rows: readonly AuditRow[];
 }
 
-const mailboxAudit = "mail.mailbox-storage";
-
-// The sign-in name used to find a mailbox row, compared the way the audits compare names. A name
+// Audits whose rows carry no account id. The mailbox report names mailboxes by sign-in name, and
+// the Microsoft 365 apps report names accounts by sign-in name inside the account cell, so a
+// person's rows are found by their sign-in name, compared the way the audits compare names. A name
 // that is a hash is Microsoft hiding it, and is never matched against anything.
-export function mailboxMatches(cell: unknown, principal: string): boolean {
-  if (typeof cell !== "string") return false;
-  const name = cell.trim();
-  if (name === "" || HASHED.test(name)) return false;
-  return joinKey(name) === joinKey(principal);
-}
+export const NAME_MATCHED: Readonly<Record<string, readonly string[]>> = {
+  "mail.mailbox-storage": ["mailbox"],
+  "usage.m365-apps": ["person", "principal"],
+};
 
-// The rows of a stored run that belong to one person: by the account id the row carries, or, for
-// the mailbox report, which carries none, by sign-in name.
-export function rowsFor(
+// How to pick one person's rows out of an audit's run, or "no_name" when the audit needs a sign-in
+// name and there is none.
+export function pickFor(
   auditId: string,
-  run: StoredRun,
   personId: string,
   principal: string | null,
-): { rows: AuditRow[]; matchedBy: "account" | "sign-in name" } | "no_name" {
-  if (auditId === mailboxAudit) {
-    if (principal === null) return "no_name";
-    return {
-      matchedBy: "sign-in name",
-      rows: run.rows.filter((row) => mailboxMatches(row.cells.mailbox, principal)),
-    };
-  }
-  return { matchedBy: "account", rows: run.rows.filter((row) => row.personId === personId) };
+): { pick: RowPick; matchedBy: "account" | "sign-in name" } | "no_name" {
+  const path = NAME_MATCHED[auditId];
+  if (!path) return { pick: { by: "personId", personId }, matchedBy: "account" };
+  if (principal === null) return "no_name";
+  return { pick: { by: "name", path, principal }, matchedBy: "sign-in name" };
 }
 
 export const auditRowLimit = MAX_ACCESS_AUDIT_ROWS;
+
+type AccessRow = Extract<AccessAuditResult, { status: "ok" }>["rows"][number];
+
+// Only the columns the person page shows for an audit (ACCESS_AUDIT_FIELDS), in that order, and
+// only the ones a row has a value for.
+export function accessRows(audit: Audit, rows: readonly AuditRow[]): AccessRow[] {
+  const shown = ACCESS_AUDIT_FIELDS[audit.definition.id] ?? [];
+  const columns = shown.flatMap((key) => {
+    const column = audit.definition.columns.find((candidate) => candidate.key === key);
+    return column ? [column] : [];
+  });
+  return rows.map((row) => ({
+    key: row.key,
+    cells: columns.flatMap((column) => {
+      const value = row.cells[column.key];
+      if (value === null || value === undefined) return [];
+      if (Array.isArray(value) && value.length === 0) return [];
+      return [{ key: column.key, label: column.label, kind: column.kind, value }];
+    }),
+  }));
+}
 
 // The part of a Combined risks run the person page needs.
 export interface CombinedRun extends StoredRun {

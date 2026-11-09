@@ -33,6 +33,14 @@ page's breadcrumb says where you came from. Some names stay text: owners in the 
 audit, the Microsoft 365 app usage rows, names Microsoft hides, receipt accounts the handoff did not
 list, and anything that is a group, contact or app rather than an account.
 
+#### Where they show up
+
+The Overview opens with a panel that lists every place Prism365 knows the account from, one line
+each: Combined risks, sign-in findings, the audits that name the account, the groups and teams it
+owns, shared mailbox access, directory changes in the last 30 days and the latest handoff. Each
+line says when its source last ran and links to the section that holds the detail. It reads stored
+results only, so it asks Microsoft for nothing.
+
 #### Access tab
 
 The person page's Access tab answers "what can this account reach?" in one place. It opens only

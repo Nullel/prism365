@@ -4,6 +4,7 @@ import { PGliteModuleDatabase } from "@prism365/storage";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   changeCoverage,
+  countPersonChanges,
   changeSubjects,
   createDirectoryChangesModule,
   type DirectoryChangeEvent,
@@ -325,6 +326,26 @@ describe("change feed queries", () => {
       personChanges(sql, tenantId, adminId, { limit: 2, before: admin.next }),
     );
     expect(older.items.map((item) => item.id)).toEqual(["d-timeout", "c-failed"]);
+  });
+
+  it("counts a person's changes since a time, a change they are both sides of once", async () => {
+    const count = (id: string, days: number) =>
+      database.tenant(tenantId, (sql) => countPersonChanges(sql, tenantId, id, ago(days * DAY)));
+    // g-self names the person as actor and as target; b-role is three days old.
+    expect(await count(personId.toUpperCase(), 7)).toEqual({ count: 2, more: false });
+    expect(await count(personId, 1)).toEqual({ count: 1, more: false });
+    expect(await count(adminId, 30)).toEqual({ count: 6, more: false });
+    expect(await count(adminId, 7)).toEqual({ count: 5, more: false });
+    expect(await count("0a1b2c3d-0000-4000-8000-00000000d004", 30)).toEqual({
+      count: 0,
+      more: false,
+    });
+    // Another tenant's changes are never counted, whatever the id.
+    expect(
+      await database.tenant(randomUUID(), (sql) =>
+        countPersonChanges(sql, tenantId, adminId, ago(30 * DAY)),
+      ),
+    ).toEqual({ count: 0, more: false });
   });
 
   it("reports no coverage before collection, and the cursor's after", async () => {

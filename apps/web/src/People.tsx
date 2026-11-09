@@ -39,6 +39,8 @@ import {
 import { PersonAccess } from "./PersonAccess.tsx";
 import { PersonChanges } from "./PersonChanges.tsx";
 import { DirectReportsValue, ManagerValue } from "./PersonDirectoryLinks.tsx";
+import { PersonSummary, scrollToSection } from "./PersonSummary.tsx";
+import { sectionIds } from "./personSummaryLines.ts";
 import { PersonActions, PersonHeader, personAddress } from "./PersonHeader.tsx";
 import { PersonReceipts } from "./PersonReceipts.tsx";
 import {
@@ -583,6 +585,14 @@ export function PersonProfileView({
       <PersonTabList idBase={tabsId} selected={tab} counts={counts} onSelect={onTab} />
 
       <PersonTabPanel idBase={tabsId} tab="overview" selected={tab}>
+        <PersonSummary
+          live={session.mode === "live" && session.authenticated}
+          userId={userId}
+          onJump={(target, id) => {
+            onTab(target);
+            scrollToSection(id, target);
+          }}
+        />
         <section className="panel person-facts" aria-label="Directory details">
           <h3>Directory</h3>
           {directory === null ? (
@@ -692,7 +702,7 @@ export function PersonProfileView({
         ) : null}
 
         {record && record.findings.length > 0 ? (
-          <section className="panel signin-findings" aria-label="Findings">
+          <section id={sectionIds.findings} className="panel signin-findings" aria-label="Findings">
             <h3>Findings</h3>
             <ul className="finding-list">
               {record.findings.map((finding) => (

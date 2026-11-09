@@ -9,6 +9,7 @@ import {
   ownerPool,
 } from "../../storage/test/postgres-suite-lock.ts";
 import {
+  countPersonChanges,
   createDirectoryChangesModule,
   defaultDirectoryChangesConfig,
   listChanges,
@@ -214,6 +215,16 @@ describe.skipIf(!adminUrl)("directory changes on PostgreSQL", () => {
       personChanges(sql, tenantId, personId, { limit: 200 }),
     );
     expect(person?.items).toHaveLength(5);
+    // The count agrees with the list: the same five changes, and only the recent ones inside a
+    // shorter window.
+    const counted = await database?.tenant(tenantId, (sql) =>
+      countPersonChanges(sql, tenantId, personId, new Date(now.getTime() - 30 * DAY)),
+    );
+    expect(counted).toEqual({ count: 5, more: false });
+    const recent = await database?.tenant(tenantId, (sql) =>
+      countPersonChanges(sql, tenantId, personId, new Date(now.getTime() - 3 * DAY)),
+    );
+    expect(recent).toEqual({ count: 4, more: false });
   });
 
   it("keeps another tenant out, and deletes what is older than the retention", async () => {
