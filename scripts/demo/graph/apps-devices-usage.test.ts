@@ -1,6 +1,7 @@
 import {
   type Audit,
   appConsentsAudit,
+  appCredentialsAudit,
   m365AppUsageAudit,
   managedDevicesAudit,
 } from "@prism365/audits";
@@ -139,6 +140,53 @@ describe("the synthetic applications", () => {
   });
 });
 
+describe("the synthetic app registrations", () => {
+  const granted = ["Application.Read.All"];
+
+  it("hold one of each credential finding the audit is meant to find", async () => {
+    const result = await run(appCredentialsAudit, granted);
+    expect(result.complete).toBe(true);
+    expect(result.rows).toHaveLength(6);
+    const named = (name: string) => {
+      const found = result.rows.find((row) => row.cells.app === name);
+      if (!found) throw new Error(`No row ${name}`);
+      return found;
+    };
+    expect(named("Larkspur Payroll Export")).toMatchObject({
+      tags: expect.arrayContaining(["expired"]),
+      cells: { status: "Expired", expired: 1, secrets: 0 },
+    });
+    expect(named("Larkspur Badge Sync")).toMatchObject({
+      tags: expect.arrayContaining(["expiring-30"]),
+      cells: { status: "Expires within 30 days", expiresIn: 12 },
+    });
+    expect(named("Larkspur Reporting Bridge")).toMatchObject({
+      tags: expect.arrayContaining(["expiring-90"]),
+      cells: { status: "Expires within 90 days", expiresIn: 60 },
+    });
+    expect(named("Larkspur Legacy Importer").tags).toEqual(
+      expect.arrayContaining(["never-expires", "old-secret"]),
+    );
+    expect(named("Larkspur Visitor Kiosk")).toMatchObject({
+      tags: expect.arrayContaining(["no-owner", "insecure-redirect"]),
+      cells: { owners: 0, status: "OK" },
+    });
+    const partner = named("Larkspur Partner Portal");
+    expect(partner.tags).toEqual(["multi-tenant"]);
+    expect(partner.cells).toMatchObject({ secrets: 1, certificates: 1, status: "OK" });
+    // Every registration has an enterprise application, so its panel opens.
+    for (const row of result.rows)
+      expect(row.cells.servicePrincipalId, String(row.cells.app)).toBeTruthy();
+  });
+
+  it("do not appear in App consents, which lists only apps holding a permission", async () => {
+    const result = await run(appConsentsAudit, ["Application.Read.All", "Directory.Read.All"]);
+    expect(result.rows.some((row) => String(row.cells.app).includes("Larkspur Payroll"))).toBe(
+      false,
+    );
+  });
+});
+
 describe("the synthetic usage report", () => {
   const granted = ["Reports.Read.All", "ReportSettings.Read.All"];
 
@@ -187,6 +235,7 @@ describe("everything the three audits read", () => {
     bodies.length = 0;
     await run(managedDevicesAudit, ["DeviceManagementManagedDevices.Read.All"]);
     await run(appConsentsAudit, ["Application.Read.All", "Directory.Read.All"]);
+    await run(appCredentialsAudit, ["Application.Read.All"]);
     await run(m365AppUsageAudit, ["Reports.Read.All", "ReportSettings.Read.All"]);
     expect(bodies.length).toBeGreaterThan(3);
     // The recorder refuses a recording with text from outside the tenant; so does this test.

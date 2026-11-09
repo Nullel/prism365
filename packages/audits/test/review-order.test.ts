@@ -117,6 +117,21 @@ describe("the audit families", () => {
     }
   });
 
+  it("runs App credentials in the directory stage straight after App consents", () => {
+    const order = REVIEW_ORDER.map((item) => item.auditId);
+    expect(order.indexOf("apps.credentials")).toBe(order.indexOf("apps.consents") + 1);
+    const step = REVIEW_ORDER.find((item) => item.auditId === "apps.credentials");
+    expect(step).toMatchObject({ stage: "directory", reportDownloads: 0 });
+  });
+
+  it("lists App credentials next to App consents in Access and ownership", () => {
+    const family = auditFamilyOf("apps.credentials");
+    expect(family?.id).toBe("access-ownership");
+    const listed = family?.audits.map((entry) => entry.auditId) ?? [];
+    expect(listed.indexOf("apps.credentials")).toBe(listed.indexOf("apps.consents") + 1);
+    expect(auditFamilyOf("apps.consents")?.id).toBe(family?.id);
+  });
+
   it("names the family of an audit", () => {
     expect(auditFamilyOf("accounts.inactive")?.id).toBe("account-lifecycle");
     expect(auditFamilyOf("not.an-audit")).toBeUndefined();

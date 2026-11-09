@@ -60,6 +60,7 @@ export const AUDIT_FAMILIES: readonly AuditFamily[] = [
       { auditId: "guests.review" },
       { auditId: "groups.teams" },
       { auditId: "apps.consents" },
+      { auditId: "apps.credentials" },
     ],
   },
   {

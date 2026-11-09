@@ -5,7 +5,8 @@ import type { DemoGraphExtension } from "./types.ts";
 // Enterprise applications for the synthetic tenant, the application permissions granted to them
 // and the delegated permissions people and administrators consented to. Every application and
 // publisher is invented; Microsoft's own service principals carry only the names the audit has to
-// resolve, and the same fixed ID Microsoft documents for the tenant that owns its apps.
+// resolve, and the same fixed ID Microsoft documents for the tenant that owns its apps. Six
+// application registrations, each with the credentials and owners one App credentials finding needs.
 
 const MICROSOFT_TENANT = "f8cdef31-a31e-4b4a-93e4-5f571e91255a";
 
@@ -79,7 +80,12 @@ interface World {
   principals: Principal[];
   assignments: Map<string, object[]>;
   grants: object[];
+  registrations: object[];
+  // The owners of each registration, by its object ID.
+  owners: Map<string, object[]>;
 }
+
+const DAY = 86_400_000;
 
 function build(tenant: SyntheticTenant): World {
   const added = new Date(tenant.now.getTime() - 400 * 86_400_000).toISOString();
@@ -228,7 +234,116 @@ function build(tenant: SyntheticTenant): World {
   for (const user of consenting(PEOPLE.copperline))
     grant(copperline, "Principal", "User.Read Sites.Read.All", user);
 
-  return { principals, assignments, grants };
+  const { registrations, owners } = buildRegistrations(tenant, members, principals, principal);
+  return { principals, assignments, grants, registrations, owners };
+}
+
+// One registration per App credentials finding. Each has an enterprise application with the same
+// application ID, so its panel opens, but none of them holds a permission, so App consents skips
+// them.
+function buildRegistrations(
+  tenant: SyntheticTenant,
+  members: SyntheticTenant["users"],
+  principals: Principal[],
+  principal: (key: string, displayName: string, options?: { owner?: string }) => Principal,
+): { registrations: object[]; owners: Map<string, object[]> } {
+  const at = (days: number) => new Date(tenant.now.getTime() + days * DAY).toISOString();
+  const credential = (label: string, startedDaysAgo: number, endsInDays: number | null) => ({
+    keyId: guid(`credential:${label}`),
+    displayName: label,
+    startDateTime: at(-startedDaysAgo),
+    endDateTime: endsInDays === null ? null : at(endsInDays),
+  });
+  const registrations: object[] = [];
+  const owners = new Map<string, object[]>();
+  const register = (
+    key: string,
+    displayName: string,
+    options: {
+      audience: string;
+      createdDaysAgo: number;
+      secrets?: ReturnType<typeof credential>[];
+      certificates?: ReturnType<typeof credential>[];
+      redirects: string[];
+      owners: number[];
+    },
+  ) => {
+    const enterprise = principal(key, displayName, { owner: SYNTHETIC_TENANT_ID });
+    principals.push(enterprise);
+    const id = guid(`registration:${key}`);
+    registrations.push({
+      id,
+      appId: enterprise.appId,
+      displayName,
+      createdDateTime: at(-options.createdDaysAgo),
+      signInAudience: options.audience,
+      passwordCredentials: options.secrets ?? [],
+      keyCredentials: options.certificates ?? [],
+      web: { redirectUris: options.redirects },
+      spa: { redirectUris: [] },
+      publicClient: { redirectUris: [] },
+    });
+    owners.set(
+      id,
+      options.owners.flatMap((position) => {
+        const user = members[position % members.length];
+        return user
+          ? [
+              {
+                "@odata.type": "#microsoft.graph.user",
+                id: user.id,
+                displayName: user.displayName,
+                userPrincipalName: user.userPrincipalName,
+              },
+            ]
+          : [];
+      }),
+    );
+  };
+  register("payroll-export", "Larkspur Payroll Export", {
+    audience: "AzureADMyOrg",
+    createdDaysAgo: 540,
+    secrets: [credential("payroll-export secret", 540, -40)],
+    redirects: ["https://payroll.larkspur.example/signin-callback"],
+    owners: [40],
+  });
+  register("badge-sync", "Larkspur Badge Sync", {
+    audience: "AzureADMyOrg",
+    createdDaysAgo: 353,
+    secrets: [credential("badge-sync secret", 353, 12)],
+    redirects: ["https://badges.larkspur.example/auth"],
+    owners: [41, 42],
+  });
+  register("reporting-bridge", "Larkspur Reporting Bridge", {
+    audience: "AzureADMyOrg",
+    createdDaysAgo: 305,
+    secrets: [credential("reporting-bridge secret", 305, 60)],
+    redirects: ["https://reports.larkspur.example/auth"],
+    owners: [43],
+  });
+  register("legacy-importer", "Larkspur Legacy Importer", {
+    audience: "AzureADMyOrg",
+    createdDaysAgo: 1_100,
+    secrets: [credential("legacy-importer secret", 1_095, null)],
+    redirects: ["https://import.larkspur.example/auth"],
+    owners: [44],
+  });
+  register("visitor-kiosk", "Larkspur Visitor Kiosk", {
+    audience: "AzureADMyOrg",
+    createdDaysAgo: 220,
+    secrets: [credential("visitor-kiosk secret", 220, 145)],
+    redirects: ["http://kiosk.larkspur.example/signin"],
+    owners: [],
+  });
+  register("partner-portal", "Larkspur Partner Portal", {
+    audience: "AzureADMultipleOrgs",
+    createdDaysAgo: 150,
+    secrets: [credential("partner-portal secret", 150, 215)],
+    certificates: [credential("partner-portal certificate", 150, 580)],
+    redirects: ["https://partners.larkspur.example/auth"],
+    owners: [45, 46],
+  });
+  return { registrations, owners };
 }
 
 const built = new WeakMap<SyntheticTenant, World>();
@@ -239,7 +354,9 @@ export const applications: DemoGraphExtension = (request, tools) => {
   if (
     path !== "servicePrincipals" &&
     path !== "oauth2PermissionGrants" &&
-    !path.startsWith("servicePrincipals/")
+    path !== "applications" &&
+    !path.startsWith("servicePrincipals/") &&
+    !path.startsWith("applications/")
   )
     return null;
   let world = built.get(request.tenant);
@@ -251,6 +368,12 @@ export const applications: DemoGraphExtension = (request, tools) => {
     const only = idFilter(request.url);
     const listed = only ? world.principals.filter((item) => only.has(item.id)) : world.principals;
     return tools.page(request.url, listed, request.select);
+  }
+  if (path === "applications") return tools.page(request.url, world.registrations, request.select);
+  const registered = /^applications\/([^/]+)\/owners$/.exec(path);
+  if (registered) {
+    const found = world.owners.get(registered[1] ?? "");
+    return found ? tools.page(request.url, found, request.select) : tools.notFound();
   }
   if (path === "oauth2PermissionGrants") return tools.page(request.url, world.grants, null);
   const assigned = /^servicePrincipals\/([^/]+)\/appRoleAssignments$/.exec(path);

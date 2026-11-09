@@ -23,6 +23,7 @@ changes the tenant.
 | Risky users (`identity.risky-users`) | Which accounts does Microsoft Entra ID Protection mark as at risk or compromised, how high, and has the risk been dealt with? | `IdentityRiskyUser.Read.All`, a role such as Global Reader, Security Reader, Security Operator or Security Administrator, Microsoft Entra ID P2 |
 | Managed devices (`devices.managed`) | Which Intune devices are not compliant, have not checked in for 30 days, are personal, unencrypted or jailbroken? | `DeviceManagementManagedDevices.Read.All`, an Intune license, a role that can read Intune devices such as Global Reader or Intune Administrator |
 | App consents (`apps.consents`) | Which applications hold permissions here, which are unverified or hold high-risk permissions, and where did an administrator consent for everyone? | `Application.Read.All` and a role such as Directory Readers or Application Administrator; `Directory.Read.All` adds delegated consents |
+| App credentials (`apps.credentials`) | Which application registrations have a secret or certificate that has expired, expires within 30 or 90 days, never expires or is more than two years old, which have no owner, and which accept sign-ins from other organisations or send people back over plain HTTP (section 12a)? | `Application.Read.All` and a role that can read applications and their owners, such as Directory Readers or Application Administrator |
 | Microsoft 365 app usage (`usage.m365-apps`) | Which accounts used none of Outlook, Word, Excel, PowerPoint, OneNote or Teams in 90 days, and which use only Teams, only the web or only a phone? | `Reports.Read.All` and Reports Reader or a service administrator role; `ReportSettings.Read.All` tells whether names are concealed |
 | Account activity (`accounts.activity`) | Is this account really unused, and does anyone depend on it? One row per account with sign-ins, mail, Teams, OneDrive and SharePoint use, mailbox size, licenses, groups and directory roles, and a verdict (section 16). | `User.Read.All`, `AuditLog.Read.All`, Microsoft Entra ID P1 or P2, a role such as Reports Reader, Security Reader or Global Reader; `Reports.Read.All` with Reports Reader or a service administrator role adds the workload columns, `ReportSettings.Read.All` tells whether names are concealed, `LicenseAssignment.Read.All` names the licenses |
 | Privileged roles (`directory.privileged-roles`) | Who holds Global Administrator and the other administrator roles, permanently, for a time, after an activation or only as eligible, and which holders are disabled accounts, guests or apps (section 17)? | `RoleManagement.Read.Directory` and a role such as Global Reader or Privileged Role Administrator; Microsoft Entra ID P2 or ID Governance for eligible and time-bound roles; `User.Read.All`, `Application.Read.All` and `AuditLog.Read.All` add names and MFA registration |
@@ -469,6 +470,102 @@ What it cannot see:
   Directory Readers, Application Administrator or Cloud Application Administrator among others.
   Microsoft does not list Global Reader for that call, so a Global Reader session may be refused
   there although it can list the applications; the failure message names the roles.
+
+## 12a. App credentials
+
+`apps.credentials` answers which application registrations are about to break, already broke or
+have no one looking after them. An expiring secret stops an integration; an expired one that no one
+noticed often means the app has no owner; a secret older than two years is a finding in published
+baselines. It reads, with `Application.Read.All`, which the App consents pack already holds, one
+page at a time with `$top=100`. The field names were checked against Microsoft's references on
+2026-11-09:
+
+1. `GET /applications?$select=id,appId,displayName,createdDateTime,signInAudience,passwordCredentials,keyCredentials,web,spa,publicClient`,
+   at most 2,000 applications. Past that the run is partial and says so.
+2. `GET /servicePrincipals?$select=id,appId,displayName,servicePrincipalType,passwordCredentials,keyCredentials`,
+   at most 2,000, only those of type `Application`. Their secrets and certificates are added to
+   the registration with the same application ID, and the service principal's ID is kept in a
+   hidden column so the app's panel can be opened. A SAML signing certificate is stored there as a
+   `Sign` and a `Verify` key credential plus a password credential for its private key. It is
+   counted once, by the `Verify` key: a `Sign` key with the same thumbprint is skipped, and so is a
+   password credential whose thumbprint (`customKeyIdentifier`) matches one of those keys. The
+   thumbprint is public, is read only to pair them and is never stored or shown. A password that
+   pairs with nothing is counted as a secret.
+3. `GET /applications/{id}/owners?$select=id,displayName,userPrincipalName`, first page only, for
+   each application that holds a secret or certificate (active or expired) or shows a redirect or
+   audience flag. An application with no credential and nothing else to flag is not asked, and its
+   owners read "Not read". Applications are asked in order of urgency (expired first, then expiring
+   within 30 days, then 90), so a tenant too large for the budget loses the quiet ones first.
+
+All of it shares one budget of 600 requests per run. When it runs out the remaining applications
+read "Owners not read", carry the tag `owners-not-read` and the run is partial. If Microsoft asks
+the run to slow down, or refuses the owner list, the run keeps what it read, says so and is partial.
+An application deleted after it was listed is left without owners and costs nothing else.
+
+"Active" means not yet past its end date. An expired credential is counted once, in Expired
+credentials, and in nothing else: not in Secrets, Certificates, the next expiry, the oldest age or
+any tag but `expired` or `expired-leftover`. An end date more than a hundred years away (Microsoft
+uses the year 2299 for a secret created as "never") is treated as no end date, in every rule below. A credential whose date Microsoft returns in a form that cannot be read is
+left out, counted in a note and makes the run partial; it is never taken for one that does not end.
+
+A row is an application registration, keyed by its object ID. Columns:
+
+- Application, Status, Who can sign in, Created. Status is the first that applies: Expired (a
+  credential has passed its end date and none is active, so the app has nothing that works),
+  Expires within 30 days, Expires within 90 days (the soonest end date among the active
+  credentials, measured from the time the run started, 30 and 90 days included), Expired leftovers
+  (an expired credential is still there beside an active one, the usual state after a rotation),
+  No credentials (none at all, expired or not), otherwise OK. Who can sign in is the
+  sign-in audience: This tenant, Any organisation, Any organisation or personal account, or
+  Personal accounts.
+- Secrets and Certificates count the active ones. Next expiry is the soonest end date among the
+  active credentials and empty when there is none or none of them ends. Days until expiry rounds
+  up to whole days, counts to the soonest active credential and is empty when none is active, so
+  an application whose every credential has expired shows none. Expired credentials and
+  Oldest credential (days since the oldest active credential started) complete the picture.
+- Owners counts the first page. Owner names lists up to five, accounts only: an owner that is not
+  an account (an app or a group, or a record with neither a type nor a sign-in name) counts but is
+  not named. Two internal columns keep the owners with their kinds, so the panel can link the
+  accounts, and the enterprise application's ID.
+- Application ID (hidden) and Redirect URIs to check: plain HTTP to a host other than this
+  computer, wildcards, and addresses on this computer (`localhost`, `127.0.0.1`, `[::1]`), at most
+  ten, from the web, single-page and public client lists.
+
+Tags and views: `expired` (expired credentials and no active one); `expired-leftover` (expired
+credentials and an active one too); `expiring-30`; `expiring-90` (which includes those within 30 days, so
+the view shows everything that ends within 90); `never-expires` (an active credential with no end
+date, or one more than a hundred years away); `old-secret` (an active secret that started more than 730 days ago, or any active credential
+that never ends and started more than 730 days ago); `many-secrets` (five or more active secrets);
+`no-credentials`; `no-owner` (owners were read and there are none); `owners-not-read`;
+`insecure-redirect` (a redirect URI that is `http://` and not on this computer, or holds a
+wildcard); `localhost-redirect`; `multi-tenant` (any audience but This tenant). Each has a view.
+
+Tiles: Expired credentials (critical), Expired credentials left in place (a plain count),
+Expiring within 30 days, No owner, Secrets older than 2
+years and Insecure redirect URIs (warning), and Applications. Every tile counts applications, so
+the number matches the rows of the view it opens. The No owner tile is neutral, not clear, while
+some owners were not read.
+
+What it cannot see:
+
+- Secret values. Microsoft never returns them, only when each secret or certificate starts and
+  ends, so Prism365 cannot say which credential an integration actually uses, or whether an
+  expired one was already replaced elsewhere.
+- How a certificate is used. A key credential is counted, not classified (signing, verifying or
+  sign-in).
+- Applications the signed-in role cannot list, and anything past the first 2,000 registrations or
+  2,000 service principals.
+- Owners past the first page of an application, and owners of an application the budget did not
+  reach.
+- Federated credentials, which have no secret to expire and are not read.
+
+The app panel shows a Credentials section from this audit's latest run, matched by application ID
+(the panel is keyed by the enterprise application, this audit by the registration), with the owners
+that are accounts as links. Quick search lists the audit's application names under Apps, once per
+application however many audits list it. Tests: `packages/audits/test/app-credentials.test.ts`,
+the pack cases in `packages/graph/test/client.test.ts`, the panel and search in
+`apps/api/test/entities-api.test.ts`, and `scripts/demo/graph/apps-devices-usage.test.ts` for the
+six synthetic registrations.
 
 ## 13. Microsoft 365 app usage
 
@@ -1241,8 +1338,8 @@ The order is fixed in `packages/audits/src/review-order.ts`, and a test fails wh
 from it or sits in the wrong stage:
 
 1. Directory audits: Inactive accounts, Licenses to reclaim, MFA registration, Guest accounts,
-   Passwords, Privileged roles, App consents, Managed devices and License capacity. Their
-   endpoints have generous limits of their own.
+   Passwords, Privileged roles, App consents, App credentials, Managed devices and License
+   capacity. Their endpoints have generous limits of their own.
 2. The paced audits: Conditional Access policies, then Risky users. Microsoft allows one request a
    second for the tenant on these endpoints, so each audit spaces its own requests, and the review
    waits 1.1 seconds after one ends before the next audit that reads such an endpoint (Risky users,
@@ -1383,7 +1480,7 @@ or that the latest run does not list the thing.
 | Role | the role definition id (the template id for a built-in role) | The Privileged roles rows for it, one per holder, with how it is held; each holder's Combined risks rules; the policies that include the role or leave it out. |
 | Policy | the policy id | Its Conditional Access row, with the people, groups and roles it includes and leaves out. Names come from Account activity, Groups and Teams and the built-in role names; a group or account no stored audit names reads "Unknown group" with its id behind a copy button. |
 | Device | the Intune managed device id | Its Managed devices row, with the owner as a person. |
-| App | the service principal's object id, or the application id | Its App consents row. |
+| App | the service principal's object id, or the application id | Its App consents row, and its App credentials row (found by application ID) with the owners that are accounts as links. |
 
 A holder the Privileged roles audit could not sort ("Group or other") opens a group panel only if
 Groups and Teams lists its id, and an app panel only if App consents does; its name is read from
@@ -1398,7 +1495,7 @@ still decides each row. Ids compare in lower case. Lists in a section hold at mo
 how many more there are; a section holds at most 25 rows. `GET /v1/entities/{kind}/{id}` writes
 `entity.viewed` to the access ledger before it reads, with the kind and nothing else. The search
 writes `entity.searched` with no search words. The search matches the name column of the latest run
-of Groups and Teams, Privileged roles, Conditional Access, Managed devices and App consents with a
+of Groups and Teams, Privileged roles, Conditional Access, Managed devices, App consents and App credentials (an app both list is shown once) with a
 case-insensitive match in which `%` and `_` are plain characters. A role has one row per holder, so
 a role appears once however many people hold it, and only a role that someone holds can be found.
 Quick search asks for it once typing pauses, and lists the matches under Groups, Roles, Policies,

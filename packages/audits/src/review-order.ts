@@ -35,6 +35,7 @@ export const REVIEW_ORDER: readonly ReviewStep[] = [
   step("accounts.passwords", "directory"),
   step("directory.privileged-roles", "directory"),
   step("apps.consents", "directory"),
+  step("apps.credentials", "directory"),
   step("devices.managed", "directory"),
   step("licenses.capacity", "directory"),
   step("identity.conditional-access", "paced"),

@@ -165,6 +165,8 @@ function boundedInteger(value: number, min: number, max: number, label: string):
   return value;
 }
 
+const GUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
 // Paths and declared features must agree even if the supplied token has broader consent.
 // Matching ignores case: Graph treats path segments case-insensitively and its continuation
 // links do not always keep the casing of the request (auditLogs/signIns comes back as signins).
@@ -196,9 +198,14 @@ const allowedPaths: Record<GraphFeatureId, RegExp> = {
   // one permission grant policy.
   "identity.policies.read":
     /^\/v1\.0\/policies\/(?:identitySecurityDefaultsEnforcementPolicy|authenticationMethodsPolicy|authorizationPolicy|adminConsentRequestPolicy|permissionGrantPolicies)\/?$/i,
-  // Enterprise applications, one of them, or the application permissions granted to one.
-  "directory.applications.read":
-    /^\/v1\.0\/servicePrincipals(?:\/[A-Za-z0-9._:-]+(?:\/appRoleAssignments)?)?\/?$/i,
+  // Enterprise applications, one of them, or the application permissions granted to one; the
+  // application registrations list; and the owners of one registration by its
+  // object ID (a GUID). No single registration, no /$count and no other
+  // navigation (credentials come with the list itself).
+  "directory.applications.read": new RegExp(
+    `^/v1\\.0/(?:servicePrincipals(?:/[A-Za-z0-9._:-]+(?:/appRoleAssignments)?)?|applications/${GUID}/owners|applications)/?$`,
+    "i",
+  ),
   "directory.permission-grants.read": /^\/v1\.0\/oauth2PermissionGrants\/?$/i,
   // The four role lists, never one item or a navigation: definitions, active assignments, and the
   // Privileged Identity Management instances (active and eligible) behind them.

@@ -384,8 +384,9 @@ export const permissionPacks = [
     phase: "experimental",
     defaultEnabled: false,
     purpose:
-      "Read enterprise applications and the application permissions granted to them, for the app consents audit.",
-    deniedBehavior: "The app consents audit cannot run; other audits are unaffected.",
+      "Read enterprise applications and the application permissions granted to them, for the app consents audit, and application registrations with their credentials' metadata and owners, for the app credentials audit.",
+    deniedBehavior:
+      "The app consents and app credentials audits cannot run; other audits are unaffected.",
     clouds: allGraphClouds,
     prerequisites: [],
     roleNotes:
@@ -393,7 +394,7 @@ export const permissionPacks = [
     licenseNotes: "No additional license is required.",
     documentationUrl:
       "https://learn.microsoft.com/en-us/graph/api/serviceprincipal-list?view=graph-rest-1.0",
-    documentationLastVerified: "2026-10-23",
+    documentationLastVerified: "2026-11-09",
   },
   {
     id: "directory.permission-grants.read",

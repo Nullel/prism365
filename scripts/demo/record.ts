@@ -541,6 +541,7 @@ async function main() {
     "identity.conditional-access": (row) => addEntity("policy", row.key),
     "devices.managed": (row) => addEntity("device", row.key),
     "apps.consents": (row) => addEntity("app", row.key),
+    "apps.credentials": (row) => addEntity("app", row.cells.servicePrincipalId),
   };
   for (const entry of audits.audits) {
     const id = entry.definition.id;

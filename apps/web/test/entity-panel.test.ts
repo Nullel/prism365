@@ -612,6 +612,8 @@ describe("tables and pages that link to a panel", () => {
       ["groups.teams", "group", { key: GROUP }, "group"],
       ["identity.conditional-access", "policy", { key: POLICY }, "policy"],
       ["apps.consents", "app", { key: APP }, "app"],
+      // A registration is keyed by its own object id; the panel opens by the enterprise application.
+      ["apps.credentials", "app", { cells: { servicePrincipalId: APP } }, "app"],
       ["devices.managed", "device", { key: DEVICE }, "device"],
       ["directory.privileged-roles", "role", { key: "held|x", cells: { roleId: ROLE } }, "role"],
     ];
@@ -631,6 +633,18 @@ describe("tables and pages that link to a panel", () => {
         entityOfCell(auditId, "other", { key: GROUP, personId: null, tags: [], cells: {} }),
       ).toBeNull();
     }
+    // A registration's own key is not the id the panel opens by: a row with no enterprise
+    // application has nothing to open.
+    const registration = (cells: Record<string, unknown>) =>
+      entityOfCell("apps.credentials", "app", {
+        key: GROUP,
+        personId: null,
+        tags: [],
+        cells,
+      } as never);
+    expect(registration({ servicePrincipalId: APP })?.id).toBe(APP);
+    expect(registration({ servicePrincipalId: null })).toBeNull();
+    expect(registration({})).toBeNull();
     expect(
       entityOfCell("accounts.inactive", "group", {
         key: GROUP,

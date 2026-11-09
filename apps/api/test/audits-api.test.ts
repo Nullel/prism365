@@ -189,6 +189,7 @@ describe("audits API", () => {
       "identity.risky-users",
       "devices.managed",
       "apps.consents",
+      "apps.credentials",
       "usage.m365-apps",
       "accounts.activity",
       "directory.privileged-roles",

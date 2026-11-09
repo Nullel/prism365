@@ -2,6 +2,7 @@ import { type AuditDefinition, auditDefinitionSchema } from "@prism365/contracts
 import { type GraphFeatureId, permissionPacks } from "@prism365/graph";
 import { accountActivityAudit } from "./account-activity.ts";
 import { appConsentsAudit } from "./app-consents.ts";
+import { appCredentialsAudit } from "./app-credentials.ts";
 import { licenseCapacityAudit } from "./capacity.ts";
 import { combinedRisksAudit } from "./combined-risks.ts";
 import { conditionalAccessAudit } from "./conditional-access.ts";
@@ -44,6 +45,14 @@ export {
   MICROSOFT_TENANTS,
   ownerOf,
 } from "./app-consents.ts";
+export {
+  AUDIENCES,
+  analyseCredentials,
+  appCredentialsAudit,
+  isInsecureRedirect,
+  isLocalhostRedirect,
+  MAX_APPLICATIONS,
+} from "./app-credentials.ts";
 export {
   combinedRisksAudit,
   createCombinedRisksAudit,
@@ -138,6 +147,7 @@ export const builtInAudits: readonly Audit[] = [
   riskyUsersAudit,
   managedDevicesAudit,
   appConsentsAudit,
+  appCredentialsAudit,
   m365AppUsageAudit,
   accountActivityAudit,
   privilegedRolesAudit,
