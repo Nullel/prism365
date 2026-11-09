@@ -2557,6 +2557,37 @@ button.person-tag--button:hover {
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
+/* A name that opens a person, set inside a sentence or a list item rather than a table cell. */
+.person-facts .people-name,
+.person-reports .people-name,
+.person-access .people-name {
+  display: inline;
+}
+.person-reports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+.person-reports li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Direct reports get a row of their own under the facts grid, so many names never stretch it. */
+.person-facts__reports {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.person-facts__reports h4 {
+  margin: 0 0 4px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
 .person-access {
   padding: 14px 16px;
 }
@@ -3516,6 +3547,12 @@ button.audit-tile:hover {
 }
 .audit-sort__arrow {
   min-width: 8px;
+}
+.audit-lookup-note {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  white-space: normal;
 }
 .audit-empty {
   color: var(--text-3);

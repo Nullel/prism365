@@ -53,6 +53,8 @@ import {
 } from "./common.tsx";
 import { downloadHandoff } from "./Handoffs.tsx";
 import { ArrowUpRightIcon, CheckIcon, CopyIcon, DownloadIcon } from "./icons.tsx";
+import { auditsLookedUpByName, canLookUp, MailboxName } from "./MailboxName.tsx";
+import type { PersonOrigin } from "./navigation.tsx";
 
 // Audits: checks an administrator runs when they need them. The catalog lists every audit with
 // its last result; an audit's page shows a run as a table the audit describes itself, so a new
@@ -797,11 +799,14 @@ function CellValue({
   cell,
   personId,
   onOpenPerson,
+  lookedUp = false,
 }: {
   column: AuditColumn;
   cell: AuditCell | undefined;
   personId: string | null;
   onOpenPerson: (userId: string) => void;
+  // True for the one column of an audit whose rows carry a sign-in name and no account id.
+  lookedUp?: boolean;
 }) {
   if (column.kind === "person") {
     const person = isPerson(cell) ? cell : { name: null, principal: null };
@@ -847,6 +852,8 @@ function CellValue({
   }
   if (column.kind === "enum" && typeof cell === "string" && alertValues.has(cell))
     return <span className="person-tag person-tag--alert">{cell}</span>;
+  if (lookedUp && personId === null && canLookUp(cell))
+    return <MailboxName name={cell} onOpenPerson={onOpenPerson} />;
   if (column.kind === "text" && isEmail(cell))
     return (
       <span className="copy-line">
@@ -1202,6 +1209,7 @@ export function ResultTable({
                             cell={row.cells[column.key]}
                             personId={row.personId}
                             onOpenPerson={onOpenPerson}
+                            lookedUp={auditsLookedUpByName[definition.id] === column.key}
                           />
                         </th>
                       ) : (
@@ -1214,6 +1222,7 @@ export function ResultTable({
                             cell={row.cells[column.key]}
                             personId={row.personId}
                             onOpenPerson={onOpenPerson}
+                            lookedUp={auditsLookedUpByName[definition.id] === column.key}
                           />
                         </td>
                       ),
@@ -1928,7 +1937,7 @@ export function Audits({
   session: PrismSession;
   selected: string | null;
   onSelect: (auditId: string | null) => void;
-  onOpenPerson: (userId: string) => void;
+  onOpenPerson: (userId: string, from: PersonOrigin) => void;
 }) {
   const [catalog, setCatalog] = useState<AuditCatalog | null>(null);
   const [settings, setSettings] = useState<AuditSettings | null>(null);
@@ -2170,7 +2179,13 @@ export function Audits({
           onSelect(null);
           void refresh();
         }}
-        onOpenPerson={onOpenPerson}
+        onOpenPerson={(userId) =>
+          onOpenPerson(userId, {
+            kind: "audit",
+            auditId: entry.definition.id,
+            title: entry.definition.title,
+          })
+        }
         onChanged={() => void refresh()}
       />
     );

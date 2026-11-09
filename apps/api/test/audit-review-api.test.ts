@@ -27,7 +27,9 @@ async function finished(h: AuditHarness) {
 }
 const types = (h: AuditHarness) => h.store.audit.map((entry) => String(entry.event.type));
 
-describe("the review routes", () => {
+// Each test builds a whole API on a fresh database, which can take longer than the default five
+// seconds while the full suite runs in parallel; the other API suites allow a minute too.
+describe("the review routes", { timeout: 60_000 }, () => {
   it("answer nobody without a session, and refuse a start or stop without the CSRF token", async () => {
     const h = await harness();
     for (const [method, url] of [
@@ -149,7 +151,7 @@ describe("the review routes", () => {
   });
 });
 
-describe("the review schedule routes", () => {
+describe("the review schedule routes", { timeout: 60_000 }, () => {
   it("start off, save a weekly day and hour in the configured time zone, and ledger the change first", async () => {
     const h = await harness();
     const off = await h.get("/v1/settings/audit-review");

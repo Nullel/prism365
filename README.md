@@ -26,8 +26,12 @@ finding. Each finding carries its evidence and its limitations.
 ### People
 
 One page per account: where they signed in from, with full addresses and devices,
-the apps they use, their manager and licenses from the live directory, open findings, and every
-stored sign-in. A one-click Have I Been Pwned lookup opens in the administrator's own browser.
+the apps they use, their manager, direct reports and licenses from the live directory, open
+findings, and every stored sign-in. A one-click Have I Been Pwned lookup opens in the
+administrator's own browser. Most names that belong to an account open that person's page, and the
+page's breadcrumb says where you came from. Some names stay text: owners in the Groups and Teams
+audit, the Microsoft 365 app usage rows, names Microsoft hides, receipt accounts the handoff did not
+list, and anything that is a group, contact or app rather than an account.
 
 #### Access tab
 
