@@ -70,7 +70,7 @@ describe("the review routes", { timeout: 60_000 }, () => {
     const started = await h.post("/v1/audits/review");
     expect(started.statusCode).toBe(202);
     const first = auditReviewResponseSchema.parse({ review: started.json().review }).review;
-    expect(first?.audits).toHaveLength(16);
+    expect(first?.audits).toHaveLength(17);
     expect(first?.audits.at(-1)?.auditId).toBe("identity.combined-risks");
     const review = await finished(h);
     expect(review.state).toBe("finished");

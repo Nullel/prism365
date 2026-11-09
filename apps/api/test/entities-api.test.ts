@@ -1,5 +1,10 @@
 import { finishRun, insertRun } from "@prism365/audits";
-import type { AuditRow, Entity, EntitySearch } from "@prism365/contracts";
+import {
+  type AuditRow,
+  ENTITY_AUDIT_FIELDS,
+  type Entity,
+  type EntitySearch,
+} from "@prism365/contracts";
 import { GraphHttpClient } from "@prism365/graph";
 import { ModuleScheduler } from "@prism365/modules";
 import { MemoryStateStore, PGliteModuleDatabase, type SqlClient } from "@prism365/storage";
@@ -368,7 +373,8 @@ describe("entity API", () => {
       ["role", GLOBAL_ADMIN, 2],
       ["policy", POLICY, 1],
       ["device", DEVICE, 1],
-      ["app", APP, 1],
+      // The app itself, and its credentials.
+      ["app", APP, 2],
     ] as const) {
       const found = await entity(h, kind, id);
       expect(found).toMatchObject({ kind, id, tags: [] });
@@ -857,5 +863,144 @@ describe("entity panels over runs of other shapes", () => {
     );
     expect(JSON.stringify(cut)).not.toMatch(/trips a rule in this run/);
     expect(cut.tags).toContain("1000 or more assignments");
+  });
+});
+
+describe("the credentials of an app", () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = await harness();
+  }, 60_000);
+  afterAll(async () => {
+    await h?.app.close();
+  });
+
+  const REGISTRATION = guid(9_001);
+  const credentials = (over: AuditRow["cells"] = {}) =>
+    row(
+      REGISTRATION,
+      null,
+      {
+        app: "Plant robot",
+        status: "Expires within 30 days",
+        audience: "This tenant",
+        created: "2025-01-02T00:00:00.000Z",
+        secrets: 1,
+        certificates: 0,
+        nextExpiry: "2026-11-01T00:00:00.000Z",
+        expiresIn: 12,
+        expired: 0,
+        oldestAge: 300,
+        owners: 3,
+        ownerNames: ["Ana Ames"],
+        ownerIds: [
+          ownerItem(ana, "Ana Ames", "user"),
+          ownerItem(guid(9_002), null, "servicePrincipal"),
+          ownerItem(guid(9_003), null, "other"),
+        ],
+        redirects: ["http://kiosk.example.invalid/in"],
+        servicePrincipalId: APP,
+        appId: APP_ID,
+        ...over,
+      },
+      ["expiring-30"],
+    );
+  const consents = () =>
+    row(APP, null, { app: "Plant robot", publisher: "Unverified", enabled: true, appId: APP_ID });
+
+  it("shows the credentials beside the consents, found by either id", async () => {
+    await h.storeRun("apps.consents", [consents()]);
+    await h.storeRun("apps.credentials", [credentials()], { version: 1 });
+    for (const id of [APP, APP_ID]) {
+      const found = await entity(h, "app", id);
+      expect(found.sections.map((section) => section.id)).toEqual(["app", "credentials"]);
+      const section = sectionOf(found, "credentials");
+      expect(section).toMatchObject({
+        status: "ok",
+        title: "Credentials",
+        auditId: "apps.credentials",
+        auditName: "App credentials",
+      });
+      const [only] = okRows(found, "credentials");
+      expect(only?.key).toBe(REGISTRATION);
+      const shown = only?.cells.map((cell) => cell.key);
+      expect(shown).toEqual(ENTITY_AUDIT_FIELDS["apps.credentials"]);
+      // Machine data never reaches the page.
+      expect(JSON.stringify(only)).not.toContain("servicePrincipalId");
+      expect(JSON.stringify(only)).not.toContain('"ownerIds"');
+    }
+  });
+
+  it("links an owner that is an account as a person, an app as an app, and leaves the rest as text", async () => {
+    const [only] = okRows(await entity(h, "app", APP), "credentials");
+    expect(only?.lists).toEqual([
+      {
+        label: "Owners",
+        items: [
+          { kind: "person", id: ana, name: "Ana Ames", principal: null },
+          { kind: "app", id: guid(9_002), name: null, principal: null },
+          { kind: "other", id: guid(9_003), name: null, principal: null },
+        ],
+        more: 0,
+      },
+    ]);
+  });
+
+  it("names an app that only the credentials audit lists, and says the consents audit does not", async () => {
+    await h.storeRun("apps.consents", []);
+    const found = await entity(h, "app", APP);
+    expect(found.name).toBe("Plant robot");
+    expect(sectionOf(found, "app").status).toBe("not_in_run");
+    expect(sectionOf(found, "credentials").status).toBe("ok");
+    await h.storeRun("apps.consents", [consents()]);
+  });
+
+  it("says the app is not in the credentials run when it is not, and shows no owners it did not read", async () => {
+    await h.storeRun("apps.credentials", [
+      credentials({ appId: guid(9_100), servicePrincipalId: guid(9_101) }),
+    ]);
+    expect(sectionOf(await entity(h, "app", APP), "credentials").status).toBe("not_in_run");
+    await h.storeRun("apps.credentials", [
+      credentials({ owners: null, ownerNames: null, ownerIds: null }),
+    ]);
+    const [only] = okRows(await entity(h, "app", APP), "credentials");
+    expect(only?.lists).toEqual([]);
+    expect(only?.cells.map((cell) => cell.key)).not.toContain("owners");
+  });
+
+  it("lists an app by name under Apps once, whichever audit knows it", async () => {
+    await h.storeRun("apps.credentials", [
+      credentials(),
+      // Registered here and with an enterprise application, but holding no permission.
+      row(guid(9_010), null, {
+        app: "Plant kiosk",
+        audience: "Any organisation",
+        servicePrincipalId: guid(9_011),
+        appId: guid(9_012),
+      }),
+      // The same application as the consents row, under another enterprise application id.
+      row(guid(9_013), null, {
+        app: "Plant robot",
+        servicePrincipalId: guid(9_014),
+        appId: APP_ID.toUpperCase(),
+      }),
+      // No enterprise application to open.
+      row(guid(9_015), null, { app: "Plant orphan", servicePrincipalId: null, appId: guid(9_016) }),
+    ]);
+    const response = await h.get("/v1/entities/search?q=plant");
+    const found = response.json() as EntitySearch;
+    expect(found.results.map((item) => [item.kind, item.name, item.id, item.detail])).toEqual([
+      ["app", "Plant kiosk", guid(9_011), "Any organisation"],
+      ["app", "Plant robot", APP, "Unverified"],
+    ]);
+    expect(found.partial).toBe(false);
+  });
+
+  it("gives apps one turn however many audits list them", async () => {
+    await h.storeRun("groups.teams", [
+      row(guid(9_020), null, { group: "Plant group", kind: "Team" }),
+    ]);
+    const found = (await (await h.get("/v1/entities/search?q=plant")).json()) as EntitySearch;
+    expect(found.results.map((item) => item.kind)).toEqual(["group", "app", "app"]);
   });
 });

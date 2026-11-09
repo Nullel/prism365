@@ -75,7 +75,8 @@ export const readPacks: readonly { id: string; label: string; scope: string; det
     id: "directory.applications.read",
     label: "Enterprise applications",
     scope: "Application.Read.All",
-    detail: "Enterprise applications and the application permissions granted to them.",
+    detail:
+      "Enterprise applications, the application permissions granted to them, and each registration's credential dates and owners.",
   },
   {
     id: "directory.permission-grants.read",

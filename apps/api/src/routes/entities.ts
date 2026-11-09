@@ -18,6 +18,7 @@ import {
   MAX_ENTITY_LIST,
   MAX_ENTITY_ROWS,
   MAX_ENTITY_SEARCH,
+  type OwnerEntry,
 } from "@prism365/contracts";
 import { privilegedRoles } from "@prism365/graph";
 import type { SqlClient } from "@prism365/storage";
@@ -50,6 +51,7 @@ const AUDIT = {
   policies: "identity.conditional-access",
   devices: "devices.managed",
   apps: "apps.consents",
+  credentials: "apps.credentials",
   combined: COMBINED_RISKS_AUDIT_ID,
   activity: "accounts.activity",
 } as const;
@@ -368,20 +370,9 @@ async function groupPanel(read: Read, tenantId: string, id: string): Promise<Bui
   };
 }
 
-// The owners of a group row as people to open. Older results hold only the ids, which are shown
-// without a name or a link, because nothing says what kind of object they are.
-function ownerLists(row: AuditRow): EntityList[] {
-  const owners = decodeOwnerList(row.cells.ownerList);
-  const found: EntityMention[] =
-    owners.length > 0
-      ? owners.map((owner) =>
-          mention(
-            owner.kind === "user" ? "person" : owner.kind === "servicePrincipal" ? "app" : "other",
-            owner.id.toLowerCase(),
-            owner.name === null ? null : cleanText(owner.name),
-          ),
-        )
-      : idsOf(row.cells.ownerIds).map((ownerId) => mention("other", ownerId, null));
+// Owners as people to open: an account opens its page, an app opens the app, anything else is shown
+// by name only.
+function ownersAsList(found: readonly EntityMention[]): EntityList[] {
   if (found.length === 0) return [];
   return [
     {
@@ -390,6 +381,26 @@ function ownerLists(row: AuditRow): EntityList[] {
       more: Math.max(0, found.length - MAX_ENTITY_LIST),
     },
   ];
+}
+
+const ownerMentions = (owners: readonly OwnerEntry[]): EntityMention[] =>
+  owners.map((owner) =>
+    mention(
+      owner.kind === "user" ? "person" : owner.kind === "servicePrincipal" ? "app" : "other",
+      owner.id.toLowerCase(),
+      owner.name === null ? null : cleanText(owner.name),
+    ),
+  );
+
+// The owners of a group row as people to open. Older results hold only the ids, which are shown
+// without a name or a link, because nothing says what kind of object they are.
+function ownerLists(row: AuditRow): EntityList[] {
+  const owners = decodeOwnerList(row.cells.ownerList);
+  return ownersAsList(
+    owners.length > 0
+      ? ownerMentions(owners)
+      : idsOf(row.cells.ownerIds).map((ownerId) => mention("other", ownerId, null)),
+  );
 }
 
 // The most holder rows read to check a role's holders against Combined risks, of which the panel
@@ -660,9 +671,25 @@ async function appPanel(read: Read, tenantId: string, id: string): Promise<Built
     1,
   );
   const row = firstRow(own);
+  // The credentials audit lists the registration, whose own id is not this one. It is found by the
+  // application id, or by the service principal id it keeps for the link back to this panel.
+  const appId = row ? idOf(row.cells.appId) : null;
+  const credentials = await pick(
+    read,
+    tenantId,
+    AUDIT.credentials,
+    {
+      by: "ids",
+      cells: [
+        ...(appId ? [{ path: ["appId"], values: [appId] }] : []),
+        { path: ["servicePrincipalId"], values: [id] },
+      ],
+    },
+    1,
+  );
   const highRisk = row ? idsOfText(row.cells.highRisk) : [];
   return {
-    name: row ? textOf(row.cells.app) : null,
+    name: row ? textOf(row.cells.app) : textOf(firstRow(credentials)?.cells.app),
     tags: row
       ? tagsOf(
           textOf(row.cells.publisher),
@@ -677,6 +704,17 @@ async function appPanel(read: Read, tenantId: string, id: string): Promise<Built
         found.map((item) =>
           rowOf(item.key, { cells: rowCells(auditOf(AUDIT.apps), AUDIT.apps, item) }),
         ),
+      ),
+      sectionOf(
+        { id: "credentials", title: "Credentials", auditId: AUDIT.credentials },
+        credentials,
+        (found) =>
+          found.map((item) =>
+            rowOf(item.key, {
+              cells: rowCells(auditOf(AUDIT.credentials), AUDIT.credentials, item),
+              lists: ownersAsList(ownerMentions(decodeOwnerList(item.cells.ownerIds))),
+            }),
+          ),
       ),
     ],
   };
@@ -745,6 +783,15 @@ const SEARCHED: readonly {
     id: (row) => idOf(row.key),
     detail: (row) => textOf(row.cells.publisher, 100),
   },
+  // Application registrations, found by the enterprise application the panel opens. One that has
+  // none cannot be opened and is left out.
+  {
+    kind: "app",
+    auditId: AUDIT.credentials,
+    name: "app",
+    id: (row) => idOf(row.cells.servicePrincipalId),
+    detail: (row) => textOf(row.cells.audience, 100),
+  },
 ];
 
 // Matching rows read from one audit, which is more than are shown so the kinds can share the 20.
@@ -782,7 +829,10 @@ export function registerEntityRoutes(app: FastifyInstance, context: RouteContext
     });
     const read: Read = (work) => modules.database.tenant(tenantId, work);
     const text = query.data.q;
-    const queues: EntitySearchResult[][] = [];
+    // What each kind found, whichever audits it came from, and the ids already listed: an app is
+    // in two audits, and is listed once, by its enterprise application id or its application id.
+    const found = new Map<EntityKind, EntitySearchResult[]>();
+    const listed = new Map<EntityKind, Set<string>>();
     // True when a source held more matching rows than were read, so there is more to find.
     let more = false;
     let partial = false;
@@ -806,23 +856,29 @@ export function registerEntityRoutes(app: FastifyInstance, context: RouteContext
       if (picked?.more) more = true;
       // A run from before roles kept their ids cannot be searched for roles.
       if (source.kind === "role" && predatesIds(picked)) partial = true;
-      const results: EntitySearchResult[] = [];
-      const seen = new Set<string>();
+      const results = found.get(source.kind) ?? [];
+      const seen = listed.get(source.kind) ?? new Set<string>();
+      found.set(source.kind, results);
+      listed.set(source.kind, seen);
       for (const row of picked?.rows ?? []) {
         const id = source.id(row);
         const name = textOf(row.cells[source.name]);
         if (id === null || name === null || !GUID.test(id) || seen.has(id)) continue;
+        const appId = source.kind === "app" ? idOf(row.cells.appId) : null;
+        if (appId !== null && seen.has(`app:${appId}`)) continue;
         seen.add(id);
+        if (appId !== null) seen.add(`app:${appId}`);
         results.push({ kind: source.kind, id, name, detail: source.detail(row) });
       }
+    }
+    const queues = [...found.values()].map((results) =>
       // A name that starts with the words typed comes before one that only holds them.
       results.sort(
         (a, b) =>
           Number(startsWith(b.name, text)) - Number(startsWith(a.name, text)) ||
           a.name.localeCompare(b.name),
-      );
-      queues.push(results);
-    }
+      ),
+    );
     // One of each kind in turn, so a query that matches fifty groups still shows the one device.
     const results: EntitySearchResult[] = [];
     for (let round = 0; queues.some((queue) => queue.length > round); round += 1)
