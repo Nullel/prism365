@@ -195,7 +195,7 @@ export const ENTITY_AUDIT_FIELDS: Readonly<Record<string, readonly string[]>> = 
     "expired",
     "oldestAge",
     "owners",
-    "ownerNames",
+    // The owners themselves follow as links, so their names are not repeated as a field.
     "redirects",
     "appId",
   ],
