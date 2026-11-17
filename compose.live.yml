@@ -21,6 +21,11 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       ALERT_EMAIL_DOMAINS: ${ALERT_EMAIL_DOMAINS:-}
       WEBHOOK_ALLOWED_PORTS: ${WEBHOOK_ALLOWED_PORTS:-}
+      # IPv6 sign-in locations (docs/modules/signins-audit.md §13), off while the provider is
+      # empty. The license key is a file in the secrets directory, never a variable.
+      IP_LOCATION_PROVIDER: ${IP_LOCATION_PROVIDER:-}
+      IP_LOCATION_ACCOUNT_ID: ${IP_LOCATION_ACCOUNT_ID:-}
+      IP_LOCATION_LICENSE_KEY_FILE: ${IP_LOCATION_LICENSE_KEY_FILE:-}
       # Caddy is the only client and replaces any X-Forwarded-For a browser sends.
       TRUST_PROXY_HOPS: "1"
     depends_on:

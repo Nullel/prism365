@@ -284,6 +284,104 @@ tier has no city or coordinates. ip2location.io gives the capital city's coordin
 not know the city, which would itself cause false impossible travel. MaxMind gives an accuracy
 radius and its record's own network, which the next sections rely on.
 
+### Piloting it
+
+Before relying on it, run it for a week on a tenant you control, on the Docker live install
+(`docs/SETUP.md`). Only the operator handles the license key; it never goes in a chat, a ticket
+or the environment.
+
+1. **Account and key.** Create a free GeoLite account at maxmind.com, then a license key under
+   "Manage license keys". Save the key with no other text, readable only by you:
+   `(umask 077 && pbpaste > secrets/maxmind-license-key)`. The parentheses keep the umask from
+   outliving the command; files created under it are unreadable to the container's user.
+2. **Preflight.** One lookup of a fixed public network (Google Public DNS), no tenant data, nothing
+   stored. It spends one of the day's 1000:
+
+   ```bash
+   IP_LOCATION_PROVIDER=maxmind-geolite IP_LOCATION_ACCOUNT_ID=<account id> \
+   IP_LOCATION_LICENSE_KEY_FILE=./secrets/maxmind-license-key \
+   npx tsx scripts/pilot/ip-location-check.ts
+   ```
+
+   It ends with `OK`, or names the failure and the HTTP status MaxMind answered with (`refused`
+   with HTTP 401 is a wrong ID or key).
+3. **Back up, then turn it on.** `scripts/docker-live.sh backup`. A new install takes the settings
+   from `.env` at `init`. An existing one needs these lines added to `.env.docker`:
+
+   ```
+   IP_LOCATION_PROVIDER=maxmind-geolite
+   IP_LOCATION_ACCOUNT_ID=<account id>
+   IP_LOCATION_LICENSE_KEY_FILE=/run/secrets/maxmind-license-key
+   ```
+
+   Then `scripts/docker-live.sh up` and `scripts/docker-live.sh logs`. The API should log
+   `IPv6 sign-in locations: MaxMind GeoLite`. The build applies migrations `002-ip-location` and
+   `003-ms-coordinates`. Sign in and start collection as usual; it runs only while that
+   administrator is signed in, and lookups run inside it.
+4. **Quota.** On an existing install, sign-ins already stored are processed and never looked up,
+   so only new successful IPv6 sign-ins spend lookups. On a new install the 30-day backfill is
+   looked up as it loads. A spent quota pauses lookups for an hour, and sign-ins in the meantime
+   keep Microsoft's location; nothing breaks. Because answers are cached under MaxMind's own
+   range, a mobile network that gives every phone its own /64 usually costs one lookup, not one
+   per phone.
+
+Then check, after a day with IPv6 sign-ins, in
+`docker exec -it prism365-db-1 psql -U postgres -d prism365`:
+
+```sql
+-- How each IPv6 sign-in collected since the pilot started was located (put in the start time).
+SELECT location_lookup, location_source, count(*) FROM mod_signins_audit_event
+ WHERE ip LIKE '%:%' AND collected_at > '<pilot start>' GROUP BY 1, 2 ORDER BY 3 DESC;
+-- Must be 0: a failed sign-in or an IPv4 sign-in that was looked up.
+SELECT count(*) FROM mod_signins_audit_event
+ WHERE location_lookup IS NOT NULL AND (error_code <> 0 OR ip NOT LIKE '%:%');
+-- Must be 0: a cached entry narrower than a /64 (an address, not a network).
+SELECT count(*) FROM mod_signins_audit_ip_location WHERE split_part(network, '/', 2)::int > 64;
+-- Networks asked for per day, from the access ledger (GeoLite allows 1000). An upper bound:
+-- the entry is written before sending, and a call stops at its first failure. The preflight's
+-- lookup is not in it.
+SELECT (event->>'occurredAt')::date AS day, sum((event->>'networks')::int) AS networks
+  FROM prism365_audit WHERE event->>'type' = 'enrichment.ip_location' GROUP BY 1 ORDER BY 1;
+-- Every replaced location, next to Microsoft's, to check against where the person really was.
+SELECT created_at, upn, ms_city, ms_country, city, country FROM mod_signins_audit_event
+ WHERE location_lookup = 'found' ORDER BY created_at DESC LIMIT 50;
+```
+
+The pilot passes when:
+
+- the preflight and the startup line are as above;
+- both "must be 0" counts are 0;
+- once any backfill has loaded, each day's networks stay under 1000 (a new install's backfill
+  days may reach it, which only pauses lookups);
+- every `found` row you can check names where the person really was, and Microsoft's place is
+  the wrong one;
+- an IPv6 finding's limitations name the source, and with GeoLite carry MaxMind's attribution;
+- `unavailable` and `skipped` are rare, and the logs explain any pause.
+
+Record the counts (never the names or places) in the TL-052 row.
+
+**To stop**, empty `IP_LOCATION_PROVIDER` and the two lines under it in `.env.docker` and run
+`scripts/docker-live.sh up`. Variables exported in your shell win over `.env.docker`, so unset
+any there too. `scripts/docker-live.sh logs` must no longer show `IPv6 sign-in locations:`.
+Located sign-ins keep what they were given, and this build's retention empties the cache within
+30 days.
+
+**To go back to a build without this feature**, stop the app (`docker stop prism365-app-1`; the
+database keeps running), run the statements below in `psql`, then switch branch and run `up`. An
+older build applies cleanly over the two migrations, but it has no retention for the cache and
+reads a replaced location as Microsoft's, which is what these undo:
+
+```sql
+DELETE FROM mod_signins_audit_ip_location;
+UPDATE mod_signins_audit_event
+   SET country = ms_country, state = ms_state, city = ms_city, lat = ms_lat, lon = ms_lon,
+       location_source = 'microsoft', location_lookup = NULL
+ WHERE location_lookup = 'found';
+```
+
+Baselines already learned under the provider's id stay; an older build never compares them with
+anything.
+
 ### What leaves, and what is recorded
 
 - **The /64 network only, never the address.** One /64 is one subnet, so its location is the
