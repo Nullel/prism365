@@ -21,6 +21,7 @@
     "dev:web": "npm run dev --workspace @prism365/web",
     "db:migrate": "npm run migrate --workspace @prism365/api",
     "demo:record": "tsx scripts/demo/record.ts",
+    "pilot:matrix": "tsx scripts/pilot/matrix.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
