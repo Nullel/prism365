@@ -4,6 +4,7 @@ import type { FindingPurpose, FindingSubject } from "@prism365/policy";
 import type { SqlClient } from "@prism365/storage";
 import type { z } from "zod";
 import type { AttentionChange, AttentionInput } from "./attention.ts";
+import type { EnrichmentKind, IpLocation } from "./enrichment.ts";
 
 // The module contract. A module is the only way Prism365 learns about a tenant: it declares the
 // read packs it needs, owns tables in its own namespace, runs collectors on a cadence, and
@@ -59,6 +60,9 @@ export interface PrismModule {
   // definition. Read-only, and limited to the module's own namespace: the part of its id before
   // the first dot, then a dot ("signins.canaries" for "signins.audit").
   settings?: readonly string[];
+  // Enrichment from outside Microsoft the module may use (docs/MODULES.md §5). Declared like packs,
+  // and offered only when the operator also configured a provider for it.
+  enrichment?: readonly EnrichmentKind[];
 }
 
 export interface EvidenceItem {
@@ -150,6 +154,21 @@ export interface CollectorContext {
     // note saying why. Call it only after a complete read, and say in the note whether the
     // provider stopped listing them or Prism365's own rule no longer selects them.
     retire(kind: string, keep: readonly string[], note: string): Promise<number>;
+  };
+  readonly enrichment: {
+    // Null unless the module declared "ip.location" and the operator configured a provider.
+    // `locate` takes 1 to IP_LOCATION_BATCH_LIMIT distinct networks from `ipv6Network64` and
+    // answers each with a location, or null when the provider has none. It throws
+    // IpLocationUnavailableError when the provider cannot answer now; a module falls back to
+    // what Microsoft reported rather than failing its run.
+    readonly ipLocation: {
+      readonly provider: {
+        readonly id: string;
+        readonly name: string;
+        readonly attribution: string | null;
+      };
+      locate(networks: readonly string[]): Promise<ReadonlyMap<string, IpLocation | null>>;
+    } | null;
   };
   readonly count: {
     fetched(count: number): void;

@@ -134,6 +134,19 @@ reads its password only from a file, recipients are limited to `ALERT_EMAIL_DOMA
 addresses leave only for email with details on. The sink only buffers, so a stuck destination
 cannot stall collection.
 
+IP location lookups for IPv6 sign-ins (`docs/modules/signins-audit.md` §13) are the other path,
+off unless the operator configures MaxMind. The host is fixed in code; the scheduler lets only
+global unicast IPv6 /64 networks through (never a full address, an IPv4 address, or a 6to4 or
+Teredo network that carries one); only successful sign-ins are looked up, so failed attempts cannot
+spend the operator's quota; every request is ledgered before it is sent; the license key is read
+from a file only; redirects are refused; and answers are capped at 64 KB and parsed against a
+schema. Provider text is treated as untrusted: control characters are removed and lengths bounded
+before storage, and it never reaches finding limitations. A provider that fails, or a run out of
+lookup time, falls back to Microsoft's location instead of holding up detection, so an attacker who
+can make lookups fail gains nothing over a Prism365 without a provider. The provider's answer
+replaces Microsoft's only where it contradicts it, so a coarse answer never erases detail that
+nothing disputes; §13 lists the cases that remain weaker.
+
 PostgreSQL enforces tenant policies and restricts runtime ledger updates/deletes. State encryption
 binds tenant/kind/key; atomic consumption and update-only refresh block OAuth replay and logged-out
 session resurrection. Expired state is pruned; audit retention, key rotation, restore testing,

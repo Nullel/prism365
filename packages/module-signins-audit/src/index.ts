@@ -30,6 +30,8 @@ export function createSigninsAuditModule(
     requires: ["entra.p1", "role.reportsReader"],
     // The canary list an administrator keeps through the API.
     settings: [CANARY_SETTING],
+    // IPv6 sign-in locations from the operator's IP location provider, when one is configured.
+    enrichment: ["ip.location"],
     migrations: signinsAuditMigrations,
     collectors: [
       {
@@ -43,6 +45,7 @@ export function createSigninsAuditModule(
     retention: [
       { table: "event", timeColumn: "created_at", days: 90 },
       { table: "seen", timeColumn: "last_seen", days: 365 },
+      // No rule for ip_location: saved IP location answers are never deleted.
     ],
   };
 }

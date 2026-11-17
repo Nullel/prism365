@@ -128,7 +128,25 @@ export interface SigninEvent {
   riskState: string | null;
   riskEventTypes: string[];
   isInteractive: boolean | null;
+  // Where country, state, city and coordinates came from: "microsoft", or the id of the IP
+  // location provider whose answer replaced Microsoft's for an IPv6 address. Null for a sign-in
+  // stored before Prism365 recorded this, whose location is Microsoft's.
+  locationSource: string | null;
+  // What became of the IPv6 location lookup; null when none was made.
+  locationLookup: LocationLookup | null;
+  // What Microsoft reported, kept when a provider's location replaced it.
+  microsoftLocation: { country: string | null; state: string | null; city: string | null } | null;
 }
+
+// "found": the provider contradicted Microsoft (another country, or far away) and its location
+// replaced Microsoft's. "confirmed": the provider agreed with Microsoft, or could not place it
+// more precisely than Microsoft's country, so Microsoft's stands. "no_data": the provider had
+// none. "unavailable": the provider could not answer (outage, throttling, quota). "skipped": the
+// run's lookup time was spent before this sign-in's turn. In every case but "found" the location
+// is Microsoft's.
+export type LocationLookup = "found" | "confirmed" | "no_data" | "unavailable" | "skipped";
+
+export const MICROSOFT_LOCATION = "microsoft";
 
 const blank = (value: string | null | undefined) => {
   const trimmed = value?.trim();
@@ -176,6 +194,9 @@ export function normalizeSignIn(record: GraphSignIn): SigninEvent {
     riskState: blank(record.riskState),
     riskEventTypes: (record.riskEventTypes_v2 ?? []).filter(Boolean),
     isInteractive: record.isInteractive ?? null,
+    locationSource: MICROSOFT_LOCATION,
+    locationLookup: null,
+    microsoftLocation: null,
   };
 }
 

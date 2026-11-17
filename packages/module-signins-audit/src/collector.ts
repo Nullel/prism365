@@ -1,6 +1,16 @@
 import { createHash } from "node:crypto";
+import { cleanText } from "@prism365/contracts";
 import { GraphBoundaryError, monotonicClock } from "@prism365/graph";
-import { type CollectorContext, type FindingInput, FindingPolicyError } from "@prism365/modules";
+import {
+  type CollectorContext,
+  containingNetworks,
+  type FindingInput,
+  FindingPolicyError,
+  type IpLocation,
+  IpLocationUnavailableError,
+  ipv6Network64,
+  providerNetwork,
+} from "@prism365/modules";
 import type { SqlClient } from "@prism365/storage";
 import { z } from "zod";
 import { CANARY_SETTING, parseCanaryList } from "./canaries.ts";
@@ -15,6 +25,7 @@ import {
   type FailurePattern,
   type FailureRecord,
   failurePatterns,
+  haversineKm,
   matchCanary,
   type Reason,
   RULES_VERSION,
@@ -27,6 +38,8 @@ import {
 import {
   credentialFailureCodes,
   graphSignInSchema,
+  type LocationLookup,
+  MICROSOFT_LOCATION,
   maskIp,
   mfaFailureCodes,
   normalizeSignIn,
@@ -47,6 +60,28 @@ export interface CollectSigninsOptions {
 
 const PAGE_SIZE = 100;
 const DETECTION_BATCH = 2_000;
+
+// IPv6 locations from the operator's IP location provider (docs/modules/signins-audit.md §13).
+// Time after which a run starts no more lookups, so they cannot crowd out reading the log.
+const LOOKUP_BUDGET_MS = 15_000;
+// Networks per call to the provider. MaxMind takes one address per request, four at a time with
+// 5 seconds each, so one call adds at most about 10 seconds past the budget.
+const LOOKUP_CHUNK = 8;
+// A cached answer, found or "no data", is used for as long as it is kept, and it is kept forever:
+// a network is asked about once and never again, and the cache table has no retention.
+// The provider's coordinates are used only when it places the address within this radius and
+// names a city. A wider answer is often a country's centre, which against a precise location an
+// hour earlier reads as impossible travel; without coordinates the travel rule skips the sign-in
+// and the country and state rules still apply.
+const LOOKUP_MAX_ACCURACY_KM = 100;
+
+// IPv6 lookups across one run.
+interface LookupRun {
+  // Milliseconds on the run's clock spent waiting for the provider.
+  spent: number;
+  // Set when the provider could not answer: no more requests this run.
+  stopped: boolean;
+}
 
 // Thrown when a window cannot be finished in this run: the budget ran out, or the window holds
 // more than one walk can page through. Nothing from that window is stored, so the next run reads
@@ -92,10 +127,82 @@ const min = (a: Date, b: Date) => (a.getTime() < b.getTime() ? a : b);
 const max = (a: Date, b: Date) => (a.getTime() > b.getTime() ? a : b);
 
 const sharedLimitations = [
-  "Locations come from Microsoft's IP geolocation and are approximate; VPNs, mobile networks and cloud proxies move them.",
+  "Locations come from IP geolocation and are approximate; VPNs, mobile networks and cloud proxies move them.",
   "Sign-in records can arrive late or be missing; this reflects what Microsoft Graph returned when Prism365 collected.",
   "This is security evidence about an account, not a measure of the person's work.",
 ];
+
+const placeName = (location: {
+  city: string | null;
+  state: string | null;
+  country: string | null;
+}) => [location.city, location.state, location.country].filter(Boolean).join(", ");
+
+// Where a sign-in's location came from, for evidence. IPv6 is called out because Microsoft's
+// IPv6 locations are often wrong, which is what the IP location provider is for.
+function locationEvidence(event: SigninEvent): Record<string, string | null> {
+  if (event.locationLookup === "found")
+    return {
+      locationSource: event.locationSource,
+      locationLookup: event.locationLookup,
+      microsoftLocation: event.microsoftLocation
+        ? placeName(event.microsoftLocation) || null
+        : null,
+    };
+  return {
+    locationSource: MICROSOFT_LOCATION,
+    ...(event.locationLookup ? { locationLookup: event.locationLookup } : {}),
+  };
+}
+
+type ProviderLabel = { id: string; name: string; attribution: string | null } | null;
+
+// Fixed wording and code-owned names only, so a limitation always fits the finding contract
+// (300 characters each); where Microsoft placed the sign-in is in the evidence instead.
+function locationLimitations(event: SigninEvent, provider: ProviderLabel = null): string[] {
+  if (ipv6Network64(event.ip) === null) return [];
+  const current =
+    provider && (provider.id === event.locationSource || event.locationLookup === "confirmed")
+      ? provider
+      : null;
+  const name = (current?.name ?? event.locationSource ?? "the IP location provider").slice(0, 60);
+  const attribution = current?.attribution ? [current.attribution.slice(0, 300)] : [];
+  switch (event.locationLookup) {
+    case "found":
+      return [
+        `This sign-in came from an IPv6 address, so its location is from ${name} rather than Microsoft, whose IPv6 locations are often wrong. Microsoft's location is in the evidence.`,
+        // `detect` compares regions across sources by distance only for a sign-in with
+        // coordinates; a coarse answer keeps none, so its region is compared by name alone.
+        event.lat !== null && event.lon !== null
+          ? `Sources name the same region differently, so its region is compared only with regions ${name} has named for this account before, and with the account's known regions from other sources within ${NEAR_KM} km.`
+          : `Sources name the same region differently, so its region is compared only with regions ${name} has named for this account before; it gave no precise point to compare by distance.`,
+        ...attribution,
+      ];
+    case "confirmed":
+      return [
+        `This sign-in came from an IPv6 address. ${name} agrees with Microsoft's location for it, or places it no more precisely than Microsoft's country, so Microsoft's location is used.`,
+        ...attribution,
+      ];
+    case "no_data":
+      return [
+        "This sign-in came from an IPv6 address the IP location provider has no location for, so its location is Microsoft's, which is often wrong for IPv6.",
+      ];
+    case "unavailable":
+    case "skipped":
+      return [
+        "This sign-in came from an IPv6 address, but the IP location provider could not be asked in time, so its location is Microsoft's, which is often wrong for IPv6.",
+      ];
+    default:
+      // Only successful sign-ins are looked up, so a failed one is Microsoft's by design.
+      if (provider && event.errorCode !== 0)
+        return [
+          "This failed sign-in came from an IPv6 address. Failed sign-ins are never sent to the IP location provider, so its location is Microsoft's, which is often wrong for IPv6.",
+        ];
+      return [
+        "This sign-in came from an IPv6 address and its location is Microsoft's, which is often wrong for IPv6. An IP location provider can check these (see the sign-in audit documentation).",
+      ];
+  }
+}
 
 interface WindowResult {
   events: SigninEvent[];
@@ -317,17 +424,23 @@ async function insertEvents(
   backfilled: boolean,
 ): Promise<number> {
   const table = context.table("event");
+  // With a provider configured, a successful IPv6 sign-in is stored without a location source: it
+  // waits for `relocate`, which runs before the rules read it. Failed attempts keep Microsoft's
+  // location and are never looked up, so nobody can spend the operator's lookups by failing to
+  // sign in from addresses they rotate.
+  const lookups = context.enrichment.ipLocation !== null;
   return context.db(async (sql) => {
     let inserted = 0;
     for (const event of events) {
+      const waits = lookups && event.errorCode === 0 && ipv6Network64(event.ip) !== null;
       const result = await sql.query(
         `INSERT INTO ${table} (tenant_id, id, created_at, user_id, upn, display_name, app_id, app_name,
            resource_name, client_app, ip, country, state, city, lat, lon, device_id, device_os,
            device_browser, is_compliant, is_managed, trust_type, error_code, failure_reason, ca_status,
            risk_level, risk_level_aggregated, risk_state, risk_event_types, is_interactive, backfilled,
-           processed, collected_at)
+           processed, collected_at, location_source)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
-           $24,$25,$26,$27,$28,$29::jsonb,$30,$31,false,$32)
+           $24,$25,$26,$27,$28,$29::jsonb,$30,$31,false,$32,$33)
          ON CONFLICT (tenant_id, id) DO NOTHING`,
         [
           context.tenantId,
@@ -362,6 +475,7 @@ async function insertEvents(
           event.isInteractive,
           backfilled,
           iso(context.now),
+          waits ? null : MICROSOFT_LOCATION,
         ],
       );
       inserted += result.rowCount;
@@ -401,7 +515,20 @@ interface EventRow {
   risk_event_types: unknown;
   is_interactive: boolean | null;
   backfilled: boolean;
+  location_source: string | null;
+  location_lookup: string | null;
+  ms_country: string | null;
+  ms_state: string | null;
+  ms_city: string | null;
 }
+
+const lookupOutcomes: ReadonlySet<string> = new Set([
+  "found",
+  "confirmed",
+  "no_data",
+  "unavailable",
+  "skipped",
+] satisfies LocationLookup[]);
 
 function fromRow(row: EventRow): SigninEvent & { backfilled: boolean } {
   const types =
@@ -440,6 +567,15 @@ function fromRow(row: EventRow): SigninEvent & { backfilled: boolean } {
       ? types.filter((item): item is string => typeof item === "string")
       : [],
     isInteractive: row.is_interactive,
+    locationSource: row.location_source,
+    locationLookup:
+      row.location_lookup && lookupOutcomes.has(row.location_lookup)
+        ? (row.location_lookup as LocationLookup)
+        : null,
+    microsoftLocation:
+      row.location_lookup === "found"
+        ? { country: row.ms_country, state: row.ms_state, city: row.ms_city }
+        : null,
     backfilled: row.backfilled,
   };
 }
@@ -450,11 +586,29 @@ interface SeenEntry {
   pending: string | null;
 }
 
+// Region names are compared only within one source. Microsoft's are stored as they are; a
+// provider's, which can name the same region differently ("North Holland", "Noord-Holland"), as
+// "<provider>:<name>". Across sources, regions are compared by place instead (see `detect`).
+function stateKey(event: Pick<SigninEvent, "state" | "locationLookup" | "locationSource">) {
+  if (!event.state) return null;
+  return event.locationLookup === "found" && event.locationSource
+    ? `${event.locationSource}:${event.state}`
+    : event.state;
+}
+
+const stateSource = (event: Pick<SigninEvent, "locationLookup" | "locationSource">) =>
+  event.locationLookup === "found"
+    ? (event.locationSource ?? MICROSOFT_LOCATION)
+    : MICROSOFT_LOCATION;
+
+// An earlier sign-in from another source within this distance makes a region familiar.
+const NEAR_KM = 100;
+
 function seenValues(event: SigninEvent): [SeenKind, string][] {
   const values: [SeenKind, string | null][] = [
     ["ip", event.ip],
     ["country", event.country],
-    ["state", event.state],
+    ["state", stateKey(event)],
     ["device", event.deviceId],
   ];
   return values.filter((entry): entry is [SeenKind, string] => Boolean(entry[1]));
@@ -512,6 +666,7 @@ function unfamiliarFinding(
   reasons: readonly Reason[],
   score: number,
   previous: SuccessHistory["previous"],
+  provider: ProviderLabel = null,
 ): FindingInput {
   const location = [event.city, event.state, event.country].filter(Boolean).join(", ");
   const signals = reasons.filter((reason) => reason.score > 0);
@@ -553,11 +708,13 @@ function unfamiliarFinding(
           compliantDevice: event.isCompliant,
           conditionalAccess: event.caStatus,
           microsoftRisk: event.riskLevel,
+          ...locationEvidence(event),
         },
       },
     ],
     limitations: [
       ...sharedLimitations,
+      ...locationLimitations(event, provider),
       "Normal locations are learned from this account's own history in Prism365; a new office or a trip looks unfamiliar until this finding is resolved.",
     ],
     window: { start: previous?.createdAt ?? event.createdAt, end: event.createdAt },
@@ -568,7 +725,11 @@ function unfamiliarFinding(
 // A sign-in attempt by a canary account. Whatever its result, nobody should be using the account,
 // so it is always critical. One finding per account and UTC day: later attempts that day update it
 // and count up, and the evidence shown is the latest attempt.
-export function canaryFinding(event: SigninEvent, canary: CanaryEntry): FindingInput {
+export function canaryFinding(
+  event: SigninEvent,
+  canary: CanaryEntry,
+  provider: ProviderLabel = null,
+): FindingInput {
   const name = (event.displayName ?? event.upn ?? canary.principal).slice(0, 200);
   const location = [event.city, event.state, event.country].filter(Boolean).join(", ");
   const result = event.errorCode === 0 ? "success" : event.errorCode === -1 ? "unknown" : "failure";
@@ -604,12 +765,14 @@ export function canaryFinding(event: SigninEvent, canary: CanaryEntry): FindingI
           location: location || null,
           app: event.appName,
           client: event.clientApp,
+          ...locationEvidence(event),
         },
       },
     ],
     limitations: [
       "Canaries are accounts you marked; Prism365 cannot tell a mistaken sign-in from an attack.",
       ...sharedLimitations,
+      ...locationLimitations(event, provider),
     ],
     window: { start: event.createdAt, end: event.createdAt },
     observedAt: event.createdAt,
@@ -779,6 +942,344 @@ async function hourShare(
   return (profile.byHour.get(hour) ?? 0) / profile.total;
 }
 
+// What the cache or the provider says about one /64 network: the provider's answer as given,
+// cleaned, with its accuracy radius. Whether it replaces Microsoft's is decided per sign-in.
+type ProviderPlace = {
+  country: string;
+  state: string | null;
+  city: string | null;
+  lat: number | null;
+  lon: number | null;
+  accuracyKm: number | null;
+};
+type NetworkAnswer = { found: true; location: ProviderPlace } | { found: false };
+
+const countryCode = /^[A-Z]{2}$/;
+const place = (value: unknown) =>
+  typeof value === "string" && value.trim() ? cleanPlace(value) : null;
+function cleanPlace(value: string): string {
+  // Provider text is untrusted: control characters out, one line, bounded like Microsoft's.
+  return cleanText(value)
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+const coordinate = (value: unknown, limit: number) =>
+  typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= limit ? value : null;
+
+// No country means no usable answer: the provider's coordinates with Microsoft's country would be
+// neither source.
+function toAnswer(location: IpLocation | null): NetworkAnswer {
+  const country =
+    typeof location?.country === "string" ? location.country.trim().toUpperCase() : "";
+  if (!location || !countryCode.test(country)) return { found: false };
+  const lat = coordinate(location.lat, 90);
+  const lon = coordinate(location.lon, 180);
+  const accuracy = location.accuracyKm;
+  return {
+    found: true,
+    location: {
+      country,
+      state: place(location.state),
+      city: place(location.city),
+      lat: lat !== null && lon !== null ? lat : null,
+      lon: lat !== null && lon !== null ? lon : null,
+      accuracyKm:
+        typeof accuracy === "number" && Number.isFinite(accuracy) && accuracy >= 0
+          ? accuracy
+          : null,
+    },
+  };
+}
+
+// How far Microsoft's point may be from the provider's, beyond the provider's own radius, and
+// still be the same place: about the distance between two points in one city. Within it the two
+// sources agree and Microsoft's location stands; farther, the provider's replaces it.
+const LOOKUP_AGREE_KM = 25;
+
+type Decision =
+  | { kind: "found"; location: Omit<ProviderPlace, "accuracyKm"> }
+  | { kind: "confirmed" }
+  | { kind: "no_data" };
+
+// Whether the provider's answer replaces Microsoft's location for one sign-in. The provider is
+// trusted where it contradicts Microsoft (another country, or a precise place far from
+// Microsoft's), because that is the error it is here to correct. Where it agrees, or is too coarse
+// to say more than Microsoft's own country, Microsoft's location stands: a coarse answer must not
+// erase a state or coordinates that nothing contradicts, and Microsoft's names stay comparable
+// with the account's baseline.
+function decide(
+  answer: NetworkAnswer,
+  microsoft: { country: string | null; lat: number | null; lon: number | null },
+): Decision {
+  if (!answer.found) return { kind: "no_data" };
+  const found = answer.location;
+  const precise =
+    found.city !== null &&
+    found.lat !== null &&
+    found.lon !== null &&
+    (found.accuracyKm === null || found.accuracyKm <= LOOKUP_MAX_ACCURACY_KM);
+  if (microsoft.country === found.country) {
+    // Too coarse to say more than the country, or Microsoft gave no point to measure against:
+    // nothing contradicts Microsoft's location.
+    if (!precise || microsoft.lat === null || microsoft.lon === null) return { kind: "confirmed" };
+    if (
+      found.lat !== null &&
+      found.lon !== null &&
+      haversineKm(microsoft.lat, microsoft.lon, found.lat, found.lon) <=
+        LOOKUP_AGREE_KM + (found.accuracyKm ?? 0)
+    )
+      return { kind: "confirmed" };
+  }
+  return {
+    kind: "found",
+    location: {
+      country: found.country,
+      state: found.state,
+      city: found.city,
+      // A wider answer is often a country's centre; against a precise location an hour earlier
+      // that would read as impossible travel.
+      lat: precise ? found.lat : null,
+      lon: precise ? found.lon : null,
+    },
+  };
+}
+
+// Cached answers for these /64 networks, each from the longest cached network that holds it.
+async function readLookupCache(
+  sql: SqlClient,
+  context: CollectorContext,
+  provider: string,
+  networks: readonly string[],
+): Promise<Map<string, NetworkAnswer>> {
+  const answers = new Map<string, NetworkAnswer>();
+  const number = (value: number | string | null) => (value === null ? null : Number(value));
+  for (let index = 0; index < networks.length; index += 20) {
+    const chunk = networks.slice(index, index + 20);
+    const candidates = [...new Set(chunk.flatMap(containingNetworks))];
+    if (candidates.length === 0) continue;
+    const result = await sql.query<{
+      network: string;
+      found: boolean;
+      country: string | null;
+      state: string | null;
+      city: string | null;
+      lat: number | null;
+      lon: number | null;
+      accuracy_km: number | null;
+    }>(
+      `SELECT network, found, country, state, city, lat, lon, accuracy_km
+         FROM ${context.table("ip_location")}
+        WHERE tenant_id = $1 AND provider = $2 AND network IN (${placeholders(candidates.length, 3)})`,
+      [context.tenantId, provider, ...candidates],
+    );
+    const rows = new Map(result.rows.map((row) => [row.network, row]));
+    for (const network of chunk)
+      for (const candidate of containingNetworks(network)) {
+        const row = rows.get(candidate);
+        if (!row) continue;
+        answers.set(
+          network,
+          row.found && row.country
+            ? {
+                found: true,
+                location: {
+                  country: row.country,
+                  state: row.state,
+                  city: row.city,
+                  lat: number(row.lat),
+                  lon: number(row.lon),
+                  accuracyKm: number(row.accuracy_km),
+                },
+              }
+            : { found: false },
+        );
+        break;
+      }
+  }
+  return answers;
+}
+
+// Gives successful IPv6 sign-ins waiting for a location (stored without a location source) the
+// IP location provider's view, from the cache or by asking, before the rules read them. Only /64
+// networks are sent, never full addresses. A sign-in the provider cannot place, or that this run
+// has no lookup time left for, keeps Microsoft's location and records why; nothing waits for a
+// later run, so a provider outage can never hold up detection.
+async function relocate(
+  context: CollectorContext,
+  through: Date,
+  budget: Budget,
+  lookup: LookupRun,
+): Promise<void> {
+  const eventTable = context.table("event");
+  const cacheTable = context.table("ip_location");
+  const locator = context.enrichment.ipLocation;
+  // Without a provider every new row is stored with Microsoft's location. A row left waiting
+  // when the provider was switched off keeps a null source, which reads as Microsoft's.
+  if (!locator) return;
+  const provider = locator.provider.id;
+  for (;;) {
+    const pending = await context.db((sql) =>
+      sql.query<{
+        id: string;
+        ip: string | null;
+        country: string | null;
+        lat: number | null;
+        lon: number | null;
+      }>(
+        // Successful sign-ins only. A row a build without lookups stored has no location source
+        // whatever its outcome, so without error_code = 0 a failed attempt left unprocessed at
+        // upgrade time would be looked up and moved.
+        `SELECT id, ip, country, lat, lon FROM ${eventTable}
+          WHERE tenant_id = $1 AND processed = false AND location_source IS NULL AND error_code = 0
+            AND created_at <= $2
+          ORDER BY created_at, id LIMIT ${DETECTION_BATCH}`,
+        [context.tenantId, iso(through)],
+      ),
+    );
+    if (pending.rows.length === 0) return;
+    const networkOf = new Map(pending.rows.map((row) => [row.id, ipv6Network64(row.ip)]));
+    const networks = [
+      ...new Set([...networkOf.values()].filter((value): value is string => value !== null)),
+    ];
+    const answers = new Map<string, NetworkAnswer>();
+    // Answers filed under a provider's wider network during this pass, for later chunks.
+    const learned = new Map<string, NetworkAnswer>();
+    for (const [network, answer] of await context.db((sql) =>
+      readLookupCache(sql, context, provider, networks),
+    ))
+      answers.set(network, answer);
+    const misses = networks.filter((network) => !answers.has(network));
+    for (let index = 0; index < misses.length; index += LOOKUP_CHUNK) {
+      for (const network of misses.slice(index, index + LOOKUP_CHUNK))
+        for (const candidate of containingNetworks(network)) {
+          const known = learned.get(candidate);
+          if (known) {
+            answers.set(network, known);
+            break;
+          }
+        }
+      const ask = misses.slice(index, index + LOOKUP_CHUNK).filter((n) => !answers.has(n));
+      if (ask.length === 0) continue;
+      if (lookup.stopped || lookup.spent >= LOOKUP_BUDGET_MS || budget.clock() > budget.deadline)
+        break;
+      const began = budget.clock();
+      let result: ReadonlyMap<string, IpLocation | null>;
+      try {
+        result = await locator.locate(ask);
+      } catch (error) {
+        if (!(error instanceof IpLocationUnavailableError)) throw error;
+        lookup.stopped = true;
+        break;
+      } finally {
+        lookup.spent += budget.clock() - began;
+      }
+      const writes: { network: string; answer: NetworkAnswer }[] = [];
+      for (const network of ask) {
+        const location = result.get(network) ?? null;
+        const answer = toAnswer(location);
+        answers.set(network, answer);
+        // A provider's own record range is where its answer holds; without one, the /64.
+        const filed = (location && providerNetwork(location.network, network)) ?? network;
+        learned.set(filed, answer);
+        writes.push({ network: filed, answer });
+      }
+      await context.db(async (sql) => {
+        for (const { network, answer } of writes) {
+          const found = answer.found ? answer.location : null;
+          await sql.query(
+            `INSERT INTO ${cacheTable} (tenant_id, provider, network, found, country, state, city,
+               lat, lon, accuracy_km, looked_up_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+             ON CONFLICT (tenant_id, provider, network) DO UPDATE SET found = EXCLUDED.found,
+               country = EXCLUDED.country, state = EXCLUDED.state, city = EXCLUDED.city,
+               lat = EXCLUDED.lat, lon = EXCLUDED.lon, accuracy_km = EXCLUDED.accuracy_km,
+               looked_up_at = EXCLUDED.looked_up_at`,
+            [
+              context.tenantId,
+              provider,
+              network,
+              found !== null,
+              found?.country ?? null,
+              found?.state ?? null,
+              found?.city ?? null,
+              found?.lat ?? null,
+              found?.lon ?? null,
+              found?.accuracyKm ?? null,
+              iso(context.now),
+            ],
+          );
+        }
+      });
+    }
+    // One update per outcome, and per network for replaced locations. Microsoft's own values move
+    // to ms_* in the same statement that replaces them (the right-hand side reads the row as it
+    // was).
+    const groups = new Map<
+      string,
+      { ids: string[]; outcome: LocationLookup | null; decision?: Decision }
+    >();
+    const add = (key: string, id: string, outcome: LocationLookup | null, decision?: Decision) => {
+      const group = groups.get(key) ?? { ids: [], outcome, ...(decision ? { decision } : {}) };
+      group.ids.push(id);
+      groups.set(key, group);
+    };
+    for (const row of pending.rows) {
+      const network = networkOf.get(row.id) ?? null;
+      const answer = network ? answers.get(network) : undefined;
+      if (!network) add("none", row.id, null);
+      else if (!answer) add("missing", row.id, lookup.stopped ? "unavailable" : "skipped");
+      else {
+        const decision = decide(answer, {
+          country: row.country,
+          lat: row.lat === null ? null : Number(row.lat),
+          lon: row.lon === null ? null : Number(row.lon),
+        });
+        if (decision.kind === "found") add(`found:${network}`, row.id, "found", decision);
+        else add(decision.kind, row.id, decision.kind);
+      }
+    }
+    await context.db(async (sql) => {
+      for (const group of groups.values())
+        for (let index = 0; index < group.ids.length; index += 500) {
+          const ids = group.ids.slice(index, index + 500);
+          const where = `tenant_id = $1 AND id IN (${placeholders(ids.length, 3)}) AND location_source IS NULL`;
+          if (group.decision?.kind === "found") {
+            const found = group.decision.location;
+            // Every SET expression reads the row as it was, so Microsoft's point is copied to
+            // ms_lat and ms_lon before the provider's replaces it.
+            await sql.query(
+              `UPDATE ${eventTable} SET ms_country = country, ms_state = state, ms_city = city,
+                 ms_lat = lat, ms_lon = lon,
+                 country = $${ids.length + 3}, state = $${ids.length + 4}, city = $${ids.length + 5},
+                 lat = $${ids.length + 6}, lon = $${ids.length + 7},
+                 location_source = $2, location_lookup = 'found'
+               WHERE ${where}`,
+              [
+                context.tenantId,
+                provider,
+                ...ids,
+                found.country,
+                found.state,
+                found.city,
+                found.lat,
+                found.lon,
+              ],
+            );
+            continue;
+          }
+          await sql.query(
+            `UPDATE ${eventTable} SET location_source = $2, location_lookup = $${ids.length + 3}
+              WHERE ${where}`,
+            [context.tenantId, MICROSOFT_LOCATION, ...ids, group.outcome],
+          );
+        }
+    });
+    if (pending.rows.length < DETECTION_BATCH) return;
+  }
+}
+
 // Runs the rules over events that have not been processed yet, in time order, then records the
 // baseline changes and marks the events processed in one transaction.
 async function detect(
@@ -833,6 +1334,18 @@ async function detect(
       const users = [...new Set(successes.map((event) => event.userId))];
       const baselines = await loadBaselines(sql, context, users);
       const previous = new Map<string, SuccessHistory["previous"]>();
+      const located = new Map<string, SuccessHistory["located"]>();
+      // For each sign-in, the regions of this account's earlier sign-ins from the other source
+      // within NEAR_KM. Only needed once any location came from the provider; otherwise every
+      // region name is Microsoft's and names compare as they always have.
+      const nearby = new Map<string, string[]>();
+      const mixed =
+        (
+          await sql.query(
+            `SELECT 1 FROM ${eventTable} WHERE tenant_id = $1 AND location_lookup = 'found' LIMIT 1`,
+            [context.tenantId],
+          )
+        ).rows.length > 0;
       const hours = new Map<string, number | null>();
       const cache = new Map<
         string,
@@ -850,6 +1363,73 @@ async function detect(
           [context.tenantId, event.userId, iso(event.createdAt)],
         );
         const row = result.rows[0];
+        // Travel is measured from the last success with coordinates, which is usually the same
+        // one; it is looked up separately only when that one has none.
+        let anchor: SuccessHistory["located"] =
+          row && row.lat !== null && row.lon !== null
+            ? { createdAt: new Date(row.created_at), lat: Number(row.lat), lon: Number(row.lon) }
+            : null;
+        if (row && !anchor && event.lat !== null && event.lon !== null) {
+          const earlier = await sql.query<{ created_at: Date | string; lat: number; lon: number }>(
+            `SELECT created_at, lat, lon FROM ${eventTable}
+              WHERE tenant_id = $1 AND user_id = $2 AND error_code = 0 AND created_at < $3
+                AND lat IS NOT NULL AND lon IS NOT NULL
+              ORDER BY created_at DESC LIMIT 1`,
+            [context.tenantId, event.userId, iso(event.createdAt)],
+          );
+          const found = earlier.rows[0];
+          anchor = found
+            ? {
+                createdAt: new Date(found.created_at),
+                lat: Number(found.lat),
+                lon: Number(found.lon),
+              }
+            : null;
+        }
+        located.set(event.id, anchor);
+        if (mixed && event.state && event.lat !== null && event.lon !== null) {
+          const latSpan = NEAR_KM / 111;
+          const lonSpan = Math.min(
+            180,
+            NEAR_KM / (111 * Math.max(0.05, Math.cos((event.lat * Math.PI) / 180))),
+          );
+          const close = await sql.query<{
+            state: string;
+            location_source: string | null;
+            location_lookup: string | null;
+            lat: number;
+            lon: number;
+          }>(
+            `SELECT state, location_source, location_lookup, lat, lon FROM ${eventTable}
+              WHERE tenant_id = $1 AND user_id = $2 AND error_code = 0 AND created_at < $3
+                AND state IS NOT NULL AND lat BETWEEN $4 AND $5 AND lon BETWEEN $6 AND $7
+              ORDER BY created_at DESC LIMIT 200`,
+            [
+              context.tenantId,
+              event.userId,
+              iso(event.createdAt),
+              event.lat - latSpan,
+              event.lat + latSpan,
+              event.lon - lonSpan,
+              event.lon + lonSpan,
+            ],
+          );
+          const own = stateSource(event);
+          const keys = new Set<string>();
+          for (const row of close.rows) {
+            const earlier = {
+              state: row.state,
+              locationLookup: row.location_lookup === "found" ? ("found" as const) : null,
+              locationSource: row.location_source,
+            };
+            if (stateSource(earlier) === own) continue;
+            if (haversineKm(event.lat, event.lon, Number(row.lat), Number(row.lon)) > NEAR_KM)
+              continue;
+            const key = stateKey(earlier);
+            if (key) keys.add(key);
+          }
+          nearby.set(event.id, [...keys]);
+        }
         previous.set(
           event.id,
           row
@@ -865,14 +1445,18 @@ async function detect(
           await hourShare(sql, context, config, event.userId, event.createdAt, cache),
         );
       }
-      return { window, baselines, previous, hours };
+      return { window, baselines, previous, located, nearby, hours };
     });
 
     // Canary accounts first: any attempt is a finding, so this needs no baseline, history or
     // score, and it applies to history being loaded as much as to live sign-ins.
     for (const event of events) {
       const canary = matchCanary(event, canaries);
-      if (canary) await upsertSafely(context, canaryFinding(event, canary));
+      if (canary)
+        await upsertSafely(
+          context,
+          canaryFinding(event, canary, context.enrichment.ipLocation?.provider ?? null),
+        );
     }
 
     // Failure patterns that end at one of these events.
@@ -914,10 +1498,14 @@ async function detect(
         trusted: {
           ip: trusted("ip", event.ip),
           country: trusted("country", event.country),
-          state: trusted("state", event.state),
+          // Same source: by name. Other source: by place, since the names may differ.
+          state:
+            trusted("state", stateKey(event)) ||
+            (prepared.nearby.get(event.id) ?? []).some((key) => trusted("state", key)),
           device: trusted("device", event.deviceId),
         },
         previous: prepared.previous.get(event.id) ?? null,
+        located: prepared.located.get(event.id) ?? null,
         recentFailures: recent.length,
         recentSprayFailures: recent.filter((record) => record.ip && spraying.has(record.ip)).length,
         hourShare: prepared.hours.get(event.id) ?? null,
@@ -927,7 +1515,13 @@ async function detect(
       const score = totalScore(reasons);
       let flagged: string | null = null;
       if (score >= config.minimumScore) {
-        const finding = unfamiliarFinding(event, reasons, score, history.previous);
+        const finding = unfamiliarFinding(
+          event,
+          reasons,
+          score,
+          history.previous,
+          context.enrichment.ipLocation?.provider ?? null,
+        );
         await upsertSafely(context, finding);
         flagged = finding.dedupeKey;
       }
@@ -982,6 +1576,7 @@ async function collectRange(
   context: CollectorContext,
   config: SigninsAuditConfig,
   canaries: CanaryIndex,
+  lookup: LookupRun,
   from: Date,
   to: Date,
   backfilled: boolean,
@@ -992,6 +1587,7 @@ async function collectRange(
   context.count.fetched(fetched.events.length + fetched.skipped);
   context.count.skipped(fetched.skipped);
   context.count.inserted(await insertEvents(context, fetched.events, backfilled));
+  await relocate(context, to, budget, lookup);
   await detect(context, config, canaries, to);
   for (const gap of recordGaps ? fetched.gaps : []) {
     const read = new Set(
@@ -1092,6 +1688,7 @@ export async function collectSignins(
   await promoteResolved(context);
   // Read once: marking an account as a canary takes effect from the next run.
   const canaries = await loadCanaries(context);
+  const lookup: LookupRun = { spent: 0, stopped: false };
   let cursor = parseCursor(await context.cursor.get());
   if (!cursor) {
     const start = new Date(now.getTime() - config.backfillDays * 86_400_000);
@@ -1171,9 +1768,10 @@ export async function collectSignins(
       lane.trying = iso(from);
       await persist();
       const began = clock();
+      const lookedUp = lookup.spent;
       let read: boolean;
       try {
-        read = await collectRange(context, config, canaries, from, end, backfilled, budget);
+        read = await collectRange(context, config, canaries, lookup, from, end, backfilled, budget);
       } catch (error) {
         lane.trying = undefined;
         if (error instanceof RunBudgetSpentError) {
@@ -1210,7 +1808,11 @@ export async function collectSignins(
       if (read) afterRead?.(from, end);
       if (lane.hold && lane.place.getTime() >= lane.hold.getTime()) lane.hold = null;
       // Grow back toward full windows once past the busy stretch and windows are quick again.
-      if (!lane.hold && clock() - began < (budget.deadline - budget.startedAt) / 4)
+      // Time spent waiting for the IP location provider is not Microsoft being slow.
+      if (
+        !lane.hold &&
+        clock() - began - (lookup.spent - lookedUp) < (budget.deadline - budget.startedAt) / 4
+      )
         lane.span = Math.min(WINDOW_MS, lane.span * 2);
       if (lane.strikes && lane.strikes.at !== iso(lane.place)) lane.strikes = undefined;
       await persist();
@@ -1316,7 +1918,17 @@ export async function collectSignins(
   while (freshTo.getTime() > freshFloor.getTime() && clock() <= totalDeadline) {
     const from = max(freshFloor, new Date(freshTo.getTime() - FRESH_WINDOW_MS));
     try {
-      await collectRange(context, config, canaries, from, freshTo, false, freshBudget, false);
+      await collectRange(
+        context,
+        config,
+        canaries,
+        lookup,
+        from,
+        freshTo,
+        false,
+        freshBudget,
+        false,
+      );
     } catch (error) {
       if (error instanceof RunBudgetSpentError) break;
       if (error instanceof GraphBoundaryError && error.reason === "timeout") break;

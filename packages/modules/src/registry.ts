@@ -8,6 +8,7 @@ import {
   walkParseTree,
 } from "@prism365/storage";
 import type { PrismModule } from "./contract.ts";
+import { enrichmentKinds } from "./enrichment.ts";
 
 export class ModuleDefinitionError extends Error {
   constructor(moduleId: string, message: string) {
@@ -195,6 +196,13 @@ export function validateModule(module: PrismModule): string[] {
         `setting ${key} is invalid, repeated, or outside the ${namespace} namespace.`,
       );
     settings.add(key);
+  }
+
+  const enrichment = new Set<string>();
+  for (const kind of module.enrichment ?? []) {
+    if (!enrichmentKinds.includes(kind) || enrichment.has(kind))
+      throw new ModuleDefinitionError(id, `enrichment ${String(kind)} is unknown or repeated.`);
+    enrichment.add(kind);
   }
 
   const migrationIds = new Set<string>();

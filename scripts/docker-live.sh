@@ -61,6 +61,23 @@ case "${1:-help}" in
         smtp_password_file=/run/secrets/smtp-password
         ;;
     esac
+    # IPv6 sign-in locations are optional (docs/modules/signins-audit.md §13). With a provider
+    # set, its license key goes in the secrets directory as maxmind-license-key.
+    ip_location_provider="$(value IP_LOCATION_PROVIDER "$source_env")"
+    ip_location_account_id=""
+    ip_location_key_file=""
+    if [ -n "$ip_location_provider" ]; then
+      ip_location_account_id="$(value IP_LOCATION_ACCOUNT_ID "$source_env")"
+      if [ -z "$ip_location_account_id" ]; then
+        echo "IP_LOCATION_PROVIDER is set, so IP_LOCATION_ACCOUNT_ID must be too." >&2
+        exit 1
+      fi
+      if [ ! -f "$secrets_dir/maxmind-license-key" ]; then
+        echo "IP_LOCATION_PROVIDER is set, so $secrets_dir/maxmind-license-key must hold the license key." >&2
+        exit 1
+      fi
+      ip_location_key_file=/run/secrets/maxmind-license-key
+    fi
     port="${PRISM_HTTPS_PORT:-8443}"
     umask 077
     cat > "$ENV_FILE" <<EOF
@@ -88,6 +105,9 @@ SMTP_PASSWORD_FILE=$smtp_password_file
 SMTP_FROM=$(value SMTP_FROM "$source_env")
 ALERT_EMAIL_DOMAINS=$(value ALERT_EMAIL_DOMAINS "$source_env")
 WEBHOOK_ALLOWED_PORTS=$(value WEBHOOK_ALLOWED_PORTS "$source_env")
+IP_LOCATION_PROVIDER=$ip_location_provider
+IP_LOCATION_ACCOUNT_ID=$ip_location_account_id
+IP_LOCATION_LICENSE_KEY_FILE=$ip_location_key_file
 EOF
     echo "Created $ENV_FILE. Next: scripts/docker-live.sh up"
     ;;

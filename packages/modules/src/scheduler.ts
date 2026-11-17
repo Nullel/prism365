@@ -28,6 +28,12 @@ import type {
   FindingInput,
   PrismModule,
 } from "./contract.ts";
+import {
+  IP_LOCATION_BATCH_LIMIT,
+  type IpLocation,
+  type IpLocationProvider,
+  isIpv6Network64,
+} from "./enrichment.ts";
 import { FindingPolicyError, severityAtLeast, upsertFinding } from "./findings.ts";
 import { ModuleBoundaryError, scopeGraph } from "./graph-scope.ts";
 import { type ModuleRegistry, modulePermissions, moduleTablePrefix } from "./registry.ts";
@@ -154,6 +160,9 @@ export interface SchedulerOptions {
   // How soon a collector that reported more to read runs again. Default 5 seconds.
   catchUpDelayMilliseconds?: number;
   onEvent?: (event: SchedulerEvent) => void;
+  // The IP location provider the operator configured (docs/MODULES.md §5), offered only to
+  // modules that declare "ip.location". Unset means no tenant address leaves the installation.
+  ipLocation?: IpLocationProvider;
 }
 
 const identifier = /^[a-z][a-z0-9_]{0,40}$/;
@@ -205,6 +214,7 @@ export class ModuleScheduler {
   readonly #stopTimeout: number;
   readonly #timeoutFor: (collector: Collector) => number;
   readonly #catchUpDelay: number;
+  readonly #ipLocation: IpLocationProvider | null;
   readonly #listeners = new Set<(event: SchedulerEvent) => void>();
   #credential: CollectionCredential | null = null;
   #boundAt: Date | null = null;
@@ -233,6 +243,7 @@ export class ModuleScheduler {
     this.#timeoutFor =
       options.timeoutMilliseconds ?? ((collector) => collector.timeoutSeconds * 1_000);
     this.#catchUpDelay = options.catchUpDelayMilliseconds ?? 5_000;
+    this.#ipLocation = options.ipLocation ?? null;
     if (options.onEvent) this.#listeners.add(options.onEvent);
   }
 
@@ -632,6 +643,50 @@ export class ModuleScheduler {
               retireAttention(sql, tenantId, module.id, kind, keep, this.#now(), note),
             ),
           ),
+      },
+      enrichment: {
+        ipLocation: (() => {
+          const provider = this.#ipLocation;
+          if (!provider || !module.enrichment?.includes("ip.location")) return null;
+          return {
+            provider: {
+              id: provider.id,
+              name: provider.name,
+              attribution: provider.attribution,
+            },
+            locate: (networks) =>
+              handled(
+                (async () => {
+                  live();
+                  outsideTransaction();
+                  // The boundary of what may leave: IPv6 /64 networks in global unicast and
+                  // nothing else, so no full address, IPv4 address or other value is sent even
+                  // if a module passes one by mistake.
+                  if (
+                    !Array.isArray(networks) ||
+                    networks.length === 0 ||
+                    networks.length > IP_LOCATION_BATCH_LIMIT ||
+                    new Set(networks).size !== networks.length ||
+                    !networks.every(isIpv6Network64)
+                  )
+                    throw new ModuleBoundaryError(
+                      `IP location takes 1 to ${IP_LOCATION_BATCH_LIMIT} distinct IPv6 /64 networks.`,
+                    );
+                  const answers = await provider.locate([...networks], {
+                    tenantId,
+                    actorId: credential.actorId,
+                    moduleId: module.id,
+                    signal: ended.signal,
+                  });
+                  live();
+                  // Only what was asked comes back; anything else the provider returned is dropped.
+                  const result = new Map<string, IpLocation | null>();
+                  for (const network of networks) result.set(network, answers.get(network) ?? null);
+                  return result;
+                })(),
+              ),
+          };
+        })(),
       },
       count: {
         fetched: (count) => {

@@ -115,7 +115,10 @@ ever in its reach.
 - Call any host other than Graph through `ctx.graph`. Enrichment against third parties
   (reputation, ASN, geolocation) is a separate **enrichment provider** with its own consent
   toggle, egress allowlist and audit event, off by default. Tenant IP addresses leaving the
-  installation is a privacy decision the operator makes once, explicitly.
+  installation is a privacy decision the operator makes once, explicitly. A module declares the
+  kinds it uses (`enrichment` in its definition, like `packs`), and the scheduler offers a kind
+  only when the operator configured a provider for it. The first kind, `ip.location`, is built:
+  see `modules/signins-audit.md` §13.
 - Store a raw payload unless `retention.rawEvents` is enabled for the tenant.
 - Label a person. Findings describe events and risk, never productivity or intent, per
   `PRIVACY.md`. A rule named "after hours" is allowed only as "outside this account's usual
