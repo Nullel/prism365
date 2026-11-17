@@ -180,7 +180,8 @@ about the sign-in goes with it: no name, account, time or app. IPv4 sign-ins, fa
 IPv6 forms that carry an IPv4 address (6to4, Teredo) are never sent. Each request writes an
 access-ledger entry first (provider, module, how many networks), and nothing is sent if that fails.
 
-The answers are cached per tenant for 30 days, by network, never by address. A sign-in whose
+The answers are cached per tenant, by network, never by address, and are kept with no retention
+limit: a network is looked up once and its answer is never deleted. A sign-in whose
 location the provider replaced keeps Microsoft's original (its place names and coordinates) next
 to it, and both go with the sign-in when it is deleted at the end of its 90 days. MaxMind's own handling of the requests is governed by
 the operator's agreement with MaxMind.

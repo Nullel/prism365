@@ -45,7 +45,7 @@ export function createSigninsAuditModule(
     retention: [
       { table: "event", timeColumn: "created_at", days: 90 },
       { table: "seen", timeColumn: "last_seen", days: 365 },
-      { table: "ip_location", timeColumn: "looked_up_at", days: 30 },
+      // No rule for ip_location: saved IP location answers are never deleted.
     ],
   };
 }

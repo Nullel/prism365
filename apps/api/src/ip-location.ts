@@ -25,7 +25,8 @@ import { z } from "zod";
 //   IP_ADDRESS_RESERVED or IP_ADDRESS_INVALID, 401 and 403 for credentials, 402
 //   INSUFFICIENT_FUNDS (for GeoLite: the daily limit is spent), 429 rate limiting, 503 retry later.
 // - GeoLite data requires attribution (CC BY-SA 4.0) and its licence asks that old data be
-//   destroyed within 30 days of an update; Prism365's lookup cache keeps answers 30 days.
+//   destroyed within 30 days of an update. Prism365's lookup cache keeps answers forever (the
+//   operator's decision, 2026-11-17; docs/modules/signins-audit.md §13 "Licence").
 
 const services = {
   "maxmind-geolite": {

@@ -67,10 +67,8 @@ const LOOKUP_BUDGET_MS = 15_000;
 // Networks per call to the provider. MaxMind takes one address per request, four at a time with
 // 5 seconds each, so one call adds at most about 10 seconds past the budget.
 const LOOKUP_CHUNK = 8;
-// How long a cached answer is used before its network is asked about again. The cache table's
-// retention matches the longer of the two.
-const LOOKUP_FRESH_DAYS = 30;
-const LOOKUP_NO_DATA_DAYS = 7;
+// A cached answer, found or "no data", is used for as long as it is kept, and it is kept forever:
+// a network is asked about once and never again, and the cache table has no retention.
 // The provider's coordinates are used only when it places the address within this radius and
 // names a city. A wider answer is often a country's centre, which against a precise location an
 // hour earlier reads as impossible travel; without coordinates the travel rule skips the sign-in
@@ -1048,7 +1046,7 @@ function decide(
   };
 }
 
-// Fresh cached answers for these /64 networks, each from the longest cached network that holds it.
+// Cached answers for these /64 networks, each from the longest cached network that holds it.
 async function readLookupCache(
   sql: SqlClient,
   context: CollectorContext,
@@ -1056,7 +1054,6 @@ async function readLookupCache(
   networks: readonly string[],
 ): Promise<Map<string, NetworkAnswer>> {
   const answers = new Map<string, NetworkAnswer>();
-  const day = 86_400_000;
   const number = (value: number | string | null) => (value === null ? null : Number(value));
   for (let index = 0; index < networks.length; index += 20) {
     const chunk = networks.slice(index, index + 20);
@@ -1071,9 +1068,8 @@ async function readLookupCache(
       lat: number | null;
       lon: number | null;
       accuracy_km: number | null;
-      looked_up_at: Date | string;
     }>(
-      `SELECT network, found, country, state, city, lat, lon, accuracy_km, looked_up_at
+      `SELECT network, found, country, state, city, lat, lon, accuracy_km
          FROM ${context.table("ip_location")}
         WHERE tenant_id = $1 AND provider = $2 AND network IN (${placeholders(candidates.length, 3)})`,
       [context.tenantId, provider, ...candidates],
@@ -1083,8 +1079,6 @@ async function readLookupCache(
       for (const candidate of containingNetworks(network)) {
         const row = rows.get(candidate);
         if (!row) continue;
-        const age = context.now.getTime() - new Date(row.looked_up_at).getTime();
-        if (age > (row.found ? LOOKUP_FRESH_DAYS : LOOKUP_NO_DATA_DAYS) * day) continue;
         answers.set(
           network,
           row.found && row.country

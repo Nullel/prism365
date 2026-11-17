@@ -363,13 +363,12 @@ Record the counts (never the names or places) in the TL-052 row.
 **To stop**, empty `IP_LOCATION_PROVIDER` and the two lines under it in `.env.docker` and run
 `scripts/docker-live.sh up`. Variables exported in your shell win over `.env.docker`, so unset
 any there too. `scripts/docker-live.sh logs` must no longer show `IPv6 sign-in locations:`.
-Located sign-ins keep what they were given, and this build's retention empties the cache within
-30 days.
+Located sign-ins keep what they were given, and saved answers stay in the cache.
 
 **To go back to a build without this feature**, stop the app (`docker stop prism365-app-1`; the
 database keeps running), run the statements below in `psql`, then switch branch and run `up`. An
-older build applies cleanly over the two migrations, but it has no retention for the cache and
-reads a replaced location as Microsoft's, which is what these undo:
+older build applies cleanly over the two migrations, but it never uses the cache and reads a
+replaced location as Microsoft's. These empty the cache and put Microsoft's locations back:
 
 ```sql
 DELETE FROM mod_signins_audit_ip_location;
@@ -463,8 +462,9 @@ left unprocessed is looked up on the next run like a new one; a failed one never
 (with the accuracy radius), filed under the network MaxMind says its answer covers
 (`traits.network`, clamped to /32 to /64), or the /64 when it does not say. Mobile networks give
 every phone its own /64, so filing under MaxMind's range is what keeps a tenant inside a free daily
-quota. An answer is reused for 30 days, a "no data" answer for 7, and the table's retention is 30
-days. It holds networks and places, never addresses.
+quota. Answers are kept forever and never deleted: once a network has an answer, found or "no
+data", it is never asked about again. The table has no retention rule. It holds networks and
+places, never addresses.
 
 ### What a finding says
 
@@ -481,9 +481,9 @@ limitations.
 
 GeoLite data is CC BY-SA 4.0 and needs attribution: "This product includes GeoLite Data created by
 MaxMind, available from https://www.maxmind.com." Its EULA also asks that old data be destroyed
-within 30 days of an update. The cache expires at 30 days. Whether a location already written into
-a stored sign-in (kept 90 days) counts as old data is a question for a legal read before relying on
-GeoLite in production; the paid service's terms set no such limit.
+within 30 days of an update. Prism365 keeps cached answers forever and never refreshes them, so
+it does not follow that clause; the operator decided this on 2026-11-17. The paid service's terms
+set no such limit.
 
 ### Limits
 
@@ -500,8 +500,8 @@ GeoLite in production; the paid service's terms set no such limit.
   This needs both sources to disagree on the country and the provider to know nothing finer.
 - A lookup call already under way when collection stops (sign-out, "Stop collecting") finishes:
   at most 8 networks, already recorded in the ledger.
-- Going back to a build from before this change leaves the cache table without a retention rule;
-  drop `mod_signins_audit_ip_location` by hand in that case.
+- Answers are never refreshed. A network MaxMind later places somewhere else keeps its first
+  answer; deleting its row from `mod_signins_audit_ip_location` makes the next sign-in ask again.
 - In development live mode without PostgreSQL, the in-memory access ledger holds 10,000 entries;
   each lookup call adds one.
 - Lookups use the delegated session's administrator for the ledger, so they run only while

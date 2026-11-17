@@ -529,6 +529,37 @@ describe("IPv6 sign-in locations", () => {
     expect(cache.rows).toEqual([{ network: "2001:db8:1::/48" }]);
   });
 
+  it("never asks about a network again once it has an answer, however old, and never deletes it", async () => {
+    const provider = fakeProvider((network) =>
+      network === "2001:db8:1:2::/64" ? { ...chicagoAnswer, network } : null,
+    );
+    await setup(provider);
+    await poll();
+    records.push(ipv6SignIn(minutesAgo(2), "2001:db8:1:2::77"));
+    records.push(ipv6SignIn(minutesAgo(2), "2001:db8:dead:beef::1"));
+    await poll();
+    expect(provider.calls.flat().sort()).toEqual(["2001:db8:1:2::/64", "2001:db8:dead:beef::/64"]);
+    // Both answers, found and "no data", saved over a year ago.
+    await database.tenant(tenantId, (sql) =>
+      sql.query(
+        "UPDATE mod_signins_audit_ip_location SET looked_up_at = looked_up_at - interval '400 days'",
+      ),
+    );
+    records.push(ipv6SignIn(minutesAgo(1), "2001:db8:1:2::78"));
+    records.push(ipv6SignIn(minutesAgo(1), "2001:db8:dead:beef::2"));
+    await poll();
+    expect(provider.calls).toHaveLength(1);
+    expect(await stored("2001:db8:1:2::78")).toEqual([
+      expect.objectContaining({ location_source: "test-geo", location_lookup: "found" }),
+    ]);
+    expect(await stored("2001:db8:dead:beef::2")).toEqual([
+      expect.objectContaining({ location_source: "microsoft", location_lookup: "no_data" }),
+    ]);
+    // No retention rule reaches the saved answers.
+    const retention = createSigninsAuditModule().retention.map((rule) => rule.table);
+    expect(retention).not.toContain("ip_location");
+  });
+
   it("keeps Microsoft's location for a network the provider cannot place, so detection still works", async () => {
     const provider = fakeProvider(() => null);
     await setup(provider);
