@@ -51,6 +51,9 @@ function event(overrides: Partial<SigninEvent> = {}): SigninEvent {
     riskState: null,
     riskEventTypes: [],
     isInteractive: true,
+    locationSource: "microsoft",
+    locationLookup: null,
+    microsoftLocation: null,
     ...overrides,
   };
 }
@@ -60,6 +63,7 @@ function history(overrides: Partial<SuccessHistory> = {}): SuccessHistory {
     hasBaseline: true,
     trusted: { ip: false, country: false, state: false, device: false },
     previous: null,
+    located: null,
     recentFailures: 0,
     recentSprayFailures: 0,
     hourShare: null,
@@ -107,6 +111,7 @@ describe("success rules", () => {
     const fromChicago = history({
       trusted: { ip: true, country: true, state: true, device: false },
       previous: { createdAt: new Date(at.getTime() - 2 * 3_600_000), lat: 41.88, lon: -87.63 },
+      located: { createdAt: new Date(at.getTime() - 2 * 3_600_000), lat: 41.88, lon: -87.63 },
     });
     expect(rules(successReasons(event(), fromChicago, config, false))).toEqual([
       "travel.impossible",
@@ -114,9 +119,40 @@ describe("success rules", () => {
     const jitter = history({
       trusted: { ip: true, country: true, state: true, device: false },
       previous: { createdAt: new Date(at.getTime() - 60_000), lat: 52.08, lon: 4.3 },
+      located: { createdAt: new Date(at.getTime() - 60_000), lat: 52.08, lon: 4.3 },
     });
     expect(haversineKm(52.08, 4.3, 52.37, 4.9)).toBeLessThan(config.travelMinimumKm);
     expect(rules(successReasons(event(), jitter, config, false))).toEqual([]);
+  });
+
+  it("measures travel from the last located sign-in and dormancy from the last sign-in of any kind", () => {
+    // The last success had no coordinates; the one with coordinates was in Chicago two hours ago.
+    const mixed = history({
+      trusted: { ip: true, country: true, state: true, device: false },
+      previous: { createdAt: new Date(at.getTime() - 30 * 60_000), lat: null, lon: null },
+      located: { createdAt: new Date(at.getTime() - 2 * 3_600_000), lat: 41.88, lon: -87.63 },
+    });
+    expect(rules(successReasons(event(), mixed, config, false))).toEqual(["travel.impossible"]);
+    // A long-quiet account whose last success carried no coordinates is still a revival.
+    const dormant = history({
+      trusted: { ip: true, country: true, state: true, device: true },
+      previous: { createdAt: new Date(at.getTime() - 70 * 86_400_000), lat: null, lon: null },
+    });
+    expect(rules(successReasons(event(), dormant, config, false))).toEqual(["dormant.revival"]);
+  });
+
+  it("judges a provider's state like any other, using the familiarity it is given", () => {
+    const unfamiliar = history({
+      trusted: { ip: true, country: true, state: false, device: false },
+    });
+    const familiar = history({ trusted: { ip: true, country: true, state: true, device: false } });
+    expect(rules(successReasons(event(), unfamiliar, config, false))).toEqual(["new.state"]);
+    expect(
+      rules(successReasons(event({ locationLookup: "found" }), unfamiliar, config, false)),
+    ).toEqual(["new.state"]);
+    expect(
+      rules(successReasons(event({ locationLookup: "found" }), familiar, config, false)),
+    ).toEqual([]);
   });
 
   it("applies only baseline-free rules while learning history", () => {

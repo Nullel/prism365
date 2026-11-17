@@ -78,7 +78,8 @@ New in Prism365:
 Entra Guard's `THREAT` (AbuseIPDB) and its ISP lookup (ip-api over plain HTTP) move to an
 **enrichment provider** that is off by default. When enabled with the operator's consent it
 adds up to 70 for abuse confidence at or above 30 and attaches ISP and organisation to the
-finding. Tenant IPs do not leave the installation until that toggle is on.
+finding. Tenant IPs do not leave the installation until that toggle is on. The first enrichment
+built is location for IPv6 sign-ins (section 13); reputation and ISP are not built yet.
 
 ## 6. Views
 
@@ -173,7 +174,7 @@ fake-fetch pattern and assert cursor advance, overlap dedupe and partial-page ho
 | S3 | YELLOW | the three views and the digest section | 1.5 days |
 | S4 | YELLOW | webhook sinks and the daily digest | 0.5 day |
 | S5 | RED, Fable | application credential path: certificate, application `AuditLog.Read.All`, GA consent, 24/7 polling | 1 day |
-| S6 | YELLOW | enrichment provider with consent toggle | 0.5 day |
+| S6 | RED | enrichment provider with consent toggle. **IPv6 location built 2026-11-09 (TL-052, section 13); reputation and ISP not built.** | 0.5 day |
 
 S1 to S4 run on the operator session, which means the first real findings at the pilot tenant arrive
 while you are signed in, before S5 exists.
@@ -253,3 +254,157 @@ sign-ins, so an account used only by a background token would not appear in it.
 
 Canary findings appear wherever sign-in findings already appear: the findings list, the person's
 page and the This week page. Delivering them as a notification is a later slice.
+
+## 13. IPv6 locations
+
+Microsoft often places IPv6 sign-ins in the wrong city or country. Each wrong place raises
+`new.country`, `new.state` and `travel.impossible` against the account's real history, so a person
+on their home IPv6 connection can look like they flew abroad. When the operator configures an IP
+location provider, Prism365 asks it where each successful IPv6 sign-in's network is, and uses its
+answer wherever it contradicts Microsoft's. IPv4 sign-ins keep Microsoft's location; nothing about
+them is sent.
+
+### Turning it on
+
+Off by default. The operator sets, in the environment only:
+
+- `IP_LOCATION_PROVIDER`: `maxmind-geolite` (the free GeoLite web service, 1000 lookups a day) or
+  `maxmind-geoip` (the paid GeoIP City Plus web service). Same answers in the same shape; the paid
+  one is more accurate and has no daily cap.
+- `IP_LOCATION_ACCOUNT_ID`: the MaxMind account ID.
+- `IP_LOCATION_LICENSE_KEY_FILE`: a file holding the license key. `IP_LOCATION_LICENSE_KEY` is
+  refused, so the key never sits in the environment.
+
+Setting these is the consent decision `docs/MODULES.md` §5 asks for: from then on, tenant network
+prefixes leave the installation. A half-set configuration stops startup. The API logs the provider
+by name when it starts.
+
+MaxMind was chosen over IPinfo and ip2location.io (documentation checked 2026-11-09). IPinfo's free
+tier has no city or coordinates. ip2location.io gives the capital city's coordinates when it does
+not know the city, which would itself cause false impossible travel. MaxMind gives an accuracy
+radius and its record's own network, which the next sections rely on.
+
+### What leaves, and what is recorded
+
+- **The /64 network only, never the address.** One /64 is one subnet, so its location is the
+  address's location, and the half of the address that identifies a device stays here. The request
+  carries the network's first address (`2001:db8:1:2::`). Only global unicast IPv6 (`2000::/3`) is
+  ever sent, and not 6to4 (`2002::/16`) or Teredo (`2001::/32`), whose network part carries an IPv4
+  address. The scheduler checks every value at its boundary, so a module bug cannot send a full
+  address, an IPv4 address or anything else.
+- **Successful sign-ins only.** Failed attempts keep Microsoft's location and are never looked up,
+  so nobody can spend the operator's lookups (or paid credit) by failing to sign in from addresses
+  they rotate.
+- **Only to the configured service.** The host (`geolite.info` or `geoip.maxmind.com`) is fixed in
+  code; nothing a tenant or administrator types can change it. HTTPS only, HTTP Basic with the
+  account and key, no redirects followed, 5 seconds per request, 64 KB read at most.
+- **An access-ledger entry before anything is sent**, under the administrator whose collection
+  made the lookup: `enrichment.ip_location` with the provider, the module and how many networks.
+  Never a network or an address. If the entry cannot be written, or the run ended while it was
+  being written, nothing is sent. A collection with no administrator (the future application
+  credential) is refused until it has one.
+
+### How a sign-in gets its location
+
+Collection stores a successful IPv6 sign-in with no location source. Before the rules read it, the
+same run looks up its /64, from the cache first, then from the provider, and decides:
+
+- **The provider contradicts Microsoft**: another country, or, in the same country, a precise
+  place (a city, a radius of 100 km or less) more than 25 km plus that radius from Microsoft's
+  point, about the distance between two points in one city. This is the error the provider is here to correct, so its location replaces Microsoft's.
+- **The provider agrees**, or is too coarse to say more than Microsoft's own country (no city, or a
+  radius over 100 km). Nothing contradicts Microsoft's location, so it stands, with its state and
+  coordinates. A coarse answer can never erase detail that nothing disputes.
+
+| Outcome | Location used | `location_source` / `location_lookup` |
+|---|---|---|
+| The provider contradicted Microsoft | the provider's; Microsoft's kept in `ms_country`, `ms_state`, `ms_city`, `ms_lat`, `ms_lon` | provider id / `found` |
+| The provider agreed, or knew only the country | Microsoft's | `microsoft` / `confirmed` |
+| The provider has no data for it | Microsoft's | `microsoft` / `no_data` |
+| The provider failed (outage, throttling, quota, refused key) | Microsoft's | `microsoft` / `unavailable` |
+| The run's lookup time was spent first | Microsoft's | `microsoft` / `skipped` |
+
+When the provider's location replaces Microsoft's:
+
+- Its coordinates are kept only when it is precise. A wider answer is often a country's centre,
+  which against a precise location an hour earlier reads as impossible travel. Without coordinates
+  the travel rule skips the sign-in.
+- Its region is compared only within one source. MaxMind names regions in English ("North
+  Holland"), Microsoft often in the local language ("Noord-Holland"), so comparing the two names
+  would raise the very false findings this is for. The provider's region is learned into the
+  baseline under the provider's id, and `new.state` compares it with the regions that provider
+  has named for the account before. When the sign-in kept coordinates, a region also counts as
+  familiar when one of the account's sign-ins from another source (Microsoft, or a different
+  provider) was within 100 km and its region is one the account is known for. A coarse answer
+  keeps no coordinates, so its region is compared by name alone. Microsoft's names are kept as
+  they are. The country (an ISO code in both) and the distance are judged as before. Switching
+  provider (GeoLite to GeoIP) starts that provider's region names afresh; for sign-ins with
+  coordinates, the 100 km rule keeps the account's earlier places familiar.
+
+The travel rule measures from the account's last success that has coordinates, so a sign-in
+without them does not hide the next one's travel. Dormancy (`dormant.revival`) and the finding
+window are measured from the last success of any kind, as before.
+
+Nothing waits for a later run, so a provider outage can never stop detection: the sign-in is
+judged on Microsoft's location, as it would be without a provider, and the finding says so. A run
+starts no new lookup once it has spent 15 seconds waiting for the provider or reached its own
+deadline. One call from this module carries at most 8 networks (the scheduler accepts at most 100
+from any module), four requests at a time with 5 seconds each, so a call already under way can
+add about 10 seconds past that. The first failure stops lookups for the
+rest of the run. After a failure the provider pauses on its own: an hour for a spent quota or a
+refused key, `Retry-After` (one minute to an hour) or five minutes for throttling, a minute for an
+outage. A paused provider is not asked or recorded.
+
+Sign-ins processed before this change keep Microsoft's location; their `location_source` is null.
+Baselines already learned from them stay learned. A successful IPv6 sign-in that a run cut short
+left unprocessed is looked up on the next run like a new one; a failed one never is.
+
+### Cache
+
+`mod_signins_audit_ip_location` holds answers per tenant and provider, as the provider gave them
+(with the accuracy radius), filed under the network MaxMind says its answer covers
+(`traits.network`, clamped to /32 to /64), or the /64 when it does not say. Mobile networks give
+every phone its own /64, so filing under MaxMind's range is what keeps a tenant inside a free daily
+quota. An answer is reused for 30 days, a "no data" answer for 7, and the table's retention is 30
+days. It holds networks and places, never addresses.
+
+### What a finding says
+
+Every IPv6 finding says where its location came from. Its evidence carries `locationSource`, the
+lookup's outcome as `locationLookup`, and, when the provider's location replaced Microsoft's,
+`microsoftLocation`. Its limitations say which source was used and why, and, when the provider's
+location was used, how its region was compared. With GeoLite, MaxMind's required attribution
+is one of the limitations. Without a provider, IPv6 findings say that Microsoft's IPv6 locations
+are often wrong and that a provider can check them. Limitation text is fixed wording with
+code-owned names only; place names from Microsoft or the provider appear in evidence, never in
+limitations.
+
+### Licence
+
+GeoLite data is CC BY-SA 4.0 and needs attribution: "This product includes GeoLite Data created by
+MaxMind, available from https://www.maxmind.com." Its EULA also asks that old data be destroyed
+within 30 days of an update. The cache expires at 30 days. Whether a location already written into
+a stored sign-in (kept 90 days) counts as old data is a question for a legal read before relying on
+GeoLite in production; the paid service's terms set no such limit.
+
+### Limits
+
+- A location from the provider is still IP geolocation. VPNs, mobile networks and cloud proxies
+  move it, and the provider can be wrong too.
+- An attacker on an IPv6 network the provider cannot place is judged on Microsoft's location, as
+  without a provider.
+- When Microsoft is wrong within the right country and the provider knows only the country (for
+  example Microsoft says Seattle for someone in Chicago), Microsoft's location stands, and so does
+  any false travel it causes, as without a provider.
+- When the provider contradicts Microsoft's country but is coarse, that sign-in loses its state
+  and travel signals and is judged on the provider's country and the address alone. If Microsoft
+  was right and the provider wrong, a real sign-in abroad can score below the finding threshold.
+  This needs both sources to disagree on the country and the provider to know nothing finer.
+- A lookup call already under way when collection stops (sign-out, "Stop collecting") finishes:
+  at most 8 networks, already recorded in the ledger.
+- Going back to a build from before this change leaves the cache table without a retention rule;
+  drop `mod_signins_audit_ip_location` by hand in that case.
+- In development live mode without PostgreSQL, the in-memory access ledger holds 10,000 entries;
+  each lookup call adds one.
+- Lookups use the delegated session's administrator for the ledger, so they run only while
+  collection does.

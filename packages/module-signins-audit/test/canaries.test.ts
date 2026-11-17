@@ -46,6 +46,9 @@ function event(overrides: Partial<SigninEvent> = {}): SigninEvent {
     riskState: null,
     riskEventTypes: [],
     isInteractive: true,
+    locationSource: "microsoft",
+    locationLookup: null,
+    microsoftLocation: null,
     ...overrides,
   };
 }
@@ -125,6 +128,7 @@ describe("canary finding", () => {
           location: "Amsterdam, Noord-Holland, NL",
           app: "Office 365 Exchange Online",
           client: "Browser",
+          locationSource: "microsoft",
         },
       },
     ]);
@@ -149,6 +153,35 @@ describe("canary finding", () => {
     expect(canaryFinding(event({ errorCode: -1 }), decoy).evidence[0]?.fields).toMatchObject({
       result: "unknown",
     });
+  });
+
+  it("says a failed IPv6 attempt was never sent to the configured IP location provider", () => {
+    const provider = { id: "test-geo", name: "Synthetic lookup", attribution: null };
+    const failed = event({ ip: "2001:db8:1:2::77", errorCode: 50126 });
+    const limitations = canaryFinding(failed, decoy, provider).limitations ?? [];
+    expect(limitations).toEqual(
+      expect.arrayContaining([expect.stringContaining("Failed sign-ins are never sent")]),
+    );
+    expect(limitations.join(" ")).not.toContain("can check these");
+    // Without a provider the advice to configure one stands.
+    expect((canaryFinding(failed, decoy).limitations ?? []).join(" ")).toContain("can check these");
+  });
+
+  it("promises a distance comparison of the region only when the provider's place kept coordinates", () => {
+    const provider = { id: "test-geo", name: "Synthetic lookup", attribution: null };
+    const found = {
+      ip: "2001:db8:1:2::77",
+      locationSource: "test-geo",
+      locationLookup: "found" as const,
+      microsoftLocation: { country: "NL", state: "Noord-Holland", city: "Amsterdam" },
+    };
+    const precise = canaryFinding(event({ ...found, lat: 52.52, lon: 13.4 }), decoy, provider);
+    const coarse = canaryFinding(event({ ...found, lat: null, lon: null }), decoy, provider);
+    expect((precise.limitations ?? []).join(" ")).toContain("from other sources within 100 km");
+    expect((coarse.limitations ?? []).join(" ")).not.toContain("within 100 km");
+    expect((coarse.limitations ?? []).join(" ")).toContain("no precise point");
+    for (const finding of [precise, coarse])
+      expect((finding.limitations ?? []).every((line) => line.length <= 300)).toBe(true);
   });
 
   it("names the account from the list when the sign-in carried no name", () => {

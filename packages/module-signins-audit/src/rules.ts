@@ -25,8 +25,12 @@ export interface SuccessHistory {
   // the baseline: a brand-new account must not raise "new country, new state, new address".
   hasBaseline: boolean;
   trusted: { ip: boolean; country: boolean; state: boolean; device: boolean };
-  // Previous successful sign-in for this account (any location), if one exists.
+  // Previous successful sign-in for this account (any location), if one exists. Dormancy and the
+  // finding window are measured from it.
   previous: { createdAt: Date; lat: number | null; lon: number | null } | null;
+  // The latest earlier success that has coordinates, for the travel rule, so a sign-in whose
+  // location carries none (a coarse IPv6 answer) does not hide the next one's travel.
+  located: { createdAt: Date; lat: number; lon: number } | null;
   // Credential failures for this account in the success-after-failures window before this event,
   // and whether any came from an address that was password-spraying.
   recentFailures: number;
@@ -84,6 +88,8 @@ export function successReasons(
         score: 15,
         detail: `First successful sign-in from ${event.country}.`,
       });
+    // Whether the state is familiar is the caller's call: by name within one source, by place
+    // across sources, whose names can differ ("North Holland", "Noord-Holland").
     if (event.state && !history.trusted.state)
       reasons.push({
         rule: "new.state",
@@ -93,18 +99,17 @@ export function successReasons(
   }
 
   const previous = history.previous;
+  const located = history.located;
   if (
     !learning &&
     !onTrustedNetwork &&
     !knownDevice &&
-    previous &&
-    previous.lat !== null &&
-    previous.lon !== null &&
+    located &&
     event.lat !== null &&
     event.lon !== null
   ) {
-    const hours = (event.createdAt.getTime() - previous.createdAt.getTime()) / 3_600_000;
-    const km = haversineKm(previous.lat, previous.lon, event.lat, event.lon);
+    const hours = (event.createdAt.getTime() - located.createdAt.getTime()) / 3_600_000;
+    const km = haversineKm(located.lat, located.lon, event.lat, event.lon);
     // A minimum distance keeps geolocation jitter between nearby cities from reading as travel.
     if (hours > 0 && hours <= config.travelMaxHours && km >= config.travelMinimumKm) {
       const speed = km / hours;

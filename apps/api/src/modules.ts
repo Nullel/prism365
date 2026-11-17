@@ -10,6 +10,7 @@ import { createSigninsAuditModule } from "@prism365/module-signins-audit";
 import {
   type CollectionCredential,
   CredentialUnavailableError,
+  type IpLocationProvider,
   ModuleRegistry,
   ModuleScheduler,
   type SchedulerEvent,
@@ -116,7 +117,10 @@ export function logSchedulerEvent(event: SchedulerEvent): void {
 
 // Live mode only. PostgreSQL when the deployment configured it, otherwise PGlite: in memory by
 // default, on disk when PRISM_DATA_DIR is set.
-export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntime> {
+export async function openModuleRuntime(
+  config: AppConfig,
+  options: { ipLocation?: IpLocationProvider } = {},
+): Promise<ModuleRuntime> {
   const registry = createModuleRegistry(config);
   let database: ModuleDatabase;
   if (config.databaseUrl) {
@@ -192,6 +196,7 @@ export async function openModuleRuntime(config: AppConfig): Promise<ModuleRuntim
         maxRetryWaitMilliseconds: 30_000,
       }),
     onEvent: logSchedulerEvent,
+    ...(options.ipLocation ? { ipLocation: options.ipLocation } : {}),
   });
   return { registry, database, scheduler };
 }

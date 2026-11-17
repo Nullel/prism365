@@ -171,6 +171,20 @@ subjects for quiet periods. Webhook addresses and signing secrets are stored enc
 recipients are stored as typed. Every change and every delivery writes an access-ledger entry
 with ids and counts.
 
+## IPv6 sign-in locations
+
+Off unless the operator sets `IP_LOCATION_PROVIDER` (`docs/modules/signins-audit.md` §13). When it
+is on, the /64 network of each successful IPv6 sign-in, never the full address, is sent to
+MaxMind to learn where it is, because Microsoft's IPv6 locations are often wrong. Nothing else
+about the sign-in goes with it: no name, account, time or app. IPv4 sign-ins, failed attempts and
+IPv6 forms that carry an IPv4 address (6to4, Teredo) are never sent. Each request writes an
+access-ledger entry first (provider, module, how many networks), and nothing is sent if that fails.
+
+The answers are cached per tenant for 30 days, by network, never by address. A sign-in whose
+location the provider replaced keeps Microsoft's original (its place names and coordinates) next
+to it, and both go with the sign-in when it is deleted at the end of its 90 days. MaxMind's own handling of the requests is governed by
+the operator's agreement with MaxMind.
+
 ## Retention defaults
 
 Final durations will be configured during the storage milestone. The design baseline is:

@@ -6,6 +6,7 @@ import {
 } from "@prism365/module-directory-changes";
 import { type SigninsAuditConfig, signinsAuditConfigFromEnv } from "@prism365/module-signins-audit";
 import { type DeliveryConfig, deliveryConfigFromEnv } from "./delivery-smtp.ts";
+import { type IpLocationConfig, ipLocationConfigFromEnv } from "./ip-location.ts";
 
 export const supportedReadFeatures = {
   "directory.users.read": "User.Read.All",
@@ -69,6 +70,10 @@ export interface AppConfig {
   // Alert delivery: the mail relay (SMTP_URL, SMTP_PASSWORD_FILE, SMTP_FROM, ALERT_EMAIL_DOMAINS)
   // and the extra ports webhooks may use (WEBHOOK_ALLOWED_PORTS). Live mode only.
   delivery?: DeliveryConfig;
+  // The IP location provider for IPv6 sign-ins (IP_LOCATION_PROVIDER, IP_LOCATION_ACCOUNT_ID,
+  // IP_LOCATION_LICENSE_KEY_FILE). Unset means no tenant address leaves the installation. Live
+  // mode only.
+  ipLocation?: IpLocationConfig;
 }
 
 // Handoffs and receipts are kept three years unless the operator chooses otherwise: long enough
@@ -175,6 +180,8 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
   base.signinsAudit = signinsAuditConfigFromEnv(env);
   base.directoryChanges = directoryChangesConfigFromEnv(env);
   base.delivery = await deliveryConfigFromEnv(env);
+  const ipLocation = await ipLocationConfigFromEnv(env);
+  if (ipLocation) base.ipLocation = ipLocation;
   if (env.TRUST_PROXY_HOPS) {
     if (!/^[0-3]$/.test(env.TRUST_PROXY_HOPS))
       throw new Error("TRUST_PROXY_HOPS must be a whole number from 0 to 3.");

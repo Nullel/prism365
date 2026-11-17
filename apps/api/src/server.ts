@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { MemoryStateStore, PostgresStateStore } from "@prism365/storage";
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
+import { createIpLocationProvider } from "./ip-location.ts";
 import { type ModuleRuntime, openModuleRuntime } from "./modules.ts";
 
 // Last resort only: collector-facing promises are already marked handled. A stray rejection is
@@ -31,7 +32,16 @@ if (store instanceof PostgresStateStore) await store.verifyRole();
 // Module collection exists only in live mode with a configured tenant connection.
 let modules: ModuleRuntime | undefined;
 if (config.mode === "live" && config.identity) {
-  modules = await openModuleRuntime(config);
+  const ipLocation = createIpLocationProvider(config.ipLocation, {
+    ledger: (tenantId, actorId, event) => store.appendAudit(tenantId, actorId, event),
+    // The reason only: never an address, a network or MaxMind's text.
+    onPause: (reason) => console.warn(`Prism365 IP location lookups paused (${reason}).`),
+  });
+  modules = await openModuleRuntime(config, ipLocation ? { ipLocation } : {});
+  if (ipLocation)
+    console.log(
+      `IPv6 sign-in locations: ${ipLocation.name} (IPv6 /64 networks leave this server).`,
+    );
   modules.scheduler.start();
 }
 const app = createApp({

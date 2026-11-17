@@ -64,4 +64,43 @@ CREATE TABLE IF NOT EXISTS mod_signins_audit_seen (
 );
 SELECT prism365_tenant_table('mod_signins_audit_seen');`,
   },
+  // IPv6 locations from the operator's IP location provider (docs/modules/signins-audit.md §13).
+  // `location_source` is "microsoft" or the provider's id, and null on rows stored before this
+  // migration (Microsoft's) and, briefly, on an IPv6 row waiting for its lookup. `ms_*` keep what
+  // Microsoft reported when the provider's answer replaced it. `ip_location` caches answers per
+  // network so the same network is not sent again; it holds networks, never full addresses.
+  {
+    id: "002-ip-location",
+    sql: `ALTER TABLE mod_signins_audit_event
+  ADD COLUMN IF NOT EXISTS location_source text,
+  ADD COLUMN IF NOT EXISTS location_lookup text,
+  ADD COLUMN IF NOT EXISTS ms_country text,
+  ADD COLUMN IF NOT EXISTS ms_state text,
+  ADD COLUMN IF NOT EXISTS ms_city text;
+
+CREATE TABLE IF NOT EXISTS mod_signins_audit_ip_location (
+  tenant_id uuid NOT NULL,
+  provider text NOT NULL,
+  network text NOT NULL,
+  found boolean NOT NULL,
+  country text,
+  state text,
+  city text,
+  lat double precision,
+  lon double precision,
+  accuracy_km double precision,
+  looked_up_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, provider, network)
+);
+SELECT prism365_tenant_table('mod_signins_audit_ip_location');`,
+  },
+  // Microsoft's coordinates, kept next to its place names when the provider's answer replaced
+  // them, so a wrong answer can still be investigated. Its own migration: one applied is never
+  // edited (the module database refuses a changed checksum).
+  {
+    id: "003-ms-coordinates",
+    sql: `ALTER TABLE mod_signins_audit_event
+  ADD COLUMN IF NOT EXISTS ms_lat double precision,
+  ADD COLUMN IF NOT EXISTS ms_lon double precision;`,
+  },
 ];
